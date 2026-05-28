@@ -1,5 +1,10 @@
 # subswap - Claude, Codex and ChatGPT account switcher
 
+[![CI](https://github.com/x0c/subswap/actions/workflows/ci.yml/badge.svg)](https://github.com/x0c/subswap/actions/workflows/ci.yml)
+[![Release](https://github.com/x0c/subswap/actions/workflows/release.yml/badge.svg)](https://github.com/x0c/subswap/actions/workflows/release.yml)
+
+Languages: English | [简体中文](README.zh-CN.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
+
 subswap is a Rust CLI for managing multiple AI subscription accounts across
 Claude Code, Anthropic Claude, OpenAI Codex CLI, and ChatGPT. It imports local
 login state, stores credentials in the OS keyring, checks quota windows, and
@@ -62,7 +67,7 @@ cargo install --path crates/cli
 subswap --help
 ```
 
-After the repository is published, you can also install directly from Git:
+You can also install directly from Git:
 
 ```bash
 cargo install --git https://github.com/x0c/subswap --path crates/cli
