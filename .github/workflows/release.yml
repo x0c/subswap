@@ -1,0 +1,168 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  prepare:
+    name: prepare release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: resolve tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        shell: bash
+        run: |
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=true
+          else
+            gh release create "${TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --draft \
+              --title "${TAG}" \
+              --notes "Automated release for ${TAG}."
+          fi
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            include_daemon: true
+            experimental: false
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+            include_daemon: true
+            experimental: true
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive: tar.gz
+            include_daemon: true
+            experimental: false
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive: tar.gz
+            include_daemon: true
+            experimental: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            include_daemon: false
+            experimental: false
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: install rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: install linux deps
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: build cli
+        run: cargo build --locked --release -p subswap-cli --target ${{ matrix.target }}
+
+      - name: build daemon
+        if: matrix.include_daemon
+        run: cargo build --locked --release -p subswap-daemon --target ${{ matrix.target }}
+
+      - name: package unix
+        if: runner.os != 'Windows'
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          TARGET: ${{ matrix.target }}
+          INCLUDE_DAEMON: ${{ matrix.include_daemon }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="subswap-${TAG}-${TARGET}"
+          mkdir -p "dist/${package}"
+          cp "target/${TARGET}/release/subswap" "dist/${package}/"
+          if [[ "${INCLUDE_DAEMON}" == "true" ]]; then
+            cp "target/${TARGET}/release/subswapd" "dist/${package}/"
+          fi
+          cp README.md LICENSE "dist/${package}/"
+          tar -C dist -czf "${package}.tar.gz" "${package}"
+          shasum -a 256 "${package}.tar.gz" > "${package}.tar.gz.sha256"
+
+      - name: package windows
+        if: runner.os == 'Windows'
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          TARGET: ${{ matrix.target }}
+        shell: pwsh
+        run: |
+          $package = "subswap-$env:TAG-$env:TARGET"
+          New-Item -ItemType Directory -Force -Path "dist/$package" | Out-Null
+          Copy-Item "target/$env:TARGET/release/subswap.exe" "dist/$package/"
+          Copy-Item "README.md" "dist/$package/"
+          Copy-Item "LICENSE" "dist/$package/"
+          Compress-Archive -Path "dist/$package" -DestinationPath "$package.zip" -Force
+          $hash = Get-FileHash "$package.zip" -Algorithm SHA256
+          "$($hash.Hash.ToLower())  $package.zip" | Set-Content "$package.zip.sha256"
+
+      - name: upload release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          TARGET: ${{ matrix.target }}
+          ARCHIVE: ${{ matrix.archive }}
+        shell: bash
+        run: |
+          gh release upload "${TAG}" "subswap-${TAG}-${TARGET}.${ARCHIVE}" \
+            "subswap-${TAG}-${TARGET}.${ARCHIVE}.sha256" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber
+
+  publish:
+    name: publish release
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    if: always() && needs.build.result == 'success'
+    steps:
+      - name: publish draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        shell: bash
+        run: gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false
