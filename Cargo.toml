@@ -14,6 +14,10 @@ edition = "2021"
 rust-version = "1.80"
 license = "MIT"
 authors = ["subswap contributors"]
+repository = "https://github.com/x0c/subswap"
+homepage = "https://github.com/x0c/subswap"
+keywords = ["claude", "codex", "chatgpt", "quota", "keyring"]
+categories = ["command-line-utilities", "authentication"]
 
 [workspace.dependencies]
 # 错误处理

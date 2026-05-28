@@ -9,7 +9,7 @@
 
 ### 1.1 阈值触发
 
-- 默认阈值：`used_ratio >= 0.99`（已用 ≥ 99%）。
+- 默认阈值：由 `crates/core/src/defaults.rs::AUTO_SWAP_THRESHOLD` 定义，运行时可由 `config.toml` 覆盖。
 - 适用窗口：Provider 返回的所有窗口（Claude 的 5h / 7d、Codex 的月度等）任一命中即触发。
 - 不适用条件：`Quota.limit == 0` 或 `status == Unknown` 时**不触发**（无法判断，保守不动）。
 
@@ -116,19 +116,19 @@ daemon 启动后除了自动切换，还负责**非活跃 Claude 账号的 token
 
 Codex **不需要**这个机制：所有账号的 access_token 最终都流过 `~/.codex/auth.json`，Codex CLI 自己持续刷新。
 
-## 6. 配置项（registry.toml）
+## 6. 配置项（config.toml）
 
 ```toml
 [auto]
 enabled = true                  # 总开关
-threshold = 0.99                # 阈值触发上限
+# threshold = <0.0~1.0>         # 阈值触发上限，默认见 defaults.rs
 cooldown_seconds = 300          # 切换冷却
 poll_interval_seconds = 60      # daemon 轮询周期
 allow_unknown = false           # 是否允许选择 status=Unknown 的候选
 max_flap_per_5min = 3           # 抖动上限，超过进入 Degraded
 
 [auto.providers.codex]          # 可按 Provider 覆写
-threshold = 0.99
+# threshold = <0.0~1.0>
 ```
 
 ## 7. 测试要点

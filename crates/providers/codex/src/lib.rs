@@ -9,15 +9,16 @@ mod codex_files;
 mod openai_usage;
 mod paths;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use fs2::FileExt;
 
-use subswap_core::defaults;
 use subswap_core::error::{Error, Result};
+use subswap_core::settings;
+use subswap_core::swap::{swap_with_snapshot, SwapTarget};
+use subswap_core::time::{epoch_to_datetime, epoch_to_millis};
 use subswap_core::{
     Account, AccountId, AccountRegistry, ClientTarget, CredentialStore, Provider, Quota,
     QuotaStatus, QuotaWindow,
@@ -70,7 +71,7 @@ impl CodexProvider {
         self.store_account(raw, label_hint)
     }
 
-    /// 从 codex-auth 的 registry 元数据 + opaque auth blob 导入账号。
+    /// 从旧版 registry 元数据 + opaque auth blob 导入账号。
     pub fn import_raw_with_metadata(
         &self,
         raw_auth_json: String,
@@ -154,7 +155,7 @@ impl Provider for CodexProvider {
         // 实际上 Codex CLI / VSCode 扩展 / Codex App 都从 ~/.codex/auth.json 读取；
         // 切换只需要写这一个文件即可同步三端。
         vec![ClientTarget {
-            id: "codex_auth".into(),
+            id: "codex_active_auth".into(),
             display_name: "Codex auth file".into(),
             probe_path: active_auth_path(&self.codex_home),
         }]
@@ -189,13 +190,19 @@ impl Provider for CodexProvider {
         let id_for_blocking = id.clone();
 
         tokio::task::spawn_blocking(move || {
-            activate_files_sync(
-                &codex_home,
-                &auth_path,
-                &target_raw,
-                &registry,
-                &id_for_blocking,
-            )
+            let auth_blob = target_raw;
+            let targets = vec![SwapTarget {
+                snapshot_name: "auth.json",
+                live_path: auth_path,
+                writer: Box::new(move |p| write_auth(p, &auth_blob)),
+            }];
+            let result = swap_with_snapshot(PROVIDER_ID, &codex_home, targets, || {
+                registry.set_active(PROVIDER_ID, &id_for_blocking)
+            });
+            if result.is_ok() {
+                tracing::info!(account = %id_for_blocking, "Codex swap done");
+            }
+            result
         })
         .await
         .map_err(|e| Error::Provider(format!("spawn_blocking join failed: {e}")))?
@@ -247,10 +254,10 @@ impl Provider for CodexProvider {
                 shape=%openai_usage::shape_summary(&raw_resp),
                 "wham/usage fields unrecognized"
             );
-            if let Some(cached_usage) = fresh_cached_codex_auth_usage(&account) {
+            if let Some(cached_usage) = fresh_cached_legacy_usage(&account) {
                 tracing::debug!(
                     account=%id,
-                    "using fresh codex-auth usage cache because wham/usage fields were unrecognized"
+                    "using fresh legacy usage cache because wham/usage fields were unrecognized"
                 );
                 normalized = openai_usage::normalize_all(&cached_usage);
             }
@@ -265,25 +272,11 @@ impl Provider for CodexProvider {
                 let (used, limit, status) = match (percent, norm.used, norm.limit) {
                     (Some(pct), _, _) => {
                         let used = pct.round().clamp(0.0, 100.0) as u64;
-                        let status = if pct >= defaults::QUOTA_EXHAUSTED_PCT {
-                            QuotaStatus::Exhausted
-                        } else if pct >= defaults::QUOTA_WARN_PCT {
-                            QuotaStatus::Warn
-                        } else {
-                            QuotaStatus::Ok
-                        };
-                        (used, 100, status)
+                        (used, 100, QuotaStatus::from_percent(pct))
                     }
                     (None, Some(u), Some(l)) if l > 0 => {
                         let pct = (u as f64 / l as f64) * 100.0;
-                        let status = if pct >= defaults::QUOTA_EXHAUSTED_PCT {
-                            QuotaStatus::Exhausted
-                        } else if pct >= defaults::QUOTA_WARN_PCT {
-                            QuotaStatus::Warn
-                        } else {
-                            QuotaStatus::Ok
-                        };
-                        (u, l, status)
+                        (u, l, QuotaStatus::from_percent(pct))
                     }
                     _ => (0, 0, QuotaStatus::Unknown),
                 };
@@ -316,13 +309,13 @@ fn usage_has_unknown_quota(usage: &openai_usage::WhamUsage) -> bool {
         && !matches!((usage.used, usage.limit), (Some(_), Some(limit)) if limit > 0)
 }
 
-fn fresh_cached_codex_auth_usage(account: &Account) -> Option<serde_json::Value> {
+fn fresh_cached_legacy_usage(account: &Account) -> Option<serde_json::Value> {
     let metadata = account.extra.get(META_AUTH_METADATA)?;
     let usage = metadata.get("last_usage")?.clone();
     let cached_at = metadata.get("last_usage_at").and_then(|v| v.as_i64())?;
     let cached_at_ms = epoch_to_millis(cached_at);
     let age_ms = Utc::now().timestamp_millis().saturating_sub(cached_at_ms);
-    (age_ms <= defaults::CODEX_USAGE_CACHE_MAX_AGE_MS).then_some(usage)
+    (age_ms <= settings::current().codex.usage_cache_max_age_ms).then_some(usage)
 }
 
 fn quota_window_for_usage_window(minutes: Option<u64>, seconds: Option<u64>) -> QuotaWindow {
@@ -330,76 +323,6 @@ fn quota_window_for_usage_window(minutes: Option<u64>, seconds: Option<u64>) -> 
         Some(300) => QuotaWindow::FiveHour,
         Some(10_080) => QuotaWindow::SevenDay,
         _ => QuotaWindow::Custom,
-    }
-}
-
-fn epoch_to_millis(epoch: i64) -> i64 {
-    if epoch.abs() > 1_000_000_000_000 {
-        epoch
-    } else {
-        epoch.saturating_mul(1000)
-    }
-}
-
-/// 同步部分：在 spawn_blocking 内执行。所有 IO 都在这里。
-fn activate_files_sync(
-    codex_home: &Path,
-    auth_path: &Path,
-    target_raw: &str,
-    registry: &AccountRegistry,
-    id: &AccountId,
-) -> Result<()> {
-    // 文件锁。
-    std::fs::create_dir_all(codex_home)?;
-    let lock_path = codex_home.join(".subswap.lock");
-    let lock_file = std::fs::OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)?;
-    lock_file
-        .lock_exclusive()
-        .map_err(|e| Error::Provider(format!("lock {} failed: {e}", lock_path.display())))?;
-
-    // snapshot。
-    let ts = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let snap_dir = subswap_core::paths::AppPaths::resolve()?
-        .snapshots_dir()
-        .join(format!("codex-{ts}"));
-    std::fs::create_dir_all(&snap_dir)?;
-
-    let backup = if auth_path.exists() {
-        let raw = std::fs::read_to_string(auth_path)?;
-        std::fs::write(snap_dir.join("auth.json"), &raw)?;
-        Some(raw)
-    } else {
-        None
-    };
-    tracing::info!(snapshot = %snap_dir.display(), "pre-swap snapshot saved");
-
-    if let Err(e) = write_auth(auth_path, target_raw) {
-        rollback_auth(auth_path, &backup);
-        let _ = FileExt::unlock(&lock_file);
-        return Err(e);
-    }
-    if let Err(e) = registry.set_active(PROVIDER_ID, id) {
-        rollback_auth(auth_path, &backup);
-        let _ = FileExt::unlock(&lock_file);
-        return Err(e);
-    }
-    let _ = FileExt::unlock(&lock_file);
-    tracing::info!(account = %id, "Codex swap done");
-    Ok(())
-}
-
-fn rollback_auth(auth_path: &Path, backup: &Option<String>) {
-    if let Some(raw) = backup {
-        if let Err(e) = std::fs::write(auth_path, raw) {
-            tracing::error!(err=%e, path=%auth_path.display(), "rollback auth.json failed");
-        }
-    } else {
-        let _ = std::fs::remove_file(auth_path);
     }
 }
 
@@ -425,16 +348,6 @@ fn extract_access_token(raw: &str) -> Option<String> {
         }
     }
     walk(&value)
-}
-
-fn epoch_to_datetime(epoch: i64) -> chrono::DateTime<chrono::Utc> {
-    // codex 端有时给秒，有时给毫秒；> 10^12 视作毫秒。
-    let secs = if epoch.abs() > 1_000_000_000_000 {
-        epoch / 1000
-    } else {
-        epoch
-    };
-    chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0).unwrap_or_else(chrono::Utc::now)
 }
 
 #[cfg(test)]

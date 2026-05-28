@@ -15,17 +15,17 @@
 
 mod state;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use subswap_core::{
-    auto_decide, defaults, paths::AppPaths, AccountRegistry, AccountWithQuotas, AuditEvent,
+    auto_decide, paths::AppPaths, settings, AccountRegistry, AccountWithQuotas, AuditEvent,
     AuditLog, KeyringStore, PolicyConfig, PolicyDecision, Provider, ProviderRegistry,
-    ProviderSnapshot,
+    ProviderSnapshot, QuotaFetchState,
 };
 use subswap_provider_claude::ClaudeProvider;
 use subswap_provider_codex::CodexProvider;
@@ -70,19 +70,33 @@ async fn main() -> Result<()> {
     providers.register(codex.clone());
 
     let mut state = DaemonState::new();
-    let policy = PolicyConfig::default();
 
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sigint = signal(SignalKind::interrupt())?;
 
-    let poll = Duration::from_millis(defaults::DAEMON_POLL_INTERVAL_MS);
     loop {
-        // 1. 跑一轮调度。
+        // 1. 每轮开头热加载配置；解析失败则沿用上次成功值 + warn。
+        if let Err(e) = settings::reload_from_file() {
+            tracing::warn!(err = %e, "reload config failed; keeping previous values");
+        }
+        let snapshot_settings = settings::current();
+
+        // 2. 跑一轮调度。
+        let policy = PolicyConfig {
+            threshold: snapshot_settings.auto_swap.threshold,
+            allow_unknown: false,
+        };
         if let Err(e) = run_cycle(&providers, &claude, &audit, &mut state, &policy).await {
             tracing::warn!(err = %e, "daemon cycle failed; will retry next interval");
         }
 
-        // 2. 等下一轮 / 等信号。
+        // 3. 按「活跃 / 空闲」选下一轮间隔。判定信号：provider 的 probe 文件 mtime。
+        let poll = decide_next_interval(&providers, &snapshot_settings.daemon);
+        tracing::debug!(
+            interval_ms = poll.as_millis() as u64,
+            "sleeping until next cycle"
+        );
+
         tokio::select! {
             _ = tokio::time::sleep(poll) => {}
             _ = sigterm.recv() => {
@@ -214,14 +228,14 @@ async fn build_snapshots(providers: &ProviderRegistry) -> Vec<ProviderSnapshot> 
         let mut awqs = Vec::with_capacity(accounts.len());
         for account in accounts {
             let id = account.id.clone();
-            let (quotas, fetch_error) = match p.query_quota(&id).await {
-                Ok(q) => (q, None),
-                Err(e) => (Vec::new(), Some(e.to_string())),
+            let (quotas, fetch_state) = match p.query_quota(&id).await {
+                Ok(q) => (q, QuotaFetchState::Ready),
+                Err(e) => (Vec::new(), QuotaFetchState::Failed(e.to_string())),
             };
             awqs.push(AccountWithQuotas {
                 account,
                 quotas,
-                fetch_error,
+                fetch_state,
             });
         }
         out.push(ProviderSnapshot {
@@ -274,4 +288,39 @@ fn open_pid_lock(path: &PathBuf) -> Result<std::fs::File> {
 fn write_pid(path: &PathBuf, pid: u32) -> Result<()> {
     std::fs::write(path, pid.to_string().as_bytes())
         .with_context(|| format!("write pid to {}", path.display()))
+}
+
+/// 根据「最近一次客户端活动」选下一轮轮询间隔。
+///
+/// 活动信号：所有 provider `client_targets().probe_path` 中最近一次 mtime。
+/// - 距今 < `idle_threshold_ms` → 活跃，用 `poll_interval_ms`
+/// - 否则 → 空闲，用 `idle_poll_interval_ms`
+///
+/// 探针文件不存在 / 拿不到 mtime 时按「空闲」处理（保守，避免凭空高频轮询）。
+fn decide_next_interval(
+    providers: &ProviderRegistry,
+    cfg: &subswap_core::settings::Daemon,
+) -> Duration {
+    let now = SystemTime::now();
+    let mut newest: Option<Duration> = None;
+    for p in providers.all() {
+        for target in p.client_targets() {
+            if let Some(age) = mtime_age(&target.probe_path, now) {
+                newest = Some(match newest {
+                    Some(prev) if prev <= age => prev,
+                    _ => age,
+                });
+            }
+        }
+    }
+    let idle_threshold = Duration::from_millis(cfg.idle_threshold_ms.max(0) as u64);
+    match newest {
+        Some(age) if age < idle_threshold => Duration::from_millis(cfg.poll_interval_ms),
+        _ => Duration::from_millis(cfg.idle_poll_interval_ms),
+    }
+}
+
+fn mtime_age(path: &Path, now: SystemTime) -> Option<Duration> {
+    let mtime = std::fs::metadata(path).ok()?.modified().ok()?;
+    now.duration_since(mtime).ok()
 }

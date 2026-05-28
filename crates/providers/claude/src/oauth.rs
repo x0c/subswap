@@ -1,6 +1,6 @@
 //! 调 Anthropic OAuth/usage 端点。
 //!
-//! 端点参考 claude-swap：
+//! 端点：
 //! - Token 刷新：POST https://platform.claude.com/v1/oauth/token
 //! - 用量查询：GET https://api.anthropic.com/api/oauth/usage
 //!   响应包含 `five_hour.utilization` / `seven_day.utilization`（0~100 百分比）+ `resets_at`。
@@ -14,7 +14,7 @@ const REFRESH_URL: &str = "https://platform.claude.com/v1/oauth/token";
 const BETA_HEADER: &str = "oauth-2025-04-20";
 const USER_AGENT: &str = "subswap/0.1";
 
-/// 默认 Anthropic OAuth Public Client ID（与 claude-swap 一致）。
+/// 默认 Anthropic OAuth Public Client ID。
 /// 这是公开值（非 secret），上游若变更可用环境变量覆盖。
 const DEFAULT_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 

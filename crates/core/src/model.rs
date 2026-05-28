@@ -67,12 +67,30 @@ pub enum QuotaWindow {
 pub enum QuotaStatus {
     /// 健康可用。
     Ok,
-    /// 接近阈值（默认 used >= 99%）。
+    /// 接近展示阈值。
     Warn,
     /// 已耗尽或被限流。
     Exhausted,
     /// 查询失败 / 未知。
     Unknown,
+}
+
+impl QuotaStatus {
+    /// 用统一阈值（[`crate::settings::Quota::warn_pct`] / `exhausted_pct`）
+    /// 把已用百分比（0~100）映射为 [`QuotaStatus`]。
+    ///
+    /// 各 Provider 的 `query_quota` 不要自己写阈值分支，统一走这里，
+    /// 调阈值只改 `config.toml` 一处。
+    pub fn from_percent(pct: f64) -> Self {
+        let q = crate::settings::current().quota.clone();
+        if pct >= q.exhausted_pct {
+            Self::Exhausted
+        } else if pct >= q.warn_pct {
+            Self::Warn
+        } else {
+            Self::Ok
+        }
+    }
 }
 
 /// 单个窗口的额度快照。一个账号可能同时存在多个窗口（如 Claude 同时给 5h 与 7d）。

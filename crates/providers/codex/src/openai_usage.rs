@@ -1,6 +1,6 @@
 //! Codex / ChatGPT 用量查询。
 //!
-//! 端点参考 codex-auth：
+//! 端点：
 //! - `GET https://chatgpt.com/backend-api/wham/usage`
 //! - Header: `Authorization: Bearer <access_token>` + `ChatGPT-Account-Id: <id>` + 浏览器 UA
 //!
