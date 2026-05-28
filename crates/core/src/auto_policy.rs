@@ -8,12 +8,12 @@
 //!
 //! 规则细节见 docs/design/AUTO_SWAP_DESIGN.md。
 
-use crate::defaults;
 use crate::model::{Account, AccountId, Quota, QuotaStatus};
+use crate::settings;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PolicyConfig {
-    /// 触发阈值，0.0~1.0。默认见 [`defaults::AUTO_SWAP_THRESHOLD`]。
+    /// 触发阈值，0.0~1.0。默认值来自当前生效的配置（`config.toml > auto_swap.threshold`）。
     pub threshold: f64,
     /// 是否允许把 status=Unknown 的账号作为候选。默认 false（保守）。
     pub allow_unknown: bool,
@@ -22,7 +22,7 @@ pub struct PolicyConfig {
 impl Default for PolicyConfig {
     fn default() -> Self {
         Self {
-            threshold: defaults::AUTO_SWAP_THRESHOLD,
+            threshold: settings::current().auto_swap.threshold,
             allow_unknown: false,
         }
     }
@@ -32,8 +32,35 @@ impl Default for PolicyConfig {
 pub struct AccountWithQuotas {
     pub account: Account,
     pub quotas: Vec<Quota>,
-    /// `query_quota` 失败时的错误消息；成功为 None。
-    pub fetch_error: Option<String>,
+    /// 拉取状态。决策时只看 [`QuotaFetchState::Failed`]；
+    /// [`QuotaFetchState::Loading`] 是 CLI 首屏占位，不应进入 [`decide`]。
+    pub fetch_state: QuotaFetchState,
+}
+
+/// 单次 `query_quota` 的状态机。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum QuotaFetchState {
+    /// CLI 首屏渲染骨架时的占位；尚未发起或尚未返回。
+    Loading,
+    /// 拉取完成（`quotas` 是结果，允许为空）。
+    #[default]
+    Ready,
+    /// 拉取失败，附带错误描述。
+    Failed(String),
+}
+
+impl QuotaFetchState {
+    /// 拉取失败时返回错误文本；其他状态返回 `None`。
+    pub fn failed(&self) -> Option<&str> {
+        match self {
+            Self::Failed(e) => Some(e.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn is_loading(&self) -> bool {
+        matches!(self, Self::Loading)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -68,7 +95,7 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
 
     // 1. active 账号自身额度查询失败 → 不知道是否真超额 → 降级。
     if let Some(a) = active {
-        if let Some(err) = &a.fetch_error {
+        if let Some(err) = a.fetch_state.failed() {
             return PolicyDecision::Degraded {
                 reason: format!(
                     "active account {} quota fetch failed ({}); cannot decide",
@@ -91,12 +118,12 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
         };
     }
 
-    // 3. 筛候选：排除当前激活，排除耗尽，按 allow_unknown 决定是否包含 fetch_error/Unknown。
+    // 3. 筛候选：排除当前激活，排除耗尽/已超阈值的（切过去就是抖动），按 allow_unknown 决定是否包含 fetch_error/Unknown。
     let candidates: Vec<&AccountWithQuotas> = snapshot
         .accounts
         .iter()
         .filter(|a| Some(&a.account.id) != active_id.as_ref())
-        .filter(|a| is_viable_candidate(a, config.allow_unknown))
+        .filter(|a| is_viable_candidate(a, config.threshold, config.allow_unknown))
         .collect();
 
     if candidates.is_empty() {
@@ -133,30 +160,33 @@ fn account_needs_swap(a: &AccountWithQuotas, threshold: f64) -> bool {
         return false; // 无窗口数据时不主动切（保守）
     }
     // 只看「已耗尽」或「达到 threshold」。Provider 自己的 Warn 标记仅作
-    // 展示用途（如 90~99% 着色），不耦合到自动切换决策——否则改默认 threshold 时
+    // 展示用途的着色不耦合到自动切换决策——否则改默认 threshold 时
     // 还得连同 Provider 内 Warn 阈值一起调。
     a.quotas
         .iter()
         .any(|q| matches!(q.status, QuotaStatus::Exhausted) || q.is_above(threshold))
 }
 
-fn is_viable_candidate(a: &AccountWithQuotas, allow_unknown: bool) -> bool {
-    if a.fetch_error.is_some() {
+fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: bool) -> bool {
+    if a.fetch_state.failed().is_some() {
         return allow_unknown;
     }
     if a.quotas.is_empty() {
         return allow_unknown;
     }
-    // 所有窗口都没耗尽，且至少一个明确 Ok
-    let any_ok = a.quotas.iter().any(|q| matches!(q.status, QuotaStatus::Ok));
+    // 关键：候选不能在任何窗口达到/超过 threshold，否则切过去也是马上又得切，纯抖动。
+    // 同时所有窗口都不能是 Exhausted（防御性，理论上 used>=100 已包含在 is_above 里）。
+    let no_above_threshold = a.quotas.iter().all(|q| !q.is_above(threshold));
     let no_exhausted = a
         .quotas
         .iter()
         .all(|q| !matches!(q.status, QuotaStatus::Exhausted));
     if allow_unknown {
-        no_exhausted
+        no_above_threshold && no_exhausted
     } else {
-        any_ok && no_exhausted
+        // 默认模式下还要求至少有一个明确 Ok 窗口（拒收纯 Unknown 候选）。
+        let any_ok = a.quotas.iter().any(|q| matches!(q.status, QuotaStatus::Ok));
+        any_ok && no_above_threshold && no_exhausted
     }
 }
 
@@ -209,7 +239,7 @@ mod tests {
         AccountWithQuotas {
             account: mk_account(id, active),
             quotas: vec![mk_quota(used, status)],
-            fetch_error: None,
+            fetch_state: QuotaFetchState::Ready,
         }
     }
 
@@ -263,7 +293,7 @@ mod tests {
     #[test]
     fn degraded_when_active_quota_fetch_fails() {
         let mut a = mk_awq("a", true, 0, QuotaStatus::Unknown);
-        a.fetch_error = Some("timeout".into());
+        a.fetch_state = QuotaFetchState::Failed("timeout".into());
         let snap = ProviderSnapshot {
             provider: "claude".into(),
             accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
@@ -289,6 +319,20 @@ mod tests {
             }
             other => panic!("expected Swap, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn candidate_also_above_threshold_yields_degraded_not_churn() {
+        // 用户实际场景：两个号都接近耗尽时不应该硬切。
+        let snap = ProviderSnapshot {
+            provider: "codex".into(),
+            accounts: vec![
+                mk_awq("a", true, 100, QuotaStatus::Exhausted),
+                mk_awq("b", false, 99, QuotaStatus::Warn),
+            ],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(matches!(d, PolicyDecision::Degraded { .. }), "got {d:?}");
     }
 
     #[test]

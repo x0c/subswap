@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "subswap Codex / ChatGPT provider"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 subswap-core.workspace = true
@@ -17,7 +21,6 @@ reqwest.workspace = true
 tracing.workspace = true
 directories.workspace = true
 chrono.workspace = true
-fs2.workspace = true
 tokio = { workspace = true }
 
 [dev-dependencies]

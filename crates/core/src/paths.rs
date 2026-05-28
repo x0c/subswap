@@ -42,9 +42,16 @@ impl AppPaths {
         })
     }
 
-    /// 主配置文件路径：`<config_dir>/registry.toml`。
+    /// 账号注册表路径：`<config_dir>/registry.toml`。
     pub fn registry_file(&self) -> PathBuf {
         self.config_dir.join("registry.toml")
+    }
+
+    /// 数值调优配置文件路径：`<config_dir>/config.toml`。
+    ///
+    /// 文件可缺失：缺则使用 [`crate::defaults`] 中的编译期默认值。详见 [`crate::settings`]。
+    pub fn config_file(&self) -> PathBuf {
+        self.config_dir.join("config.toml")
     }
 
     /// 审计日志：`<data_dir>/audit.log`。

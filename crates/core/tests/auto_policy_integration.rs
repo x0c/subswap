@@ -1,7 +1,7 @@
 use chrono::Utc;
 use subswap_core::{
     auto_decide, Account, AccountId, AccountWithQuotas, PolicyConfig, PolicyDecision,
-    ProviderSnapshot, Quota, QuotaStatus, QuotaWindow,
+    ProviderSnapshot, Quota, QuotaFetchState, QuotaStatus, QuotaWindow,
 };
 
 fn account(id: &str, active: bool) -> Account {
@@ -34,7 +34,7 @@ fn awq(id: &str, active: bool, used: u64, status: QuotaStatus) -> AccountWithQuo
     AccountWithQuotas {
         account: account(id, active),
         quotas: vec![quota(id, used, status)],
-        fetch_error: None,
+        fetch_state: QuotaFetchState::Ready,
     }
 }
 
@@ -59,9 +59,9 @@ fn warn_below_auto_threshold_does_not_swap() {
 }
 
 #[test]
-fn default_threshold_swaps_at_99_percent() {
+fn default_threshold_swaps_at_98_percent() {
     let snap = snapshot(vec![
-        awq("active", true, 99, QuotaStatus::Warn),
+        awq("active", true, 98, QuotaStatus::Warn),
         awq("candidate", false, 1, QuotaStatus::Ok),
     ]);
 
@@ -77,7 +77,7 @@ fn default_threshold_swaps_at_99_percent() {
 #[test]
 fn active_quota_fetch_error_degrades_instead_of_guessing() {
     let mut active = awq("active", true, 0, QuotaStatus::Unknown);
-    active.fetch_error = Some("429 too many requests".into());
+    active.fetch_state = QuotaFetchState::Failed("429 too many requests".into());
     let snap = snapshot(vec![active, awq("candidate", false, 1, QuotaStatus::Ok)]);
 
     assert!(matches!(

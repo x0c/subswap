@@ -9,12 +9,16 @@ pub mod model;
 pub mod paths;
 pub mod provider;
 pub mod registry;
+pub mod settings;
 pub mod store;
+pub mod swap;
+pub mod time;
 
 pub use account_registry::AccountRegistry;
 pub use audit::{AuditEvent, AuditLog};
 pub use auto_policy::{
     decide as auto_decide, AccountWithQuotas, PolicyConfig, PolicyDecision, ProviderSnapshot,
+    QuotaFetchState,
 };
 pub use error::{Error, Result};
 pub use model::{Account, AccountId, ClientTarget, Quota, QuotaStatus, QuotaWindow};

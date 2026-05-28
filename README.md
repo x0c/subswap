@@ -1,8 +1,36 @@
-# subswap
+# subswap - Claude, Codex and ChatGPT account switcher
 
-One CLI to manage multiple AI-subscription accounts (Claude / Codex), check quotas, and swap the active one — manually or automatically when the current one crosses the usage threshold.
+subswap is a Rust CLI for managing multiple AI subscription accounts across
+Claude Code, Anthropic Claude, OpenAI Codex CLI, and ChatGPT. It imports local
+login state, stores credentials in the OS keyring, checks quota windows, and
+swaps the active account manually or automatically when usage crosses a
+configurable threshold.
 
-> Inspired by [Loongphy/codex-auth](https://github.com/Loongphy/codex-auth) and [realiti4/claude-swap](https://github.com/realiti4/claude-swap). subswap merges both behind a Provider abstraction and adds threshold-based auto-swap.
+Use it as a Claude account switcher, Codex account manager, ChatGPT quota
+tracker, or a unified multi-provider subscription swapper.
+
+## Features
+
+- **Multi-account swap for Claude Code and Codex CLI**: flip the active account without re-logging-in.
+- **Quota-aware status**: view provider quota windows such as Claude 5h / 7d usage and Codex / ChatGPT usage data when available.
+- **Automatic account swap**: a background daemon can move away from an account once usage crosses the configured threshold.
+- **Network-independent manual swap**: `subswap swap` still works when quota APIs fail, tokens expire, or the network is down.
+- **Keyring-backed credential storage**: secrets live in macOS Keychain, Windows Credential Manager, or Linux secret-service.
+- **Provider-based architecture**: Claude / Anthropic and Codex / ChatGPT are separate crates, so new AI providers can be added without changing core policy.
+
+## Supported clients
+
+| Provider | Local client | What subswap manages |
+|---|---|---|
+| Claude / Anthropic | Claude Code (`~/.claude`) | OAuth credentials, active account files, 5h / 7d quota, token keepalive |
+| Codex / ChatGPT | Codex CLI (`~/.codex`) | `auth.json` passthrough, active account files, ChatGPT usage lookup |
+
+## Common use cases
+
+- Switch between multiple Claude Pro, Claude Max, ChatGPT Plus, or ChatGPT Team seats.
+- Keep a backup AI subscription ready when the current account reaches its usage limit.
+- Check usage across accounts before starting a long coding session.
+- Consolidate Claude and ChatGPT account switching into one CLI.
 
 ## Status
 
@@ -28,10 +56,16 @@ subswap stores each account in the OS keyring (Keychain / Credential Manager / s
 Requires Rust 1.80+.
 
 ```bash
-git clone https://github.com/<you>/subswap
+git clone https://github.com/x0c/subswap
 cd subswap
 cargo install --path crates/cli
 subswap --help
+```
+
+After the repository is published, you can also install directly from Git:
+
+```bash
+cargo install --git https://github.com/x0c/subswap --path crates/cli
 ```
 
 ## Quick start
@@ -65,9 +99,37 @@ These are load-bearing and worth knowing before contributing:
 2. **Secrets only live in the OS keyring.** `registry.toml`, the audit log, and snapshots never contain plaintext tokens or refresh tokens.
 3. **Swap is atomic and rollback-able.** Each `activate` writes a snapshot under `state_dir/snapshots/<ts>/` before touching anything; any failed write rolls back.
 4. **Adding a provider = adding a `crates/providers/<id>` crate + one line in `cli/src/main.rs::AppContext::build()`.** No provider-specific logic in `core`.
-5. **Auto-swap threshold defaults to 0.99.** When `used / limit >= 99%`, the current account is considered exhausted.
+5. **Auto-swap threshold is centralized and configurable.** The compiled default lives in `crates/core/src/defaults.rs`, and runtime config can override it.
 
 More: [`docs/`](docs/) (Chinese — internal collaboration docs).
+
+## Comparison
+
+| Tool | Focus | Difference |
+|---|---|---|
+| single-provider account switchers | one upstream at a time | subswap supports Claude and Codex / ChatGPT behind one provider abstraction |
+| quota dashboards | usage visibility only | subswap can also activate another local account when a quota window is full |
+| manual login/logout | one account at a time | subswap keeps registered accounts in the keyring and swaps active local files atomically |
+
+## FAQ
+
+### Does `subswap swap` call quota APIs?
+
+No. Manual swap is an escape hatch and never depends on quota lookup. If the upstream API is down or a token is expired, `subswap swap claude/alice@example.com` still tries to activate that local account.
+
+### Where are tokens stored?
+
+Tokens and refresh tokens are stored only in the OS keyring. `registry.toml`, audit logs, and snapshots are designed not to contain plaintext secrets.
+
+### Is this only for Claude?
+
+No. The first supported providers are Claude / Anthropic and Codex / ChatGPT. The core crate exposes a Provider trait so future AI subscription providers can be added as separate crates.
+
+## GitHub topics
+
+Recommended repository topics after publishing:
+
+`claude-code`, `codex-cli`, `chatgpt`, `anthropic`, `openai`, `account-switcher`, `quota-tracker`, `ai-tools`, `rust-cli`, `keyring`, `automation`
 
 ## Layout
 

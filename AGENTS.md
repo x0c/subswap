@@ -7,8 +7,7 @@
 subswap 是多 AI 订阅账号的统一切换与额度管理工具，一期支持 Codex / ChatGPT 与 Claude / Anthropic，
 设计上通过 Provider 抽象支持未来扩展其他订阅。
 
-- 灵感来源：[Loongphy/codex-auth](https://github.com/Loongphy/codex-auth)、[realiti4/claude-swap](https://github.com/realiti4/claude-swap)。
-- 目标：合二为一 + 统一额度查询 + 阈值/限流双触发的自动切换。
+- 目标：统一多 Provider 账号切换 + 额度查询 + 阈值/限流双触发的自动切换。
 
 ## 技术栈
 
@@ -47,15 +46,23 @@ subswap/
 3. **多客户端切换必须可回滚**。`activate` 前先写快照到 `state_dir/snapshots/<ts>/`，任一目标写失败即回滚。
 4. **新增 Provider = 新建 `crates/providers/<id>` crate + 在 `AppContext::build()` 注册 + 在 `sync_local_active()` 加 import_active**。
    不要把 Provider 特定逻辑写到 core 里。
-5. **自动切换默认阈值 0.99（used ≥ 99% 触发）**。改默认值**只改 `crates/core/src/defaults.rs::AUTO_SWAP_THRESHOLD`**，并同步更新 docs/design/AUTO_SWAP_DESIGN.md。
+5. **自动切换默认阈值只以 `defaults.rs` 为准**。运行时实际值由 `<config_dir>/config.toml` `[auto_swap].threshold` 覆盖，
+   缺失时回落到 `crates/core/src/defaults.rs::AUTO_SWAP_THRESHOLD`。改默认值只动 `defaults.rs` 一处，
+   并同步更新 docs/design/AUTO_SWAP_DESIGN.md。配置字段定义见 docs/CONFIG.md。
 6. **`async fn` 不得直接做阻塞 IO**。文件锁（fs2）、std::fs 同步读写、keyring 等阻塞调用必须包在
    `tokio::task::spawn_blocking` 里。daemon 周期轮询 + 多 Provider 并发 query_quota 时,堵塞 worker 会让整体卡顿。
 7. **任何会被写入 `registry.toml` 的 `Option<T>` 字段必须加 `#[serde(skip_serializing_if = "Option::is_none")]`**。
    原因：`serde_json` 把 `None` → `null`，而 TOML 规范不支持 null，否则保存时报 `unsupported unit type`。
    详见 docs/troubleshooting/2026-05-28-toml-null-serialization.md。
 8. **CLI 子命令、Rust 标识符、英文文案统一用 `swap`，不要用 `switch`**。中文「切换」不动。
-9. **所有跨模块数值调优参数集中在 `crates/core/src/defaults.rs`**。不允许在 provider 或 cli 里硬编码阈值、
-   时间窗口、百分比。改一个参数只动 defaults.rs 一处。详见 ARCHITECTURE.md §5.5。
+   `swap` / `rm` 接受数字编号引用（如 `subswap swap 3`），编号由 `AppContext::list_ordered()` 生成，
+   必须与默认入口渲染的顺序严格一致 —— 增改这两处其一时务必同步检查另一处，否则用户会切到错误的账号。
+9. **所有跨模块数值调优参数走 `crates/core/src/settings.rs::current()` 读取**，源文件是
+   `<config_dir>/config.toml`（缺失 / 字段缺失时回落 `defaults.rs`）。不允许在 provider 或 cli 里硬编码
+   阈值、时间窗口、百分比。新增一个调优参数：先在 `defaults.rs` 加常量 → `settings.rs::Settings` 加字段
+   并接到对应 `Default impl` → `docs/CONFIG.md` 文档化 → 调用点用 `settings::current().group.field`。
+   daemon 每轮、CLI 每次启动都会 `reload_from_file()`，运行期改 `config.toml` 即时生效。详见
+   ARCHITECTURE.md §5.5 与 docs/CONFIG.md。
 10. **不得用高频请求模拟限流触发**。任何 quota / usage 轮询、daemon 后台保活、未来 429 上报机制都必须保守：
     遵守上游服务条款、避免请求风暴、失败后退避；不要为了更快切换而增加封号/风控风险。
 
@@ -99,6 +106,7 @@ cargo run -p subswap-cli
 | Provider 知识库 | docs/PROVIDER_KNOWLEDGE_BASE.md | 各 Provider 上游接口、文件结构、坑点 |
 | 架构设计 | docs/design/ARCHITECTURE.md | 模块划分、依赖关系、扩展机制 |
 | 自动切换设计 | docs/design/AUTO_SWAP_DESIGN.md | 触发策略、降级路径 |
+| 运行时配置 | docs/CONFIG.md | `config.toml` 字段表、热加载、风控约束 |
 | 故障排查记录 | docs/troubleshooting/YYYY-MM-DD-*.md | 时序归档 |
 
 新增「以前从未出现过的文档类型」时，需同时更新本文「文档导航」表与 `docs/OVERVIEW.md`。

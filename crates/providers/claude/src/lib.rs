@@ -11,14 +11,14 @@ mod claude_files;
 mod oauth;
 mod paths;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use fs2::FileExt;
 
 use subswap_core::error::{Error, Result};
+use subswap_core::swap::{swap_with_snapshot, SwapTarget};
 use subswap_core::{
     Account, AccountId, AccountRegistry, ClientTarget, CredentialStore, Provider, Quota,
     QuotaStatus, QuotaWindow,
@@ -34,9 +34,8 @@ use crate::paths::{claude_home, credentials_path, global_config_path};
 const CRED_FIELD: &str = "credentials_json";
 /// Provider 标识。
 pub const PROVIDER_ID: &str = "claude";
-// 注意：所有「数值调优参数」请从 [`subswap_core::defaults`] 取，避免散落多处。
-// 这里仅 import 别名。
-use subswap_core::defaults;
+// 数值调优参数运行时取自 [`subswap_core::settings::current`]；config.toml 即时生效。
+use subswap_core::settings;
 
 pub struct ClaudeProvider {
     store: Arc<dyn CredentialStore>,
@@ -114,32 +113,15 @@ impl ClaudeProvider {
     ///
     /// 不动 `~/.claude/` 下任何文件,只回写 keyring。这是 daemon 周期任务,任一账号失败不影响其它。
     pub async fn refresh_if_near_expiry(&self, id: &AccountId) -> Result<bool> {
-        let creds_json = self
-            .store
-            .get(PROVIDER_ID, id.0.as_str(), CRED_FIELD)?
-            .ok_or_else(|| {
-                Error::Credential(format!(
-                    "no keyring entry for {PROVIDER_ID}:{id}:{CRED_FIELD}"
-                ))
-            })?;
-        let mut creds: CredentialsFile = serde_json::from_str(&creds_json)?;
-        if !is_expired_or_soon(&creds, defaults::REFRESH_SLACK_MS) {
+        let mut creds = self.load_credentials(id)?;
+        if !is_expired_or_soon(&creds, settings::current().token.refresh_slack_ms) {
             return Ok(false);
         }
-        let Some(refresh_token) = creds.oauth.refresh_token.clone() else {
+        if creds.oauth.refresh_token.is_none() {
             return Ok(false);
-        };
-        let resp = oauth::refresh_access_token(&refresh_token).await?;
-        creds.oauth.access_token = resp.access_token;
-        if let Some(secs) = resp.expires_in {
-            creds.oauth.expires_at = Some(Utc::now().timestamp_millis() + secs * 1000);
         }
-        if let Some(rt) = resp.refresh_token {
-            creds.oauth.refresh_token = Some(rt);
-        }
-        let new_json = serde_json::to_string(&creds)?;
-        self.store
-            .set(PROVIDER_ID, id.0.as_str(), CRED_FIELD, &new_json)?;
+        apply_refresh_to_creds(&mut creds).await?;
+        self.save_credentials(id, &creds)?;
         Ok(true)
     }
 
@@ -150,7 +132,15 @@ impl ClaudeProvider {
     /// - 失败直接返回 Err（用户主动调用，需要明确反馈）
     /// - 不动 ~/.claude/ 下任何文件（可能该账号不是当前激活的）
     pub async fn refresh_account(&self, id: &AccountId) -> Result<()> {
-        let creds_json = self
+        let mut creds = self.load_credentials(id)?;
+        apply_refresh_to_creds(&mut creds).await?;
+        self.save_credentials(id, &creds)?;
+        Ok(())
+    }
+
+    /// 从 keyring 读 `~/.claude/.credentials.json` 的 JSON 副本。
+    fn load_credentials(&self, id: &AccountId) -> Result<CredentialsFile> {
+        let raw = self
             .store
             .get(PROVIDER_ID, id.0.as_str(), CRED_FIELD)?
             .ok_or_else(|| {
@@ -158,24 +148,14 @@ impl ClaudeProvider {
                     "no keyring entry for {PROVIDER_ID}:{id}:{CRED_FIELD}"
                 ))
             })?;
-        let mut creds: CredentialsFile = serde_json::from_str(&creds_json)?;
-        let refresh_token = creds.oauth.refresh_token.clone().ok_or_else(|| {
-            Error::Provider(format!(
-                "{PROVIDER_ID}:{id} has no refreshToken; cannot refresh offline, log in and re-add"
-            ))
-        })?;
-        let resp = oauth::refresh_access_token(&refresh_token).await?;
-        creds.oauth.access_token = resp.access_token;
-        if let Some(secs) = resp.expires_in {
-            creds.oauth.expires_at = Some(Utc::now().timestamp_millis() + secs * 1000);
-        }
-        if let Some(rt) = resp.refresh_token {
-            creds.oauth.refresh_token = Some(rt);
-        }
-        let new_json = serde_json::to_string(&creds)?;
+        Ok(serde_json::from_str(&raw)?)
+    }
+
+    /// 把 [`CredentialsFile`] 写回 keyring。
+    fn save_credentials(&self, id: &AccountId, creds: &CredentialsFile) -> Result<()> {
+        let serialized = serde_json::to_string(creds)?;
         self.store
-            .set(PROVIDER_ID, id.0.as_str(), CRED_FIELD, &new_json)?;
-        Ok(())
+            .set(PROVIDER_ID, id.0.as_str(), CRED_FIELD, &serialized)
     }
 
     /// 公共入库逻辑：写 keyring + 写 registry.toml。
@@ -259,15 +239,7 @@ impl Provider for ClaudeProvider {
                     provider: PROVIDER_ID.into(),
                     id: id.to_string(),
                 })?;
-        let creds_json = self
-            .store
-            .get(PROVIDER_ID, id.0.as_str(), CRED_FIELD)?
-            .ok_or_else(|| {
-                Error::Credential(format!(
-                    "no keyring entry for {PROVIDER_ID}:{id}:{CRED_FIELD}; re-add this account"
-                ))
-            })?;
-        let mut target_creds: CredentialsFile = serde_json::from_str(&creds_json)?;
+        let mut target_creds = self.load_credentials(id)?;
         let target_oauth_account: OauthAccount = serde_json::from_value(
             account.extra.get("oauth_account").cloned().ok_or_else(|| {
                 Error::Provider(format!(
@@ -277,19 +249,10 @@ impl Provider for ClaudeProvider {
         )?;
 
         // best-effort 预刷新：失败不阻塞 activate，保持「网络挂了也能切」的不变量。
-        let refreshed = best_effort_pre_refresh(&mut target_creds).await;
-        if refreshed {
+        if best_effort_pre_refresh(&mut target_creds).await {
             // 回写 keyring，避免下次 activate 重复刷。Best-effort：失败仅日志。
-            match serde_json::to_string(&target_creds) {
-                Ok(new_json) => {
-                    if let Err(e) =
-                        self.store
-                            .set(PROVIDER_ID, id.0.as_str(), CRED_FIELD, &new_json)
-                    {
-                        tracing::warn!(err=%e, "writing refreshed token back to keyring failed; next activate will refresh again");
-                    }
-                }
-                Err(e) => tracing::warn!(err=%e, "serializing refreshed credentials failed"),
+            if let Err(e) = self.save_credentials(id, &target_creds) {
+                tracing::warn!(err=%e, "writing refreshed token back to keyring failed; next activate will refresh again");
             }
         }
 
@@ -301,30 +264,34 @@ impl Provider for ClaudeProvider {
         let id_for_blocking = id.clone();
 
         tokio::task::spawn_blocking(move || {
-            activate_files_sync(
-                &claude_home,
-                &creds_path,
-                &conf_path,
-                &target_creds,
-                &target_oauth_account,
-                &registry,
-                &id_for_blocking,
-            )
+            let targets = vec![
+                SwapTarget {
+                    snapshot_name: "credentials.json",
+                    live_path: creds_path,
+                    writer: Box::new(move |p| write_credentials(p, &target_creds)),
+                },
+                SwapTarget {
+                    snapshot_name: "config.json",
+                    live_path: conf_path,
+                    writer: Box::new(move |p| {
+                        write_oauth_account_into_global(p, &target_oauth_account)
+                    }),
+                },
+            ];
+            let result = swap_with_snapshot(PROVIDER_ID, &claude_home, targets, || {
+                registry.set_active(PROVIDER_ID, &id_for_blocking)
+            });
+            if result.is_ok() {
+                tracing::info!(account = %id_for_blocking, "Claude swap done");
+            }
+            result
         })
         .await
         .map_err(|e| Error::Provider(format!("spawn_blocking join failed: {e}")))?
     }
 
     async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>> {
-        let creds_json = self
-            .store
-            .get(PROVIDER_ID, id.0.as_str(), CRED_FIELD)?
-            .ok_or_else(|| {
-                Error::Credential(format!(
-                    "no keyring entry for {PROVIDER_ID}:{id}:{CRED_FIELD}"
-                ))
-            })?;
-        let creds: CredentialsFile = serde_json::from_str(&creds_json)?;
+        let creds = self.load_credentials(id)?;
         let usage = oauth::fetch_usage(&creds.oauth.access_token).await?;
 
         let mut out = Vec::new();
@@ -356,120 +323,19 @@ impl Provider for ClaudeProvider {
     }
 }
 
-/// 同步部分：在 spawn_blocking 内执行。所有 IO 都在这里。
-fn activate_files_sync(
-    claude_home: &Path,
-    creds_path: &Path,
-    conf_path: &Path,
-    target_creds: &CredentialsFile,
-    target_oauth_account: &OauthAccount,
-    registry: &AccountRegistry,
-    id: &AccountId,
-) -> Result<()> {
-    // 1. 拿文件锁。
-    std::fs::create_dir_all(claude_home)?;
-    let lock_path = claude_home.join(".subswap.lock");
-    let lock_file = std::fs::OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)?;
-    lock_file
-        .lock_exclusive()
-        .map_err(|e| Error::Provider(format!("lock {} failed: {e}", lock_path.display())))?;
-
-    // 2. snapshot。
-    let ts = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let snap_dir = subswap_core::paths::AppPaths::resolve()?
-        .snapshots_dir()
-        .join(format!("claude-{ts}"));
-    std::fs::create_dir_all(&snap_dir)?;
-
-    let backup_creds = if creds_path.exists() {
-        let raw = std::fs::read_to_string(creds_path)?;
-        std::fs::write(snap_dir.join("credentials.json"), &raw)?;
-        Some(raw)
-    } else {
-        None
-    };
-    let backup_conf = if conf_path.exists() {
-        let raw = std::fs::read_to_string(conf_path)?;
-        std::fs::write(snap_dir.join("config.json"), &raw)?;
-        Some(raw)
-    } else {
-        None
-    };
-    tracing::info!(snapshot = %snap_dir.display(), "pre-swap snapshot saved");
-
-    // 3. 写新凭证。
-    if let Err(e) = write_credentials(creds_path, target_creds) {
-        rollback_files(creds_path, conf_path, &backup_creds, &backup_conf);
-        let _ = FileExt::unlock(&lock_file);
-        return Err(e);
-    }
-    // 4. 写新 oauthAccount。
-    if let Err(e) = write_oauth_account_into_global(conf_path, target_oauth_account) {
-        rollback_files(creds_path, conf_path, &backup_creds, &backup_conf);
-        let _ = FileExt::unlock(&lock_file);
-        return Err(e);
-    }
-    // 5. 更新 registry 激活标记。
-    if let Err(e) = registry.set_active(PROVIDER_ID, id) {
-        rollback_files(creds_path, conf_path, &backup_creds, &backup_conf);
-        let _ = FileExt::unlock(&lock_file);
-        return Err(e);
-    }
-
-    let _ = FileExt::unlock(&lock_file);
-    tracing::info!(account = %id, "Claude swap done");
-    Ok(())
-}
-
-fn rollback_files(
-    creds_path: &Path,
-    conf_path: &Path,
-    backup_creds: &Option<String>,
-    backup_conf: &Option<String>,
-) {
-    match backup_creds {
-        Some(raw) => {
-            if let Err(e) = std::fs::write(creds_path, raw) {
-                tracing::error!(err=%e, path=%creds_path.display(), "rollback credentials failed");
-            }
-        }
-        None => {
-            // 原本不存在，删除我们新写入的，保持「原状（未登录）」。
-            let _ = std::fs::remove_file(creds_path);
-        }
-    }
-    if let Some(raw) = backup_conf {
-        if let Err(e) = std::fs::write(conf_path, raw) {
-            tracing::error!(err=%e, path=%conf_path.display(), "rollback config failed");
-        }
-    }
-}
-
 /// best-effort 预刷新。返回 `true` 表示 token 已被刷新。
 async fn best_effort_pre_refresh(creds: &mut CredentialsFile) -> bool {
-    if !is_expired_or_soon(creds, defaults::REFRESH_SLACK_MS) {
+    if !is_expired_or_soon(creds, settings::current().token.refresh_slack_ms) {
         return false;
     }
-    let Some(refresh_token) = creds.oauth.refresh_token.clone() else {
+    if creds.oauth.refresh_token.is_none() {
         tracing::warn!(
             "token expired/expiring but no refreshToken in keyring; skipping pre-refresh — log in again if the client returns 401"
         );
         return false;
-    };
-    match oauth::refresh_access_token(&refresh_token).await {
-        Ok(resp) => {
-            creds.oauth.access_token = resp.access_token;
-            if let Some(secs) = resp.expires_in {
-                creds.oauth.expires_at = Some(Utc::now().timestamp_millis() + secs * 1000);
-            }
-            if let Some(rt) = resp.refresh_token {
-                creds.oauth.refresh_token = Some(rt);
-            }
+    }
+    match apply_refresh_to_creds(creds).await {
+        Ok(()) => {
             tracing::info!("Claude access_token pre-refreshed");
             true
         }
@@ -481,6 +347,27 @@ async fn best_effort_pre_refresh(creds: &mut CredentialsFile) -> bool {
             false
         }
     }
+}
+
+/// 执行一次 OAuth refresh 并把响应应用到 `creds`。
+///
+/// 不读 keyring、不写 keyring、不动磁盘；调用方负责持久化。缺 `refresh_token`
+/// 时返回 [`Error::Provider`]（不能 offline 续期）。
+async fn apply_refresh_to_creds(creds: &mut CredentialsFile) -> Result<()> {
+    let refresh_token = creds.oauth.refresh_token.clone().ok_or_else(|| {
+        Error::Provider(format!(
+            "{PROVIDER_ID} account has no refreshToken; cannot refresh offline, log in and re-add"
+        ))
+    })?;
+    let resp = oauth::refresh_access_token(&refresh_token).await?;
+    creds.oauth.access_token = resp.access_token;
+    if let Some(secs) = resp.expires_in {
+        creds.oauth.expires_at = Some(Utc::now().timestamp_millis() + secs * 1000);
+    }
+    if let Some(rt) = resp.refresh_token {
+        creds.oauth.refresh_token = Some(rt);
+    }
+    Ok(())
 }
 
 fn is_expired_or_soon(creds: &CredentialsFile, slack_ms: i64) -> bool {
@@ -505,14 +392,7 @@ fn make_quota(
         Some(v) if v.is_finite() => {
             let pct = if v <= 1.5 { v * 100.0 } else { v };
             let used = pct.round().clamp(0.0, 100.0) as u64;
-            let status = if pct >= defaults::QUOTA_EXHAUSTED_PCT {
-                QuotaStatus::Exhausted
-            } else if pct >= defaults::QUOTA_WARN_PCT {
-                QuotaStatus::Warn
-            } else {
-                QuotaStatus::Ok
-            };
-            (used, status)
+            (used, QuotaStatus::from_percent(pct))
         }
         _ => (0, QuotaStatus::Unknown),
     };

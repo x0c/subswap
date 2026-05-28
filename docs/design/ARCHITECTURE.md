@@ -72,6 +72,10 @@
 ```
 
 `find_unique(id)` 支持全局 id 反查（唯一时省略 provider；歧义时用 `<provider>/<id>`）。
+默认入口在每行账号前打全局编号（跨 provider 连续，1-based），编号来源是 `AppContext::list_ordered()`
+—— 与 `subswap swap N` / `subswap rm N` 共享同一映射，保证「屏幕上看到的第 3 行」就是 `swap 3` 切的那个。
+渲染器在 tty 下用 ANSI dim/color 做视觉分层：active 标记 `*` 用 bold cyan、warn 黄、full 加粗红、
+其余 ok / 编号 / reset 时间 / 标签均 dim，让用户一眼锁定告警与当前账号。非交互（管道 / 重定向）退化为纯文本。
 
 默认入口的交互要求：
 - 不能等所有网络请求结束后才第一次输出；账号列表必须先出现。
@@ -92,16 +96,21 @@ codex:  subswap login codex  → codex login                 → codex.import_ac
 - 同一账号重新 login 时按 `(provider, id)` 覆盖 keyring 旧凭证，不新增重复账号。
 - 登录完成后以官方 CLI 当前激活账号为准，导入 registry 并标记为 active。
 
-### 3.3 `subswap swap <id>`
+### 3.3 `subswap swap [<id|N>]`
 
 ```
-find_unique(id) → Provider.activate(id)
+resolve_account(input):
+   ├─ 纯数字 N → list_ordered()[N-1]
+   └─ 否则     → find_unique(input)
+Provider.activate(id)
    ├─ best-effort refresh（若 token 近过期）
    ├─ spawn_blocking { flock → snapshot → 写文件 → 写 registry }
    └─ 写 audit
 ```
 
-**重要**：此路径不依赖 `query_quota`，网络完全不通时仍可用。
+无参 `subswap swap` 不做切换：只打印 `Usage: ...` + 带编号清单（不查 quota，保持手动入口零网络依赖的不变量）。
+
+**重要**：此路径不依赖 `query_quota`，网络完全不通时仍可用。`subswap rm` 走同一份 `resolve_account` 解析。
 
 ### 3.4 `subswapd` daemon（M4）
 
@@ -141,7 +150,7 @@ field 例： access_token / refresh_token / oauth_metadata
 ### 4.3 Provider 私有目录（沿用上游）
 
 - Codex：`~/.codex/accounts/registry.json` + `~/.codex/sessions/`
-- Claude：`~/.claude/` + `~/.claude-swap-backup/`
+- Claude：`~/.claude/`
 
 subswap 切换时**写**这些上游目录，但**只读不存** token 元数据（token 已在 keyring）。
 
@@ -157,18 +166,34 @@ subswap 切换时**写**这些上游目录，但**只读不存** token 元数据
 
 ## 5.5 数值调优常量的管理
 
-**所有跨模块调优参数集中在 `crates/core/src/defaults.rs`**，不允许各模块各自硬编码。
+**运行期值**走 `crates/core/src/settings.rs::current()`，由 `<config_dir>/config.toml` 加载（热生效）；
+**编译期默认值**仍集中在 `crates/core/src/defaults.rs`（`Settings::default()` 从这里读）。
+provider / cli / daemon 都禁止硬编码阈值、时间窗口、百分比。
 
-| 常量 | 默认值 | 说明 |
+| 字段路径 | 默认值 | 说明 |
 |---|---|---|
-| `AUTO_SWAP_THRESHOLD` | `0.99` | AutoSwap 触发阈值（0.0~1.0） |
-| `QUOTA_WARN_PCT` | `90.0` | Quota 视觉 Warn 阈值（百分比） |
-| `QUOTA_EXHAUSTED_PCT` | `100.0` | Quota Exhausted 阈值（百分比） |
-| `REFRESH_SLACK_MS` | `300_000` ms | token 预刷新提前量（5 min） |
-| `AUTO_SWAP_COOLDOWN_MS` | `300_000` ms | 切换后冷却期（daemon，M4） |
-| `DAEMON_POLL_INTERVAL_MS` | `60_000` ms | daemon 轮询周期（M4） |
+| `auto_swap.threshold` | `defaults::AUTO_SWAP_THRESHOLD` | AutoSwap 触发阈值（0.0~1.0） |
+| `auto_swap.cooldown_ms` | `300_000` ms | 切换后单账号冷却期（daemon） |
+| `quota.warn_pct` | `90.0` | Quota 视觉 Warn 阈值（百分比） |
+| `quota.exhausted_pct` | `100.0` | Quota Exhausted 阈值（百分比） |
+| `token.refresh_slack_ms` | `300_000` ms | token 预刷新提前量（5 min） |
+| `daemon.poll_interval_ms` | `60_000` ms | daemon 活跃时轮询周期 |
+| `daemon.idle_threshold_ms` | `1_800_000` ms | probe mtime 距今超过此值 → 空闲 |
+| `daemon.idle_poll_interval_ms` | `900_000` ms | daemon 空闲时轮询周期 |
+| `codex.usage_cache_max_age_ms` | `600_000` ms | 旧版 Codex 本地 last_usage 缓存最大年龄 |
 
-改数值只改 `defaults.rs` 一处，AGENTS.md 不变量 #5 同步标注当前值。
+调字段：用户改 `config.toml`；改默认值改 `defaults.rs` 一处 + AGENTS.md 不变量 #5 同步当前值。
+完整说明见 [docs/CONFIG.md](../CONFIG.md)。
+
+### Daemon 空闲退避
+
+`daemon` 主循环每轮开头：
+1. `settings::reload_from_file()` 拿最新 config。
+2. 扫所有 provider `client_targets().probe_path` 的 mtime；最近一次活动距今 ≥ `idle_threshold_ms` → 用
+   `idle_poll_interval_ms`，否则用 `poll_interval_ms`。
+3. probe 文件不存在 / 拿不到 mtime → 按「空闲」处理（保守，避免凭空高频轮询）。
+
+这套机制让用户长时间不用 AI 时 daemon 自动放慢；下次官方 CLI 调 API 触发 token 写回 → 立刻回到活跃节奏。
 
 ## 5.6 风控边界
 

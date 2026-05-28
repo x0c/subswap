@@ -20,7 +20,7 @@ if let Some(parent) = home.parent() {
 
 ## 根因
 
-逻辑从 claude-swap 直接照搬。claude-swap 的 `~/.claude.json` 路径基于一个隐式假设：
+旧实现沿用了一个隐式假设：
 **`.claude/` 的同级目录 = HOME**。
 
 这个假设只在 `~/.claude` 时成立；用户设了 `CLAUDE_CONFIG_DIR` 后不再成立。

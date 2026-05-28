@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use subswap_core::AccountId;
+use subswap_core::{settings, AccountId};
 
 /// 5min 内最多允许的自动 swap 次数;超过进入 Degraded。
 const MAX_FLAP_PER_5MIN: usize = 3;
@@ -14,8 +14,11 @@ const MAX_FLAP_PER_5MIN: usize = 3;
 const DEGRADED_WINDOW: Duration = Duration::from_secs(30 * 60);
 /// Flap 检测的滑动窗口长度。
 const FLAP_WINDOW: Duration = Duration::from_secs(5 * 60);
-/// 单账号冷却期:刚切走 / 切到的账号短期内不再被选中。
-const COOLDOWN: Duration = Duration::from_secs(5 * 60);
+
+fn cooldown() -> Duration {
+    let ms = settings::current().auto_swap.cooldown_ms.max(0) as u64;
+    Duration::from_millis(ms)
+}
 
 pub struct DaemonState {
     /// 每个 (provider, account) 上次被切的时间。
@@ -35,10 +38,10 @@ impl DaemonState {
         }
     }
 
-    /// 候选账号是否在冷却期。
+    /// 候选账号是否在冷却期。窗口长度从 [`settings`] 读取（`auto_swap.cooldown_ms`）。
     pub fn in_cooldown(&self, provider: &str, id: &AccountId) -> bool {
         match self.last_swap_at.get(&(provider.to_string(), id.clone())) {
-            Some(t) => t.elapsed() < COOLDOWN,
+            Some(t) => t.elapsed() < cooldown(),
             None => false,
         }
     }
