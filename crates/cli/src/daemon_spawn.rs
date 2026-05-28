@@ -7,7 +7,9 @@
 //! - 找 subswapd 二进制:优先 current_exe 同目录,其次 PATH。
 //! - 非 Unix 平台:暂不自动拉起(M4 只承诺 Linux / macOS)。
 
-use anyhow::{Context, Result};
+#[cfg(unix)]
+use anyhow::Context;
+use anyhow::Result;
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
 
