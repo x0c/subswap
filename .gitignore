@@ -1,0 +1,19 @@
+# Rust 构建产物
+target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# 草稿与临时文件
+DRAFT_*.md
+*-draft.md
+*.swp
+.DS_Store
+
+# 本地运行时状态（如有人不小心在仓库里跑了）
+.subswap/
+state.json

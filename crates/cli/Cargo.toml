@@ -1,0 +1,34 @@
+[package]
+name = "subswap-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "subswap CLI: manage multiple AI subscription accounts"
+
+[[bin]]
+name = "subswap"
+path = "src/main.rs"
+
+[dependencies]
+subswap-core.workspace = true
+subswap-provider-codex.workspace = true
+subswap-provider-claude.workspace = true
+
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+futures = "0.3"
+indicatif = "0.18"
+base64 = "0.22"
+fs2.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
