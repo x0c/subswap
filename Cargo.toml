@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/cli",
+    "crates/daemon",
+    "crates/providers/codex",
+    "crates/providers/claude",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+authors = ["subswap contributors"]
+
+[workspace.dependencies]
+# 错误处理
+anyhow = "1"
+thiserror = "2"
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# 异步运行时与 HTTP
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "fs", "sync"] }
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# 系统能力
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
+directories = "5"
+fs2 = "0.4"
+
+# 时间
+chrono = { version = "0.4", features = ["serde"] }
+
+# workspace 内部 crate 互相引用
+subswap-core = { path = "crates/core" }
+subswap-provider-codex = { path = "crates/providers/codex" }
+subswap-provider-claude = { path = "crates/providers/claude" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

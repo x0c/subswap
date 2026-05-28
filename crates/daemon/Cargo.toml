@@ -1,0 +1,23 @@
+[package]
+name = "subswap-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "subswapd: background daemon that polls quotas and auto-swaps accounts"
+
+[[bin]]
+name = "subswapd"
+path = "src/main.rs"
+
+[dependencies]
+subswap-core.workspace = true
+subswap-provider-claude.workspace = true
+subswap-provider-codex.workspace = true
+
+anyhow.workspace = true
+chrono.workspace = true
+fs2.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
