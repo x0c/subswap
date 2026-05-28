@@ -50,7 +50,20 @@ subswap은 각 계정을 OS keyring(Keychain / Credential Manager / secret-servi
 
 ## 설치
 
-Rust 1.80+가 필요합니다.
+Homebrew 사용:
+
+```bash
+brew install x0c/tap/subswap
+```
+
+먼저 tap을 추가한 뒤 이름으로 설치할 수도 있습니다.
+
+```bash
+brew tap x0c/tap
+brew install subswap
+```
+
+소스에서 설치하려면 Rust 1.80+가 필요합니다.
 
 ```bash
 git clone https://github.com/x0c/subswap
