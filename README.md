@@ -58,7 +58,20 @@ subswap stores each account in the OS keyring (Keychain / Credential Manager / s
 
 ## Install
 
-Requires Rust 1.80+.
+With Homebrew:
+
+```bash
+brew install x0c/tap/subswap
+```
+
+Or tap first, then install by name:
+
+```bash
+brew tap x0c/tap
+brew install subswap
+```
+
+From source, requires Rust 1.80+.
 
 ```bash
 git clone https://github.com/x0c/subswap
