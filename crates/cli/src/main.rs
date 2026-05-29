@@ -79,11 +79,19 @@ enum Cmd {
     /// Import local data from legacy account stores.
     #[command(hide = true)]
     MigrateLocal,
+
+    /// Internal daemon entry used on macOS to keep Keychain access tied to the `subswap` binary.
+    #[command(name = "__daemon", hide = true)]
+    InternalDaemon,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if matches!(cli.cmd, Some(Cmd::InternalDaemon)) {
+        return subswap_daemon::run().await;
+    }
 
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(cli.log.clone()));
@@ -109,5 +117,6 @@ async fn main() -> Result<()> {
         Some(Cmd::Rm { id }) => cmd::rm::run(&ctx, &id).await,
         Some(Cmd::Doctor) => cmd::doctor::run(&ctx).await,
         Some(Cmd::MigrateLocal) => cmd::migrate::run(&ctx).await,
+        Some(Cmd::InternalDaemon) => unreachable!("handled before CLI context initialization"),
     }
 }

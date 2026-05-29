@@ -107,7 +107,7 @@ subswap doctor
 
 Accounts are picked up automatically from `~/.claude` and `~/.codex` the first time you run `subswap`, as long as you have logged into Claude Code / Codex CLI at least once.
 
-The first `subswap` invocation also spawns a detached background daemon (`subswapd`) which polls quotas and auto-swaps in the background, and keeps Claude OAuth tokens fresh so a long-idle account doesn't 401 the moment you swap to it. The daemon is single-instance (file-locked), Unix-only, and harmless to kill: `pkill subswapd`. To opt out entirely, export `SUBSWAP_NO_DAEMON=1`.
+The first `subswap` invocation also spawns a detached background daemon which polls quotas and auto-swaps in the background, and keeps Claude OAuth tokens fresh so a long-idle account doesn't 401 the moment you swap to it. The daemon is single-instance (file-locked), Unix-only, and harmless to kill: `pkill -f 'subswap __daemon'` or `pkill subswapd`. To opt out entirely, export `SUBSWAP_NO_DAEMON=1`.
 
 ## Design invariants
 

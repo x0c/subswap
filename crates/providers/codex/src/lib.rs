@@ -57,6 +57,16 @@ impl CodexProvider {
         self.store_account(raw, label_hint)
     }
 
+    /// 仅同步当前 `~/.codex/auth.json` 的非敏感元数据。
+    ///
+    /// 默认入口使用它来避免 macOS Keychain 弹授权框；真正保存可切换凭证仍由
+    /// [`Self::import_active`] / `subswap login` 负责。
+    pub fn sync_active_metadata(&self, label_hint: Option<String>) -> Result<Account> {
+        let raw = read_auth(&active_auth_path(&self.codex_home))?;
+        let metadata = parse_metadata(&raw);
+        self.upsert_metadata_account(metadata, label_hint, Some(true))
+    }
+
     /// 从指定 auth.json 文件导入。
     pub fn import_from_file(
         &self,
@@ -123,6 +133,15 @@ impl CodexProvider {
         }
 
         let existing = self.registry.find(PROVIDER_ID, &id)?;
+        let existing = existing.or_else(|| self.find_existing_by_chatgpt_account_id(&metadata));
+        if let Some(existing) = existing.as_ref() {
+            if existing.id != id {
+                let _ = self
+                    .store
+                    .delete(PROVIDER_ID, existing.id.0.as_str(), AUTH_FIELD);
+                self.registry.remove(PROVIDER_ID, &existing.id)?;
+            }
+        }
         let account = Account {
             provider: PROVIDER_ID.into(),
             id: id.clone(),
@@ -138,6 +157,76 @@ impl CodexProvider {
         };
         self.registry.upsert(account.clone())?;
         Ok(account)
+    }
+
+    fn upsert_metadata_account(
+        &self,
+        metadata: AuthMetadata,
+        label_hint: Option<String>,
+        active_override: Option<bool>,
+    ) -> Result<Account> {
+        let id_string = metadata
+            .primary_id()
+            .or_else(|| label_hint.clone())
+            .ok_or_else(|| {
+                Error::Provider(
+                    "cannot parse account_key/email from auth.json; pass --label to set it explicitly".into(),
+                )
+            })?;
+        let id = AccountId(id_string);
+        let label = label_hint
+            .or_else(|| metadata.label())
+            .unwrap_or_else(|| id.0.clone());
+
+        let existing = self
+            .registry
+            .find(PROVIDER_ID, &id)?
+            .or_else(|| self.find_existing_by_chatgpt_account_id(&metadata));
+        if let Some(existing) = existing.as_ref() {
+            if existing.id != id {
+                self.registry.remove(PROVIDER_ID, &existing.id)?;
+            }
+        }
+
+        let mut extra = serde_json::Map::new();
+        extra.insert(META_AUTH_METADATA.into(), serde_json::to_value(&metadata)?);
+        if let Some(cid) = metadata.chatgpt_account_id.clone() {
+            extra.insert(
+                META_CHATGPT_ACCOUNT_ID.into(),
+                serde_json::Value::String(cid),
+            );
+        }
+
+        let account = Account {
+            provider: PROVIDER_ID.into(),
+            id,
+            label,
+            active: active_override.unwrap_or_else(|| existing.as_ref().is_some_and(|a| a.active)),
+            created_at: existing
+                .as_ref()
+                .map(|a| a.created_at)
+                .unwrap_or_else(Utc::now),
+            last_used_at: existing.and_then(|a| a.last_used_at),
+            priority: 100,
+            extra,
+        };
+        self.registry.upsert(account.clone())?;
+        Ok(account)
+    }
+
+    fn find_existing_by_chatgpt_account_id(&self, metadata: &AuthMetadata) -> Option<Account> {
+        let target = metadata.chatgpt_account_id.as_deref()?;
+        self.registry
+            .list_by_provider(PROVIDER_ID)
+            .ok()?
+            .into_iter()
+            .find(|account| {
+                account
+                    .extra
+                    .get(META_CHATGPT_ACCOUNT_ID)
+                    .and_then(|value| value.as_str())
+                    == Some(target)
+            })
     }
 }
 
@@ -228,16 +317,9 @@ impl Provider for CodexProvider {
             })?
             .to_string();
 
-        // 2. 从 auth blob 抽 access_token。键名在 codex 内通常嵌在 tokens.access_token 下；
-        //    schema 不稳定，所以做一次松散查找。
-        let raw = self
-            .store
-            .get(PROVIDER_ID, id.0.as_str(), AUTH_FIELD)?
-            .ok_or_else(|| {
-                Error::Credential(format!(
-                    "no keyring entry for {PROVIDER_ID}:{id}:{AUTH_FIELD}"
-                ))
-            })?;
+        // 2. 从 auth blob 抽 access_token。当前本地激活账号优先读 ~/.codex/auth.json，
+        //    避免 macOS 后台/前台 Keychain 授权影响状态页；非当前账号仍走 keyring。
+        let raw = self.raw_auth_for_quota(&account)?;
         let access_token = extract_access_token(&raw).ok_or_else(|| {
             Error::QuotaFetch(
                 "no access_token in auth.json; codex may have changed its schema — subswap parser needs an update"
@@ -300,6 +382,44 @@ impl Provider for CodexProvider {
                 }
             })
             .collect())
+    }
+}
+
+impl CodexProvider {
+    fn raw_auth_for_quota(&self, account: &Account) -> Result<String> {
+        if let Some(raw) = self.read_active_auth_if_matches(account)? {
+            return Ok(raw);
+        }
+        self.store
+            .get(PROVIDER_ID, account.id.0.as_str(), AUTH_FIELD)?
+            .ok_or_else(|| {
+                Error::Credential(format!(
+                    "no keyring entry for {PROVIDER_ID}:{}:{AUTH_FIELD}",
+                    account.id
+                ))
+            })
+    }
+
+    fn read_active_auth_if_matches(&self, account: &Account) -> Result<Option<String>> {
+        let raw = match read_auth(&active_auth_path(&self.codex_home)) {
+            Ok(raw) => raw,
+            Err(_) => return Ok(None),
+        };
+        let metadata = parse_metadata(&raw);
+        if metadata.primary_id().as_deref() == Some(account.id.0.as_str()) {
+            return Ok(Some(raw));
+        }
+        let current_chatgpt_account_id = metadata.chatgpt_account_id.as_deref();
+        let account_chatgpt_account_id = account
+            .extra
+            .get(META_CHATGPT_ACCOUNT_ID)
+            .and_then(|value| value.as_str());
+        if current_chatgpt_account_id.is_some()
+            && current_chatgpt_account_id == account_chatgpt_account_id
+        {
+            return Ok(Some(raw));
+        }
+        Ok(None)
     }
 }
 

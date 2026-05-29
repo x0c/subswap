@@ -97,7 +97,7 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
     // 4. 最终渲染。交互场景刷新原输出块；非交互场景只输出最终版。
     renderer.render(&snapshots, &auto_lines)?;
 
-    // 5. 后台保活:用户无感地拉起 subswapd(已经在跑则什么都不做)。
+    // 5. 后台保活:用户无感地拉起 daemon(已经在跑则什么都不做)。
     //    失败仅 debug 日志,不影响默认命令的退出码。
     if let Err(e) = ensure_daemon_running() {
         tracing::debug!(err = %e, "ensure_daemon_running failed; continuing");
@@ -108,11 +108,21 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
 /// 扫本地 ~/.claude / ~/.codex；如果有当前激活账号则 import 到 registry（已存在时 upsert）。
 /// 任一 provider 失败（用户没登录过）静默跳过。
 fn sync_local_active(ctx: &AppContext) {
-    if let Err(e) = ctx.claude.import_active(None) {
-        tracing::debug!(err=%e, "skip claude auto-import");
+    match ctx.claude.import_active(None) {
+        Ok(account) => {
+            if let Err(e) = ctx.registry.set_active("claude", &account.id) {
+                tracing::debug!(err=%e, "skip claude active marker");
+            }
+        }
+        Err(e) => tracing::debug!(err=%e, "skip claude auto-import"),
     }
-    if let Err(e) = ctx.codex.import_active(None) {
-        tracing::debug!(err=%e, "skip codex auto-import");
+    match ctx.codex.sync_active_metadata(None) {
+        Ok(account) => {
+            if let Err(e) = ctx.registry.set_active("codex", &account.id) {
+                tracing::debug!(err=%e, "skip codex active marker");
+            }
+        }
+        Err(e) => tracing::debug!(err=%e, "skip codex auto-import"),
     }
 }
 

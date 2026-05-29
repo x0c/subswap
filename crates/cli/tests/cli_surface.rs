@@ -50,7 +50,7 @@ fn default_with_empty_home_is_quiet_and_does_not_probe_real_accounts() {
         .env("XDG_CACHE_HOME", &cache)
         .env("CLAUDE_CONFIG_DIR", &claude)
         .env("CODEX_HOME", &codex)
-        // 避免测试副作用:别拉起后台 subswapd。
+        // 避免测试副作用:别拉起后台 daemon。
         .env("SUBSWAP_NO_DAEMON", "1")
         .output()
         .unwrap();
