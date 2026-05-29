@@ -214,7 +214,7 @@ mod tests {
             "last_usage_at": 1779962452,
             "tokens": { "access_token": "t" }
         }"#;
-        let m = parse_metadata(&raw);
+        let m = parse_metadata(raw);
         assert_eq!(m.account_key.as_deref(), Some("key-abc"));
         assert_eq!(m.primary_id().as_deref(), Some("key-abc"));
         assert_eq!(m.label().as_deref(), Some("alice@example.com"));
