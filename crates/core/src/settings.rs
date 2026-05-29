@@ -55,6 +55,8 @@ pub struct Quota {
     pub warn_pct: f64,
     /// 展示用 Exhausted 阈值（百分比 0~100）。不参与切换决策。
     pub exhausted_pct: f64,
+    /// `subswap` 默认入口拉 quota 的整体超时（毫秒）。超时后未返回的账号标记为超时失败并停止等待。
+    pub fetch_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -96,6 +98,7 @@ impl Default for Quota {
         Self {
             warn_pct: defaults::QUOTA_WARN_PCT,
             exhausted_pct: defaults::QUOTA_EXHAUSTED_PCT,
+            fetch_timeout_ms: defaults::QUOTA_FETCH_TIMEOUT_MS,
         }
     }
 }

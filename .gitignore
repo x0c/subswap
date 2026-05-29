@@ -17,3 +17,6 @@ DRAFT_*.md
 # 本地运行时状态（如有人不小心在仓库里跑了）
 .subswap/
 state.json
+
+# gitnexus 代码索引工具的本地缓存目录
+.gitnexus/

@@ -133,6 +133,25 @@ key:     {provider}:{account}:{field}
 field 例： access_token / refresh_token / oauth_metadata
 ```
 
+封装实现：`crates/core/src/store.rs`（`KeyringStore` 实现 `CredentialStore` trait，
+`compose_key()` 拼 `{provider}:{account}:{field}`，service 固定 `subswap`）。
+读不存在的条目返回 `Ok(None)`，仅平台/IO 错误才 `Err`。
+
+**多端后端差异（重要，影响 daemon 保活正确性）**：
+
+| 平台 | keyring 后端 | 进程间可见 | 重启后持久 |
+|---|---|---|---|
+| macOS | Keychain | ✅ | ✅ |
+| Windows | Credential Manager | ✅ | ✅ |
+| Linux | `linux-keyutils`（内核 keyring，编译期默认 feature） | ⚠️ 按内核 session 隔离 | ❌ 默认不跨重启 |
+
+Linux 的 keyutils 后端按**内核 session keyring** 隔离。`subswapd` 由 CLI 经
+`fork + setsid` 拉起（`crates/cli/src/daemon_spawn.rs`），`setsid` 会进入**新 session**，
+因此 daemon 读不到 CLI 在自己 session 写入的条目 → 每个账号 keepalive 都报
+`No matching entry found in secure storage` → **该后端下 daemon 的 Claude token 后台保活实际空转**。
+影响与应对见 [troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md](../troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md)。
+推论：token 自愈不能只依赖 daemon；查询/切换路径（与 keyring 同 session）也要能 best-effort 刷新。
+
 ### 4.2 配置目录（元数据，明文）
 
 | 平台 | 路径 |
@@ -158,7 +177,7 @@ subswap 切换时**写**这些上游目录，但**只读不存** token 元数据
 
 1. 新建 `crates/providers/<id>/` crate，依赖 `subswap-core`。
 2. 实现 `Provider` trait（`list_accounts / activate / query_quota / client_targets`）。
-3. 在 `crates/cli/src/main.rs::AppContext::build()` 注册一行。
+3. 在 `crates/cli/src/app.rs::AppContext::build()` 注册一行。
 4. 在 `crates/cli/Cargo.toml` 加依赖；在 `sync_local_active()` 加 import_active 调用。
 5. 在 `docs/PROVIDER_KNOWLEDGE_BASE.md` 补该 Provider 的接口/坑笔记。
 
@@ -210,3 +229,85 @@ daemon 退避或真实客户端 hook 解决。
 - `core::error::Error` 是统一错误枚举。Provider 内部用 `anyhow::Error` 处理细节，通过 `Error::Other` 或 `Error::Provider(String)` 暴露。
 - CLI 层用 `anyhow::Result` + `with_context` 给用户加上下文。
 - 错误绝不静默吞掉；`query_quota` 失败时返回 `Err`，CLI 自行决定是否降级。
+
+## 7. 关键代码路径地图
+
+> 目的：核心流程「在哪个文件、哪个函数」一次性查到，避免每次现读源码。函数名比行号稳定，故只记函数名。
+> 改动这些流程时同步更新本表。
+
+### 7.1 凭证存储（keyring）
+
+| 职责 | 位置 |
+|---|---|
+| `CredentialStore` trait + `KeyringStore` 实现 + `compose_key` | `crates/core/src/store.rs` |
+| 多端后端差异 / keyutils session 隔离坑 | 本文 §4.1 + troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md |
+
+### 7.2 调优参数（settings / defaults）
+
+| 职责 | 位置 |
+|---|---|
+| 编译期默认常量 | `crates/core/src/defaults.rs` |
+| 运行期值 `current()` / 热加载 `reload_from_file()` / `load_from()` / `Settings` 分组 | `crates/core/src/settings.rs` |
+| 字段表 / 风控约束 | `docs/CONFIG.md` |
+
+### 7.3 Claude provider（`crates/providers/claude/src/`）
+
+| 职责 | 函数 / 文件 |
+|---|---|
+| 拉 quota（401 时进程内 best-effort 刷新并重试一次） | `lib.rs::ClaudeProvider::query_quota` |
+| 手动切换（阶段1 best-effort 预刷新，失败只 warn 不阻塞） | `lib.rs::activate` + `lib.rs::best_effort_pre_refresh` |
+| daemon 保活：仅临近过期才刷 | `lib.rs::refresh_if_near_expiry` |
+| 显式无条件刷新 | `lib.rs::refresh_account` |
+| 纯刷新逻辑（不碰 keyring/磁盘，调用方负责持久化） | `lib.rs::apply_refresh_to_creds` |
+| 过期判断（看 `expiresAt` + `refresh_slack_ms`） | `lib.rs::is_expired_or_soon` |
+| 401 判定 | `lib.rs::is_auth_error` |
+| keyring 读写本账号凭证（field=credentials） | `lib.rs::load_credentials` / `save_credentials` |
+| 入库（keyring + registry，复用 active 标记） | `lib.rs::store_account` |
+| usage → `Quota` + 视觉状态 | `lib.rs::make_quota` |
+| 上游端点：`fetch_usage`(GET usage) / `refresh_access_token`(POST oauth/token) | `oauth.rs` |
+| `~/.claude/.credentials.json` schema（camelCase） | `claude_files.rs` |
+| credentials_path / global_config_path | `paths.rs` |
+
+> 401 在 `oauth::fetch_usage` 里变成 `Error::QuotaFetch("usage returned 401 ...")`；`query_quota` 靠
+> `is_auth_error` substring 判它再决定是否刷新。端点常量与各状态码真实含义见
+> [PROVIDER_KNOWLEDGE_BASE.md](../PROVIDER_KNOWLEDGE_BASE.md)。
+
+### 7.4 Codex provider（`crates/providers/codex/src/`）
+
+| 职责 | 函数 / 文件 |
+|---|---|
+| 导入本地激活账号 / 切换 / 拉 quota | `lib.rs::import_active` / `activate` / `query_quota` |
+| usage 解析（字段不稳定，容错） | `openai_usage.rs` |
+| `~/.codex/auth.json` opaque 透传 schema | `codex_files.rs` |
+| 路径 | `paths.rs` |
+
+> Codex **不做** token 刷新（设计理由见 PROVIDER_KNOWLEDGE_BASE.md「Codex Token 刷新（subswap 不做）」）。
+
+### 7.5 daemon（`crates/daemon/src/`，Unix-only）
+
+| 职责 | 位置 |
+|---|---|
+| 主循环 + 空闲退避选周期 | `unix.rs::decide_next_interval` 及主循环 |
+| 每账号 `query_quota` 收快照（失败记 `QuotaFetchState::Failed`） | `unix.rs`（snapshot 收集） |
+| Claude token 后台保活（遍历所有账号调 `refresh_if_near_expiry`） | `unix.rs::keep_claude_tokens_alive` |
+| 单实例 PID 文件锁 | `unix.rs::open_pid_lock` / `write_pid` |
+| CLI 无感拉起（`fork + setsid` + stdio 重定向到日志） | `crates/cli/src/daemon_spawn.rs::ensure_daemon_running` / `spawn_detached_daemon` |
+
+### 7.6 CLI（`crates/cli/src/`）
+
+| 职责 | 位置 |
+|---|---|
+| `AppContext`（注册所有 provider，**定义在 app.rs**，main.rs 只调用） | `app.rs::AppContext::build` |
+| 全局编号（与默认入口渲染顺序必须一致，AGENTS.md #8） | `app.rs::AppContext::list_ordered` |
+| 默认入口总流程 | `cmd/default.rs::run` |
+| 自动 import 本地激活账号 | `cmd/default.rs::sync_local_active` |
+| 账号骨架 → 并发拉 quota + mpsc 渐进渲染 + 整体超时（`quota.fetch_timeout_ms`） | `cmd/default.rs::build_loading_snapshots` / `fill_quotas_progressively` / `mark_pending_as_timed_out` |
+| 原地刷新渲染 / 全局编号渲染 | `render.rs::InlineRenderer` / `render_to_string` |
+| 底层错误压成一行短语（401/429/timeout/network…） | `render.rs::compact_error` |
+
+### 7.7 自动切换决策（`crates/core/src/auto_policy.rs`）
+
+| 职责 | 位置 |
+|---|---|
+| 拉取状态枚举 Loading/Ready/Failed | `auto_policy.rs::QuotaFetchState` |
+| 切换决策（CLI 经 `subswap_core::auto_decide` 调用，即 `decide` 的重导出） | `auto_policy.rs::decide` |
