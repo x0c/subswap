@@ -291,8 +291,20 @@ impl Provider for ClaudeProvider {
     }
 
     async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>> {
-        let creds = self.load_credentials(id)?;
-        let usage = oauth::fetch_usage(&creds.oauth.access_token).await?;
+        let mut creds = self.load_credentials(id)?;
+        // 进程内自愈：access_token 失效(401)且有 refresh_token 时，best-effort 刷新一次再重试。
+        // 动机：daemon 后台保活在部分环境(如 Linux keyutils 按 session 隔离)读不到本进程写入的
+        //       keyring 条目，无法保活；查询进程能看到自己的 keyring，因此在这里自愈最可靠。
+        // 保守起见只在 401 时刷新、且只重试一次，避免请求风暴(AGENTS.md #10)。
+        let usage = match oauth::fetch_usage(&creds.oauth.access_token).await {
+            Ok(u) => u,
+            Err(e) if is_auth_error(&e) && creds.oauth.refresh_token.is_some() => {
+                apply_refresh_to_creds(&mut creds).await?;
+                self.save_credentials(id, &creds)?;
+                oauth::fetch_usage(&creds.oauth.access_token).await?
+            }
+            Err(e) => return Err(e),
+        };
 
         let mut out = Vec::new();
         if let Some(five) = usage.five_hour {
@@ -368,6 +380,12 @@ async fn apply_refresh_to_creds(creds: &mut CredentialsFile) -> Result<()> {
         creds.oauth.refresh_token = Some(rt);
     }
     Ok(())
+}
+
+/// 判断 quota 拉取错误是否为鉴权失效(401)，用于决定是否触发刷新重试。
+fn is_auth_error(err: &Error) -> bool {
+    let s = err.to_string().to_ascii_lowercase();
+    s.contains("401") || s.contains("unauthorized")
 }
 
 fn is_expired_or_soon(creds: &CredentialsFile, slack_ms: i64) -> bool {

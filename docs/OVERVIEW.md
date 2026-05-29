@@ -19,6 +19,7 @@
 
 - [2026-05-28 — TOML 序列化报 `unsupported unit type`](troubleshooting/2026-05-28-toml-null-serialization.md)
 - [2026-05-28 — CLAUDE_CONFIG_DIR 自定义时 global config 写到上级目录](troubleshooting/2026-05-28-claude-config-dir-parent-pollution.md)
+- [2026-05-29 — Linux daemon keepalive 空转：keyutils 按 session 隔离](troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md)
 
 ## Code Review 台账
 

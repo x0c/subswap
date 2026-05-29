@@ -4,11 +4,12 @@
 //! 详见 docs/design/ARCHITECTURE.md §3.1。
 
 use std::io::{self, IsTerminal};
+use std::time::Duration;
 
 use anyhow::Result;
 use futures::future::join_all;
 use subswap_core::{
-    auto_decide, AccountId, AccountWithQuotas, AuditEvent, PolicyConfig, PolicyDecision,
+    auto_decide, settings, AccountId, AccountWithQuotas, AuditEvent, PolicyConfig, PolicyDecision,
     ProviderRegistry, ProviderSnapshot, Quota, QuotaFetchState,
 };
 
@@ -184,13 +185,43 @@ async fn fill_quotas_progressively(
     }
     drop(tx);
 
-    while let Some(update) = rx.recv().await {
-        apply_quota_update(snapshots, update);
-        if let Some(renderer) = renderer.as_deref_mut() {
-            renderer.render(snapshots, &[])?;
+    // 整体超时：超过 quota.fetch_timeout_ms 仍未返回的账号标记为超时失败，停止等待。
+    // 动机：单个账号网络卡住不应拖住整条命令。已成功账号的结果不受影响。
+    let timeout = Duration::from_millis(settings::current().quota.fetch_timeout_ms);
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            maybe = rx.recv() => match maybe {
+                Some(update) => {
+                    apply_quota_update(snapshots, update);
+                    if let Some(renderer) = renderer.as_deref_mut() {
+                        renderer.render(snapshots, &[])?;
+                    }
+                }
+                None => break, // 全部账号已返回
+            },
+            _ = &mut deadline => {
+                mark_pending_as_timed_out(snapshots);
+                if let Some(renderer) = renderer.as_deref_mut() {
+                    renderer.render(snapshots, &[])?;
+                }
+                break;
+            }
         }
     }
     Ok(())
+}
+
+/// 把仍处于 `Loading`（超时未返回）的账号标记为超时失败。
+fn mark_pending_as_timed_out(snapshots: &mut [ProviderSnapshot]) {
+    for snap in snapshots.iter_mut() {
+        for awq in &mut snap.accounts {
+            if matches!(awq.fetch_state, QuotaFetchState::Loading) {
+                awq.fetch_state = QuotaFetchState::Failed("quota fetch timeout".into());
+            }
+        }
+    }
 }
 
 fn apply_quota_update(snapshots: &mut [ProviderSnapshot], update: QuotaUpdate) {

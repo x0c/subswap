@@ -7,6 +7,27 @@
 
 ---
 
+## 额度语义（跨 Provider 统一约定，先读这条）
+
+**数据层与状态层一律用「已用百分比」，只有 CLI 展示层转成「余量」。** 别把两者搞混。
+
+| 层 | 语义 | 位置 |
+|---|---|---|
+| 上游字段 | **已用 %**（0~100） | Claude `utilization`（`oauth.rs::WindowUsage`）；Codex `used_percent` / `percent`（`openai_usage.rs`，注释原文「已用百分比」） |
+| `Quota` 模型 | **已用**：`used`(0~100) + `limit`(固定 100) | `make_quota`（claude）/ `query_quota`（codex）都把已用% 写进 `Quota.used` |
+| 状态判定 | 基于**已用%**：`used ≥ quota.warn_pct`(默认 90)→Warn，`≥ quota.exhausted_pct`(默认 100)→Exhausted | `QuotaStatus::from_percent` |
+| CLI 展示 | **余量**：`{limit - used}% left`，不打印 ok/warn/full 文字，严重程度靠余量数字 + 颜色(warn 黄 / full 红) | `render.rs::format_quota_compact` |
+
+记忆点：**两个 Provider 的百分比语义是一致的（都是已用），不存在「一个用量一个余量」**。
+之所以容易误读，是因为已用值高（如 59%）直觉上像「剩很多」。展示层显示 `41% left` 就是为了消除这个歧义。
+改展示格式时**不要去翻转 `Quota.used` 的语义**，只在 `format_quota_compact` 里做 `limit - used`。
+
+**既定 UX 约定（勿改回）**：CLI 一律显示**余量** `{N}% left`，不显示已用%、不打印 ok/warn/full 文字。
+理由：用户关心的是「还能用多少」，余量比用量直观；严重程度由余量数字本身 + 颜色（warn 黄 / full 红）传达，
+文字状态块冗余。后续若想加用量视图，作为可选项叠加，别把默认换回用量。
+
+---
+
 ## Claude / Anthropic
 
 ### OAuth 公开常量

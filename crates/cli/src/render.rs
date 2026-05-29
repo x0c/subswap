@@ -238,14 +238,10 @@ pub fn format_quota_compact(q: &Quota, color: bool) -> String {
         QuotaWindow::Month => "mo",
         QuotaWindow::Custom => "--",
     };
-    let s_label = match q.status {
-        QuotaStatus::Ok => "ok",
-        QuotaStatus::Warn => "warn",
-        QuotaStatus::Exhausted => "full",
-        QuotaStatus::Unknown => "--",
-    };
+    // 显示「余量」而非用量：q.used 是已用百分比(limit=100)，余量 = limit - used。
+    // 不再打印 ok/warn/full 文字块——严重程度由余量数字本身 + 颜色(warn 黄 / full 红)传达。
     let usage_plain = if q.limit > 0 {
-        format!("{:>3}%", q.used)
+        format!("{:>3}% left", q.limit.saturating_sub(q.used))
     } else {
         "--".into()
     };
@@ -255,19 +251,15 @@ pub fn format_quota_compact(q: &Quota, color: bool) -> String {
         .unwrap_or_else(|| "--".into());
 
     let usage_sgr = status_sgr(q.status);
-    let status_sgr_str = status_sgr(q.status);
 
     let w_styled = style(color, "2", &format!("{w_label:<2}"));
     let bracket_l = style(color, "2", "[");
     let bracket_r = style(color, "2", "]");
-    let usage_padded = format!("{usage_plain:>4}");
-    let usage = style(color, usage_sgr, &usage_padded);
-    let status_padded = format!("{s_label:<4}");
-    let status = style(color, status_sgr_str, &status_padded);
+    let usage = style(color, usage_sgr, &usage_plain);
     let reset_padded = format!("reset {reset_plain:<6}");
     let reset = style(color, "2", &reset_padded);
 
-    format!("{w_styled} {bracket_l}{usage} {status} {reset}{bracket_r}")
+    format!("{w_styled} {bracket_l}{usage} {reset}{bracket_r}")
 }
 
 fn status_sgr(status: QuotaStatus) -> &'static str {
@@ -329,8 +321,9 @@ mod tests {
             &quota(QuotaWindow::FiveHour, 6, 100, QuotaStatus::Ok),
             false,
         );
-        assert!(text.starts_with("5h [  6% ok"));
+        assert!(text.starts_with("5h [ 94% left"));
         assert!(text.contains("reset in 2h"));
+        assert!(!text.contains("ok"), "status text block must be gone");
         assert!(!text.contains('\x1b'), "plain mode must not emit escapes");
     }
 

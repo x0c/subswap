@@ -26,6 +26,7 @@ Windows: %APPDATA%\subswap\subswap\config\config.toml
 | `auto_swap.cooldown_ms` | `300000` | 毫秒 | 切换后该账号冷却期，daemon 内不再选回 |
 | `quota.warn_pct` | `90.0` | 0~100 | CLI 显示 `warn` 的阈值；不参与切换决策 |
 | `quota.exhausted_pct` | `100.0` | 0~100 | CLI 显示 `full` 的阈值；不参与切换决策 |
+| `quota.fetch_timeout_ms` | `3000` | 毫秒 | `subswap` 默认入口拉 quota 的整体超时；超时未返回的账号标记为超时失败并停止等待 |
 | `token.refresh_slack_ms` | `300000` | 毫秒 | Claude token 距过期此值内 → 触发预刷新 |
 | `daemon.poll_interval_ms` | `60000` | 毫秒 | 活跃时轮询间隔 |
 | `daemon.idle_threshold_ms` | `1800000` | 毫秒 | provider probe 文件 mtime 距今超过此值视为「用户没在用」 |
