@@ -63,7 +63,107 @@ impl AuthMetadata {
 
 /// 从 JSON 字符串解析元数据。解析失败返回空 [`AuthMetadata`]（透传策略，不要因为格式变了就崩）。
 pub fn parse_metadata(raw: &str) -> AuthMetadata {
-    serde_json::from_str::<AuthMetadata>(raw).unwrap_or_default()
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return AuthMetadata::default();
+    };
+    let mut metadata = serde_json::from_value::<AuthMetadata>(value.clone()).unwrap_or_default();
+    let id_token_claims =
+        string_at(&value, &["tokens", "id_token"]).and_then(|token| decode_jwt_payload(&token));
+
+    if metadata.chatgpt_account_id.is_none() {
+        metadata.chatgpt_account_id = string_at(&value, &["tokens", "account_id"])
+            .or_else(|| string_at(&value, &["account_id"]));
+    }
+    if metadata.email.is_none() {
+        metadata.email = id_token_claims
+            .as_ref()
+            .and_then(|claims| string_at(claims, &["email"]))
+            .or_else(|| find_string_by_key(&value, "email"));
+    }
+    if metadata.account_name.is_none() {
+        metadata.account_name = id_token_claims
+            .as_ref()
+            .and_then(|claims| string_at(claims, &["name"]));
+    }
+    if metadata.chatgpt_user_id.is_none() {
+        metadata.chatgpt_user_id = id_token_claims
+            .as_ref()
+            .and_then(|claims| string_at(claims, &["sub"]));
+    }
+    if metadata.account_key.is_none() && metadata.primary_id().is_none() {
+        if let Some(api_key) = string_at(&value, &["OPENAI_API_KEY"]) {
+            let fingerprint = api_key_fingerprint(&api_key);
+            metadata.account_key = Some(format!("api-key:{fingerprint}"));
+            metadata.alias = Some(format!("Codex API key {fingerprint}"));
+        }
+    }
+    metadata
+}
+
+fn string_at(value: &serde_json::Value, path: &[&str]) -> Option<String> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_str().map(str::to_owned)
+}
+
+fn find_string_by_key(value: &serde_json::Value, target: &str) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::String(s)) = map.get(target) {
+                return Some(s.clone());
+            }
+            map.values()
+                .find_map(|child| find_string_by_key(child, target))
+        }
+        serde_json::Value::Array(items) => items
+            .iter()
+            .find_map(|child| find_string_by_key(child, target)),
+        _ => None,
+    }
+}
+
+fn decode_jwt_payload(token: &str) -> Option<serde_json::Value> {
+    let payload = token.split('.').nth(1)?;
+    let decoded = base64_url_decode(payload)?;
+    serde_json::from_slice(&decoded).ok()
+}
+
+fn base64_url_decode(input: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity((input.len() * 3) / 4);
+    let mut buffer = 0u32;
+    let mut bits = 0u8;
+
+    for byte in input.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'-' => 62,
+            b'_' => 63,
+            b'=' => break,
+            _ => return None,
+        };
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        while bits >= 8 {
+            bits -= 8;
+            out.push(((buffer >> bits) & 0xff) as u8);
+        }
+    }
+
+    Some(out)
+}
+
+fn api_key_fingerprint(api_key: &str) -> String {
+    // 仅用于本地去重展示；完整 API key 仍只存在 keyring 的 auth blob 中。
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in api_key.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }
 
 /// 读取 auth.json 原文。
@@ -114,12 +214,46 @@ mod tests {
             "last_usage_at": 1779962452,
             "tokens": { "access_token": "t" }
         }"#;
-        let m = parse_metadata(raw);
+        let m = parse_metadata(&raw);
         assert_eq!(m.account_key.as_deref(), Some("key-abc"));
         assert_eq!(m.primary_id().as_deref(), Some("key-abc"));
         assert_eq!(m.label().as_deref(), Some("alice@example.com"));
         assert!(m.last_usage.is_some());
         assert_eq!(m.last_usage_at, Some(1779962452));
+    }
+
+    #[test]
+    fn parse_metadata_extracts_api_key_account_shape() {
+        let id_token = concat!(
+            "ignored.",
+            "eyJlbWFpbCI6ImFsaWNlQGV4YW1wbGUuY29tIiwibmFtZSI6IkFsaWNlIiwic3ViIjoidXNlci0xIn0",
+            ".ignored"
+        );
+        let raw = r#"{
+            "OPENAI_API_KEY": "sk-test-secret",
+            "last_refresh": 1779962452,
+            "tokens": {
+                "account_id": "acct_abc",
+                "access_token": "tok",
+                "id_token": "__ID_TOKEN__"
+            }
+        }"#
+        .replace("__ID_TOKEN__", id_token);
+        let m = parse_metadata(&raw);
+        assert_eq!(m.email.as_deref(), Some("alice@example.com"));
+        assert_eq!(m.account_name.as_deref(), Some("Alice"));
+        assert_eq!(m.chatgpt_user_id.as_deref(), Some("user-1"));
+        assert_eq!(m.chatgpt_account_id.as_deref(), Some("acct_abc"));
+        assert_eq!(m.primary_id().as_deref(), Some("alice@example.com"));
+    }
+
+    #[test]
+    fn parse_metadata_uses_api_key_fingerprint_without_account_id() {
+        let raw = r#"{ "OPENAI_API_KEY": "sk-test-secret" }"#;
+        let m = parse_metadata(raw);
+        assert!(m.primary_id().unwrap().starts_with("api-key:"));
+        assert!(m.label().unwrap().starts_with("Codex API key "));
+        assert_ne!(m.primary_id().as_deref(), Some("sk-test-secret"));
     }
 
     #[test]

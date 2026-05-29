@@ -1,17 +1,17 @@
-//! 用户无感地拉起 subswapd:已经在跑则什么都不做;否则 fork+setsid 一个 detached 子进程。
+//! 用户无感地拉起后台 daemon:已经在跑则什么都不做;否则 fork+setsid 一个 detached 子进程。
 //!
 //! 设计要点:
 //! - 通过 PID 文件上的 fs2 排他锁判断「是否已经有实例在跑」(不依赖 kill -0 / PID 复用问题)。
 //! - 拉起方式:fork(由 std::process::Command 完成) + 在 pre_exec 里 setsid + stdio 重定向到日志。
 //! - 不等待子进程,父进程退出后子进程被 init 收养,作为正常后台进程持续跑。
-//! - 找 subswapd 二进制:优先 current_exe 同目录,其次 PATH。
+//! - 后台入口统一用当前 `subswap __daemon`。`subswapd` 只是兼容壳。
 //! - 非 Unix 平台:暂不自动拉起(M4 只承诺 Linux / macOS)。
 
 #[cfg(unix)]
 use anyhow::Context;
 use anyhow::Result;
 #[cfg(unix)]
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub fn ensure_daemon_running() -> Result<()> {
     // 测试 / 用户禁用逃生口:SUBSWAP_NO_DAEMON=1 时不拉。
@@ -27,9 +27,7 @@ pub fn ensure_daemon_running() -> Result<()> {
         if daemon_alive(&pid_path)? {
             return Ok(());
         }
-        let binary = locate_subswapd().context(
-            "subswapd binary not found next to subswap or on PATH; daemon auto-start skipped",
-        )?;
+        let binary = std::env::current_exe().context("resolve current subswap executable")?;
         let log_path = paths.daemon_log_file();
         spawn_detached_daemon(&binary, &log_path)?;
         Ok(())
@@ -63,26 +61,6 @@ fn daemon_alive(pid_path: &Path) -> Result<bool> {
 }
 
 #[cfg(unix)]
-fn locate_subswapd() -> Option<PathBuf> {
-    if let Ok(cur) = std::env::current_exe() {
-        if let Some(dir) = cur.parent() {
-            let candidate = dir.join("subswapd");
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join("subswapd");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-#[cfg(unix)]
 fn spawn_detached_daemon(binary: &Path, log_path: &Path) -> Result<()> {
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
@@ -99,6 +77,7 @@ fn spawn_detached_daemon(binary: &Path, log_path: &Path) -> Result<()> {
 
     // SAFETY: pre_exec 里只调用 async-signal-safe 的 setsid;不分配,不取锁。
     let mut cmd = Command::new(binary);
+    cmd.arg("__daemon");
     cmd.stdin(Stdio::null()).stdout(log_out).stderr(log_err);
     unsafe {
         cmd.pre_exec(|| {

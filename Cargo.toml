@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
@@ -53,6 +53,7 @@ chrono = { version = "0.4", features = ["serde"] }
 subswap-core = { path = "crates/core" }
 subswap-provider-codex = { path = "crates/providers/codex" }
 subswap-provider-claude = { path = "crates/providers/claude" }
+subswap-daemon = { path = "crates/daemon" }
 
 [profile.release]
 opt-level = 3
