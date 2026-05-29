@@ -1,0 +1,326 @@
+//! subswapd:subswap 后台守护进程。
+//!
+//! 职责(M4):
+//! 1. 每 `DAEMON_POLL_INTERVAL_MS` 跑一轮:对每个 Provider 拉 quota → 跑 AutoSwapPolicy →
+//!    必要时执行 swap → 写审计日志。
+//! 2. Claude token 后台保活:扫所有 Claude 账号,临近过期且有 refreshToken 的触发刷新,
+//!    只回写 keyring(不动 ~/.claude/)。
+//! 3. 冷却 / flap 检测全在内存:进程重启即重置(刻意为之,简化故障语义)。
+//! 4. SIGTERM / SIGINT 收尾退出(写完当前一轮就停)。
+//!
+//! 不变量(对齐 docs/design/AUTO_SWAP_DESIGN.md):
+//! - 手动 swap 永远不依赖本进程(本进程挂了不影响 `subswap swap`)。
+//! - quota 查询失败 → Degraded,不猜测,不补打请求。
+//! - 不通过高频轮询「探测」429。
+
+#[path = "state.rs"]
+mod state;
+
+use std::path::{Path, PathBuf};
+use std::process;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+
+use anyhow::{Context, Result};
+use fs2::FileExt;
+use subswap_core::{
+    auto_decide, paths::AppPaths, settings, AccountRegistry, AccountWithQuotas, AuditEvent,
+    AuditLog, KeyringStore, PolicyConfig, PolicyDecision, Provider, ProviderRegistry,
+    ProviderSnapshot, QuotaFetchState,
+};
+use subswap_provider_claude::ClaudeProvider;
+use subswap_provider_codex::CodexProvider;
+use tokio::signal::unix::{signal, SignalKind};
+
+use state::DaemonState;
+
+pub async fn run() -> Result<()> {
+    let log_level = std::env::var("SUBSWAPD_LOG").unwrap_or_else(|_| "info".to_string());
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_new(&log_level)
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+
+    let paths = AppPaths::resolve().context("resolve app paths")?;
+
+    // PID 文件 + 文件锁:唯一存活实例。锁获取失败 → 已有实例运行,本进程退出。
+    let pid_path = paths.daemon_pid_file();
+    let pid_file = open_pid_lock(&pid_path)?;
+    if pid_file.try_lock_exclusive().is_err() {
+        tracing::info!(
+            pid_file = %pid_path.display(),
+            "another subswapd already holds the lock; exiting"
+        );
+        return Ok(());
+    }
+    write_pid(&pid_path, process::id())?;
+    tracing::info!(pid = process::id(), "subswapd started");
+
+    let store = Arc::new(KeyringStore::new());
+    let registry = Arc::new(AccountRegistry::from_default_paths()?);
+    let audit = AuditLog::from_default_paths()?;
+
+    let claude = Arc::new(ClaudeProvider::new(store.clone(), registry.clone()));
+    let codex = Arc::new(CodexProvider::new(store.clone(), registry.clone()));
+    let mut providers = ProviderRegistry::new();
+    providers.register(claude.clone());
+    providers.register(codex.clone());
+
+    let mut state = DaemonState::new();
+
+    let mut sigterm = signal(SignalKind::terminate())?;
+    let mut sigint = signal(SignalKind::interrupt())?;
+
+    loop {
+        // 1. 每轮开头热加载配置；解析失败则沿用上次成功值 + warn。
+        if let Err(e) = settings::reload_from_file() {
+            tracing::warn!(err = %e, "reload config failed; keeping previous values");
+        }
+        let snapshot_settings = settings::current();
+
+        // 2. 跑一轮调度。
+        let policy = PolicyConfig {
+            threshold: snapshot_settings.auto_swap.threshold,
+            allow_unknown: false,
+        };
+        if let Err(e) = run_cycle(&providers, &claude, &audit, &mut state, &policy).await {
+            tracing::warn!(err = %e, "daemon cycle failed; will retry next interval");
+        }
+
+        // 3. 按「活跃 / 空闲」选下一轮间隔。判定信号：provider 的 probe 文件 mtime。
+        let poll = decide_next_interval(&providers, &snapshot_settings.daemon);
+        tracing::debug!(
+            interval_ms = poll.as_millis() as u64,
+            "sleeping until next cycle"
+        );
+
+        tokio::select! {
+            _ = tokio::time::sleep(poll) => {}
+            _ = sigterm.recv() => {
+                tracing::info!("SIGTERM received; shutting down");
+                break;
+            }
+            _ = sigint.recv() => {
+                tracing::info!("SIGINT received; shutting down");
+                break;
+            }
+        }
+    }
+
+    // best-effort 清理 PID 文件(锁会随进程退出自动释放)。
+    let _ = std::fs::remove_file(&pid_path);
+    Ok(())
+}
+
+/// 一轮调度:拉 quota → 决策 → swap → token 保活。任一 Provider 失败不影响其他。
+async fn run_cycle(
+    providers: &ProviderRegistry,
+    claude: &Arc<ClaudeProvider>,
+    audit: &AuditLog,
+    state: &mut DaemonState,
+    policy: &PolicyConfig,
+) -> Result<()> {
+    // (a) 收集每个 Provider 的快照。query_quota 失败的账号 fetch_error 带原因。
+    let snapshots = build_snapshots(providers).await;
+
+    // (b) per-provider 跑决策 + 执行。
+    for snap in &snapshots {
+        if snap.accounts.is_empty() {
+            continue;
+        }
+
+        // Degraded 期内跳过该 Provider 的 swap(但 token 保活仍要做)。
+        if state.is_degraded(&snap.provider) {
+            tracing::debug!(provider = %snap.provider, "provider in degraded window; skip");
+            continue;
+        }
+
+        match auto_decide(snap, policy) {
+            PolicyDecision::Swap { to, .. } => {
+                // 冷却:刚被切走 / 切到的账号短期不再选回。
+                if state.in_cooldown(&snap.provider, &to) {
+                    tracing::debug!(
+                        provider = %snap.provider,
+                        target = %to,
+                        "candidate in cooldown; skip this cycle"
+                    );
+                    continue;
+                }
+
+                let provider = match providers.get(&snap.provider) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!(err = %e, provider = %snap.provider, "lookup provider failed");
+                        continue;
+                    }
+                };
+                match provider.activate(&to).await {
+                    Ok(()) => {
+                        audit.append(AuditEvent::ok(
+                            "auto_swap",
+                            &snap.provider,
+                            Some(to.0.as_str()),
+                        ));
+                        state.record_swap(&snap.provider, &to);
+                        tracing::info!(
+                            provider = %snap.provider,
+                            target = %to,
+                            "auto swap done"
+                        );
+
+                        // flap 检测:5min 内 ≥ MAX_FLAP_PER_5MIN 次 → Degraded 30min。
+                        if state.detect_flap(&snap.provider) {
+                            state.mark_degraded(&snap.provider);
+                            audit.append(AuditEvent::err(
+                                "auto_degraded",
+                                &snap.provider,
+                                None,
+                                "flap detected",
+                            ));
+                            tracing::warn!(
+                                provider = %snap.provider,
+                                "flap threshold hit; entering degraded window"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        audit.append(AuditEvent::err(
+                            "auto_swap",
+                            &snap.provider,
+                            Some(to.0.as_str()),
+                            &e.to_string(),
+                        ));
+                        tracing::warn!(
+                            provider = %snap.provider,
+                            target = %to,
+                            err = %e,
+                            "auto swap failed"
+                        );
+                    }
+                }
+            }
+            PolicyDecision::Degraded { reason } => {
+                tracing::debug!(provider = %snap.provider, reason = %reason, "degraded");
+            }
+            PolicyDecision::NoOp { .. } => {}
+        }
+    }
+
+    // (c) Claude token 后台保活:对所有 Claude 账号检查 expires_at。
+    keep_claude_tokens_alive(claude).await;
+    Ok(())
+}
+
+async fn build_snapshots(providers: &ProviderRegistry) -> Vec<ProviderSnapshot> {
+    let mut out = Vec::new();
+    for p in providers.all() {
+        let provider_id = p.id().to_string();
+        let accounts = match p.list_accounts().await {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!(err = %e, provider = %provider_id, "list_accounts failed");
+                continue;
+            }
+        };
+        let mut awqs = Vec::with_capacity(accounts.len());
+        for account in accounts {
+            let id = account.id.clone();
+            let (quotas, fetch_state) = match p.query_quota(&id).await {
+                Ok(q) => (q, QuotaFetchState::Ready),
+                Err(e) => (Vec::new(), QuotaFetchState::Failed(e.to_string())),
+            };
+            awqs.push(AccountWithQuotas {
+                account,
+                quotas,
+                fetch_state,
+            });
+        }
+        out.push(ProviderSnapshot {
+            provider: provider_id,
+            accounts: awqs,
+        });
+    }
+    out
+}
+
+/// 扫 Claude 账号,临近过期的触发 refresh。任一账号失败仅 warn。
+async fn keep_claude_tokens_alive(claude: &Arc<ClaudeProvider>) {
+    let accounts = match claude.list_accounts().await {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!(err = %e, "claude list_accounts failed during keepalive");
+            return;
+        }
+    };
+    for account in accounts {
+        match claude.refresh_if_near_expiry(&account.id).await {
+            Ok(true) => {
+                tracing::info!(account = %account.id, "claude token refreshed");
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(
+                    account = %account.id,
+                    err = %e,
+                    "claude token refresh failed"
+                );
+            }
+        }
+    }
+}
+
+fn open_pid_lock(path: &PathBuf) -> Result<std::fs::File> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("open pid file {}", path.display()))
+}
+
+fn write_pid(path: &PathBuf, pid: u32) -> Result<()> {
+    std::fs::write(path, pid.to_string().as_bytes())
+        .with_context(|| format!("write pid to {}", path.display()))
+}
+
+/// 根据「最近一次客户端活动」选下一轮轮询间隔。
+///
+/// 活动信号：所有 provider `client_targets().probe_path` 中最近一次 mtime。
+/// - 距今 < `idle_threshold_ms` → 活跃，用 `poll_interval_ms`
+/// - 否则 → 空闲，用 `idle_poll_interval_ms`
+///
+/// 探针文件不存在 / 拿不到 mtime 时按「空闲」处理（保守，避免凭空高频轮询）。
+fn decide_next_interval(
+    providers: &ProviderRegistry,
+    cfg: &subswap_core::settings::Daemon,
+) -> Duration {
+    let now = SystemTime::now();
+    let mut newest: Option<Duration> = None;
+    for p in providers.all() {
+        for target in p.client_targets() {
+            if let Some(age) = mtime_age(&target.probe_path, now) {
+                newest = Some(match newest {
+                    Some(prev) if prev <= age => prev,
+                    _ => age,
+                });
+            }
+        }
+    }
+    let idle_threshold = Duration::from_millis(cfg.idle_threshold_ms.max(0) as u64);
+    match newest {
+        Some(age) if age < idle_threshold => Duration::from_millis(cfg.poll_interval_ms),
+        _ => Duration::from_millis(cfg.idle_poll_interval_ms),
+    }
+}
+
+fn mtime_age(path: &Path, now: SystemTime) -> Option<Duration> {
+    let mtime = std::fs::metadata(path).ok()?.modified().ok()?;
+    now.duration_since(mtime).ok()
+}
