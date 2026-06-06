@@ -63,8 +63,8 @@ Token 刷新请求体：
 - `seven_day.utilization` / `seven_day.resets_at`
 - `extra_usage.utilization` / `extra_usage.resets_at` / `extra_usage.monthly_limit` / `extra_usage.used_credits`
 
-**单位漂移防御**：utilization 当前是 0~100；若上游某天改成 0~1 比例，
-`make_quota` 已加 sanity 归一化（值 ≤ 1.5 视作比例 × 100）。
+`utilization` 固定按 0~100 的已用百分比解析。小于 1 的值仍表示不到 1% 已用，不能当成 0~1 比例放大，
+否则会把 `0.97%` 错误解析为 `97%`。
 
 ### Usage 接口异常状态码的真实含义
 

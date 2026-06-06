@@ -95,9 +95,28 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
     let active = snapshot.accounts.iter().find(|a| a.account.active);
     let active_id = active.map(|a| a.account.id.clone());
 
-    // 1. active 账号自身额度查询失败 → 不知道是否真超额 → 降级。
+    // 1. active 账号自身额度查询失败时，若有额度明确可用的其他账号则切走。
+    // 没有明确可用候选时才降级，避免从未知切到未知。
     if let Some(a) = active {
         if let Some(err) = a.fetch_state.failed() {
+            if let Some(best) = snapshot
+                .accounts
+                .iter()
+                .filter(|candidate| candidate.account.id != a.account.id)
+                .filter(|candidate| {
+                    is_viable_candidate(candidate, config.threshold, config.allow_unknown)
+                })
+                .min_by(|left, right| compare_candidates(left, right))
+            {
+                return PolicyDecision::Swap {
+                    from: Some(a.account.id.clone()),
+                    to: best.account.id.clone(),
+                    reason: format!(
+                        "active account {} quota fetch failed ({}); pick {} (known available)",
+                        a.account.id, err, best.account.id
+                    ),
+                };
+            }
             return PolicyDecision::Degraded {
                 reason: format!(
                     "active account {} quota fetch failed ({}); cannot decide",
@@ -120,7 +139,7 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
         };
     }
 
-    // 3. 筛候选：排除当前激活，优先选择至少有一个窗口可承接流量的账号。
+    // 3. 筛候选：排除当前激活，优先选择当前可承接流量的账号。
     let candidates: Vec<&AccountWithQuotas> = snapshot
         .accounts
         .iter()
@@ -130,7 +149,7 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
 
     if let Some(best) = candidates
         .into_iter()
-        .min_by(|a, b| compare_candidates(a, b, config.threshold))
+        .min_by(|a, b| compare_candidates(a, b))
     {
         let reason = match active {
             Some(a) => format!(
@@ -244,16 +263,18 @@ fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: boo
     if a.quotas.is_empty() {
         return allow_unknown;
     }
-    // 多窗口账号只要至少一个窗口明确可用，就比继续停留在已耗尽账号更有承接能力。
-    let has_known_available = a
+    // 候选不能有任何窗口达到/超过 threshold，否则切过去仍无法正常承接流量。
+    let no_above_threshold = a.quotas.iter().all(|q| !q.is_above(threshold));
+    let no_exhausted = a
         .quotas
         .iter()
-        .any(|q| matches!(q.status, QuotaStatus::Ok) && !q.is_above(threshold));
-    has_known_available
-        || (allow_unknown
-            && a.quotas
-                .iter()
-                .any(|q| !quota_blocks_candidate(q, threshold)))
+        .all(|q| !matches!(q.status, QuotaStatus::Exhausted));
+    if allow_unknown {
+        no_above_threshold && no_exhausted
+    } else {
+        let any_ok = a.quotas.iter().any(|q| matches!(q.status, QuotaStatus::Ok));
+        any_ok && no_above_threshold && no_exhausted
+    }
 }
 
 fn reset_ready_at(
@@ -294,14 +315,10 @@ fn quota_blocks_candidate(q: &Quota, threshold: f64) -> bool {
     matches!(q.status, QuotaStatus::Exhausted) || q.is_above(threshold)
 }
 
-fn compare_candidates(
-    a: &AccountWithQuotas,
-    b: &AccountWithQuotas,
-    threshold: f64,
-) -> std::cmp::Ordering {
-    // 只比较可承接流量窗口的最忙 used；已耗尽窗口不影响可用窗口之间的选择。
-    let a_busiest = busiest_available_used(&a.quotas, threshold);
-    let b_busiest = busiest_available_used(&b.quotas, threshold);
+fn compare_candidates(a: &AccountWithQuotas, b: &AccountWithQuotas) -> std::cmp::Ordering {
+    // 「最忙窗口」used 升序（剩余多的优先）
+    let a_busiest = busiest_used(&a.quotas);
+    let b_busiest = busiest_used(&b.quotas);
     a_busiest
         .cmp(&b_busiest)
         .then(a.account.priority.cmp(&b.account.priority))
@@ -327,13 +344,8 @@ fn compare_unknown_candidates(a: &AccountWithQuotas, b: &AccountWithQuotas) -> s
         .then(a.account.id.0.cmp(&b.account.id.0))
 }
 
-fn busiest_available_used(quotas: &[Quota], threshold: f64) -> u64 {
-    quotas
-        .iter()
-        .filter(|q| matches!(q.status, QuotaStatus::Ok) && !q.is_above(threshold))
-        .map(|q| q.used)
-        .max()
-        .unwrap_or(u64::MAX)
+fn busiest_used(quotas: &[Quota]) -> u64 {
+    quotas.iter().map(|q| q.used).max().unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -431,12 +443,26 @@ mod tests {
     }
 
     #[test]
-    fn degraded_when_active_quota_fetch_fails() {
+    fn active_quota_fetch_failure_swaps_to_known_available_candidate() {
         let mut a = mk_awq("a", true, 0, QuotaStatus::Unknown);
         a.fetch_state = QuotaFetchState::Failed("timeout".into());
         let snap = ProviderSnapshot {
             provider: "claude".into(),
             accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(matches!(d, PolicyDecision::Swap { to, .. } if to.0 == "b"));
+    }
+
+    #[test]
+    fn degraded_when_active_quota_fetch_fails_without_known_candidate() {
+        let mut a = mk_awq("a", true, 0, QuotaStatus::Unknown);
+        a.fetch_state = QuotaFetchState::Failed("timeout".into());
+        let mut b = mk_awq("b", false, 0, QuotaStatus::Unknown);
+        b.fetch_state = QuotaFetchState::Failed("429".into());
+        let snap = ProviderSnapshot {
+            provider: "claude".into(),
+            accounts: vec![a, b],
         };
         let d = decide(&snap, &PolicyConfig::default());
         assert!(matches!(d, PolicyDecision::Degraded { .. }));
@@ -473,24 +499,6 @@ mod tests {
         };
         let d = decide(&snap, &PolicyConfig::default());
         assert!(matches!(d, PolicyDecision::Degraded { .. }), "got {d:?}");
-    }
-
-    #[test]
-    fn swaps_to_candidate_with_one_available_window() {
-        let mut active = mk_awq("active", true, 100, QuotaStatus::Exhausted);
-        active.quotas.push(mk_quota(11, QuotaStatus::Ok));
-
-        let mut candidate = mk_awq("candidate", false, 10, QuotaStatus::Ok);
-        candidate.quotas.push(mk_quota(100, QuotaStatus::Exhausted));
-
-        let d = decide(
-            &ProviderSnapshot {
-                provider: "claude".into(),
-                accounts: vec![active, candidate],
-            },
-            &PolicyConfig::default(),
-        );
-        assert!(matches!(d, PolicyDecision::Swap { to, .. } if to.0 == "candidate"));
     }
 
     #[test]

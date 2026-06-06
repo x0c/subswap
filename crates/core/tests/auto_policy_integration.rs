@@ -75,14 +75,14 @@ fn default_threshold_swaps_at_98_percent() {
 }
 
 #[test]
-fn active_quota_fetch_error_degrades_instead_of_guessing() {
+fn active_quota_fetch_error_swaps_to_known_available_candidate() {
     let mut active = awq("active", true, 0, QuotaStatus::Unknown);
     active.fetch_state = QuotaFetchState::Failed("429 too many requests".into());
     let snap = snapshot(vec![active, awq("candidate", false, 1, QuotaStatus::Ok)]);
 
     assert!(matches!(
         auto_decide(&snap, &PolicyConfig::default()),
-        PolicyDecision::Degraded { .. }
+        PolicyDecision::Swap { to, .. } if to.0 == "candidate"
     ));
 }
 
