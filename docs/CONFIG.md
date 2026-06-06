@@ -27,8 +27,8 @@ Windows: %APPDATA%\subswap\subswap\config\config.toml
 | `quota.warn_pct` | `90.0` | 0~100 | CLI 显示 `warn` 的阈值；不参与切换决策 |
 | `quota.exhausted_pct` | `100.0` | 0~100 | CLI 显示 `full` 的阈值；不参与切换决策 |
 | `quota.fetch_timeout_ms` | `3000` | 毫秒 | 单次 quota 查询 attempt 的超时；超时后按 `quota.fetch_retries` 决定是否重试 |
-| `quota.fetch_retries` | `1` | 次 | quota 查询失败后额外重试次数；默认 1 表示最多 2 次 attempt |
-| `quota.fetch_retry_delay_ms` | `500` | 毫秒 | 每次 quota 重试前的等待时间 |
+| `quota.fetch_retries` | `5` | 次 | quota 查询失败后额外重试次数；最多 5 次，401/403 不重试 |
+| `quota.fetch_retry_delay_ms` | `500` | 毫秒 | 首次 quota 重试等待时间；后续按 500ms、1s、2s、4s、8s 指数退避 |
 | `token.refresh_slack_ms` | `300000` | 毫秒 | Claude token 距过期此值内 → 触发预刷新 |
 | `daemon.poll_interval_ms` | `60000` | 毫秒 | 活跃时轮询间隔 |
 | `daemon.idle_threshold_ms` | `1800000` | 毫秒 | provider probe 文件 mtime 距今超过此值视为「用户没在用」 |
@@ -49,7 +49,7 @@ idle_poll_interval_ms = 1800000     # 空闲 30 分钟一轮
 文档化的字段并不代表「越激进越好」：
 
 - `auto_swap.threshold` 设过低（如 0.5）→ 容易飘出 `Degraded`（两个号都过阈值，policy 不再切，需要手动 swap）。
-- `quota.fetch_retries` / `quota.fetch_retry_delay_ms` 只适合吸收偶发网络抖动；不要把重试次数调高制造请求风暴。
+- `quota.fetch_retries` 最大按 5 次生效；401/403 不重试，其余失败按 `quota.fetch_retry_delay_ms` 指数退避。
 - `daemon.poll_interval_ms` 设过短（< 30s）→ wham/usage 高频请求可能触风控。
 - `daemon.idle_*` 的初衷是「用户真没在用 AI 时别打 quota 请求」，**不要**通过缩小 `idle_threshold_ms` 把空闲化掉。
 

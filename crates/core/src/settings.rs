@@ -20,7 +20,7 @@
 //! idle_poll_interval_ms = 900000
 //!
 //! [quota]
-//! fetch_retries = 1
+//! fetch_retries = 5
 //! ```
 
 use std::path::Path;
@@ -60,9 +60,9 @@ pub struct Quota {
     pub exhausted_pct: f64,
     /// 单次 quota 查询 attempt 的超时（毫秒）。
     pub fetch_timeout_ms: u64,
-    /// quota 查询失败后额外重试几次；默认 1 表示总共最多 2 次 attempt。
+    /// quota 查询失败后额外重试几次；最多 5 次，401/403 不重试。
     pub fetch_retries: u32,
-    /// 每次重试前等待多久（毫秒）。
+    /// 首次重试前等待多久（毫秒）；后续指数退避。
     pub fetch_retry_delay_ms: u64,
 }
 
