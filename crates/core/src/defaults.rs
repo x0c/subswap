@@ -42,11 +42,22 @@ pub const QUOTA_EXHAUSTED_PCT: f64 = 100.0;
 /// 仅作为兼容兜底；过期缓存不参与展示/自动切换，避免 stale quota 误导策略。
 pub const CODEX_USAGE_CACHE_MAX_AGE_MS: i64 = 10 * 60 * 1000;
 
-/// `subswap` 默认入口拉 quota 的整体超时（毫秒）。
+/// 单次 quota 查询 attempt 的超时（毫秒）。
 ///
-/// 渐进刷新等待所有账号返回；超过此值仍未返回的账号标记为超时失败、停止等待并退出，
-/// 避免单个账号网络卡住拖住整条命令。仅影响 CLI 展示节奏，不改变已成功账号的结果。
+/// CLI 与 daemon 都通过统一重试包装查询 quota。单次 attempt 超过此值会被取消，并按
+/// [`QUOTA_FETCH_RETRIES`] 决定是否重试。
 pub const QUOTA_FETCH_TIMEOUT_MS: u64 = 3000;
+
+/// quota 查询失败后的重试次数。
+///
+/// 这里表示「首次请求之外」额外再试几次。默认 1 次，避免偶发网络抖动直接让账号进入 Failed；
+/// 仍保持保守，避免高频请求触发上游风控。
+pub const QUOTA_FETCH_RETRIES: u32 = 1;
+
+/// quota 查询重试前等待多久（毫秒）。
+///
+/// 配合 [`QUOTA_FETCH_RETRIES`] 使用，给瞬时网络错误一个短暂恢复窗口。
+pub const QUOTA_FETCH_RETRY_DELAY_MS: u64 = 500;
 
 // ============================================================
 // Token 生命周期

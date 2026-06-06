@@ -9,7 +9,7 @@ mod codex_files;
 mod openai_usage;
 mod paths;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -59,7 +59,7 @@ impl CodexProvider {
 
     /// 仅同步当前 `~/.codex/auth.json` 的非敏感元数据。
     ///
-    /// 默认入口使用它来避免 macOS Keychain 弹授权框；真正保存可切换凭证仍由
+    /// 默认入口使用它来对齐 active 标记,避免 macOS Keychain 弹授权框。真正保存可切换凭证仍由
     /// [`Self::import_active`] / `subswap login` 负责。
     pub fn sync_active_metadata(&self, label_hint: Option<String>) -> Result<Account> {
         let raw = read_auth(&active_auth_path(&self.codex_home))?;
@@ -256,21 +256,14 @@ impl Provider for CodexProvider {
 
     async fn activate(&self, id: &AccountId) -> Result<()> {
         // 阶段 1：异步预处理（仅查 registry + keyring，无网络调用）。
-        let _account =
+        let account =
             self.registry
                 .find(PROVIDER_ID, id)?
                 .ok_or_else(|| Error::AccountNotFound {
                     provider: PROVIDER_ID.into(),
                     id: id.to_string(),
                 })?;
-        let target_raw = self
-            .store
-            .get(PROVIDER_ID, id.0.as_str(), AUTH_FIELD)?
-            .ok_or_else(|| {
-                Error::Credential(format!(
-                    "no keyring entry for {PROVIDER_ID}:{id}:{AUTH_FIELD}; re-add this account"
-                ))
-            })?;
+        let target_raw = self.raw_auth_for_account(&account)?;
 
         // 阶段 2：同步阻塞部分搬进 spawn_blocking，避免堵塞 tokio worker。
         let codex_home = self.codex_home.clone();
@@ -317,9 +310,17 @@ impl Provider for CodexProvider {
             })?
             .to_string();
 
+        if !quota_keychain_access_enabled() && self.read_active_auth_if_matches(&account)?.is_none()
+        {
+            return Err(Error::Credential(
+                "quota skipped on macOS; set SUBSWAP_QUERY_INACTIVE_KEYCHAIN=1 to allow keychain-backed quota"
+                    .into(),
+            ));
+        }
+
         // 2. 从 auth blob 抽 access_token。当前本地激活账号优先读 ~/.codex/auth.json，
         //    避免 macOS 后台/前台 Keychain 授权影响状态页；非当前账号仍走 keyring。
-        let raw = self.raw_auth_for_quota(&account)?;
+        let raw = self.raw_auth_for_account(&account)?;
         let access_token = extract_access_token(&raw).ok_or_else(|| {
             Error::QuotaFetch(
                 "no access_token in auth.json; codex may have changed its schema — subswap parser needs an update"
@@ -386,18 +387,52 @@ impl Provider for CodexProvider {
 }
 
 impl CodexProvider {
-    fn raw_auth_for_quota(&self, account: &Account) -> Result<String> {
+    fn raw_auth_for_account(&self, account: &Account) -> Result<String> {
         if let Some(raw) = self.read_active_auth_if_matches(account)? {
+            if active_keychain_repair_enabled() {
+                if let Err(e) = self
+                    .store
+                    .set(PROVIDER_ID, account.id.0.as_str(), AUTH_FIELD, &raw)
+                {
+                    tracing::debug!(
+                        account = %account.id,
+                        err = %e,
+                        "codex active auth matched but keyring repair failed"
+                    );
+                }
+            }
             return Ok(raw);
         }
-        self.store
-            .get(PROVIDER_ID, account.id.0.as_str(), AUTH_FIELD)?
-            .ok_or_else(|| {
-                Error::Credential(format!(
-                    "no keyring entry for {PROVIDER_ID}:{}:{AUTH_FIELD}",
-                    account.id
-                ))
-            })
+        let keyring_error = match self
+            .store
+            .get(PROVIDER_ID, account.id.0.as_str(), AUTH_FIELD)
+        {
+            Ok(Some(raw)) => return Ok(raw),
+            Ok(None) => None,
+            Err(e) => Some(e),
+        };
+        if let Some(raw) = self.recover_legacy_auth_for_account(account) {
+            if let Err(e) = self
+                .store
+                .set(PROVIDER_ID, account.id.0.as_str(), AUTH_FIELD, &raw)
+            {
+                tracing::debug!(
+                    account = %account.id,
+                    err = %e,
+                    "codex legacy auth matched but keyring repair failed"
+                );
+            } else {
+                tracing::info!(account = %account.id, "codex keyring repaired from legacy auth");
+            }
+            return Ok(raw);
+        }
+        if let Some(e) = keyring_error {
+            return Err(e);
+        }
+        Err(Error::Credential(format!(
+            "no keyring entry for {PROVIDER_ID}:{}:{AUTH_FIELD}; run `subswap login codex` or re-import this account",
+            account.id
+        )))
     }
 
     fn read_active_auth_if_matches(&self, account: &Account) -> Result<Option<String>> {
@@ -406,21 +441,137 @@ impl CodexProvider {
             Err(_) => return Ok(None),
         };
         let metadata = parse_metadata(&raw);
-        if metadata.primary_id().as_deref() == Some(account.id.0.as_str()) {
-            return Ok(Some(raw));
-        }
-        let current_chatgpt_account_id = metadata.chatgpt_account_id.as_deref();
-        let account_chatgpt_account_id = account
-            .extra
-            .get(META_CHATGPT_ACCOUNT_ID)
-            .and_then(|value| value.as_str());
-        if current_chatgpt_account_id.is_some()
-            && current_chatgpt_account_id == account_chatgpt_account_id
-        {
+        if auth_metadata_matches_account(&metadata, account) {
             return Ok(Some(raw));
         }
         Ok(None)
     }
+
+    fn recover_legacy_auth_for_account(&self, account: &Account) -> Option<String> {
+        let accounts_dir = self.codex_home.join("accounts");
+        if let Some(raw) = self.recover_legacy_auth_from_registry(&accounts_dir, account) {
+            return Some(raw);
+        }
+
+        let entries = std::fs::read_dir(&accounts_dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !name.ends_with(".auth.json") {
+                continue;
+            }
+            let Ok(raw) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let metadata = parse_metadata(&raw);
+            if auth_metadata_matches_account(&metadata, account) {
+                return Some(raw);
+            }
+        }
+        None
+    }
+
+    fn recover_legacy_auth_from_registry(
+        &self,
+        accounts_dir: &Path,
+        account: &Account,
+    ) -> Option<String> {
+        let registry_raw = std::fs::read_to_string(accounts_dir.join("registry.json")).ok()?;
+        let registry: serde_json::Value = serde_json::from_str(&registry_raw).ok()?;
+        let accounts = registry.get("accounts")?.as_array()?;
+
+        for legacy in accounts {
+            if !legacy_account_matches_account(legacy, account) {
+                continue;
+            }
+            let account_key = legacy.get("account_key")?.as_str()?;
+            let auth_path =
+                accounts_dir.join(format!("{}.auth.json", base64_url_no_pad(account_key)));
+            if let Ok(raw) = std::fs::read_to_string(auth_path) {
+                return Some(raw);
+            }
+        }
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn active_keychain_repair_enabled() -> bool {
+    std::env::var_os("SUBSWAP_SYNC_KEYCHAIN_ON_START").is_some()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn active_keychain_repair_enabled() -> bool {
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn quota_keychain_access_enabled() -> bool {
+    std::env::var_os("SUBSWAP_QUERY_INACTIVE_KEYCHAIN").is_some()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn quota_keychain_access_enabled() -> bool {
+    true
+}
+
+fn legacy_account_matches_account(legacy: &serde_json::Value, account: &Account) -> bool {
+    let legacy_email = legacy.get("email").and_then(|value| value.as_str());
+    let legacy_account_key = legacy.get("account_key").and_then(|value| value.as_str());
+    let legacy_chatgpt_account_id = legacy
+        .get(META_CHATGPT_ACCOUNT_ID)
+        .and_then(|value| value.as_str());
+    let account_chatgpt_account_id = account_chatgpt_account_id(account);
+
+    string_matches_account(legacy_email, account)
+        || string_matches_account(legacy_account_key, account)
+        || (legacy_chatgpt_account_id.is_some()
+            && legacy_chatgpt_account_id == account_chatgpt_account_id)
+}
+
+fn auth_metadata_matches_account(metadata: &AuthMetadata, account: &Account) -> bool {
+    let account_chatgpt_account_id = account_chatgpt_account_id(account);
+    string_matches_account(metadata.primary_id().as_deref(), account)
+        || string_matches_account(metadata.email.as_deref(), account)
+        || string_matches_account(metadata.alias.as_deref(), account)
+        || (metadata.chatgpt_account_id.as_deref().is_some()
+            && metadata.chatgpt_account_id.as_deref() == account_chatgpt_account_id)
+}
+
+fn string_matches_account(value: Option<&str>, account: &Account) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    value == account.id.0 || (!account.label.trim().is_empty() && value == account.label)
+}
+
+fn account_chatgpt_account_id(account: &Account) -> Option<&str> {
+    account
+        .extra
+        .get(META_CHATGPT_ACCOUNT_ID)
+        .and_then(|value| value.as_str())
+}
+
+fn base64_url_no_pad(input: &str) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        out.push(TABLE[(b0 >> 2) as usize] as char);
+        out.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize] as char);
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
+        }
+    }
+    out
 }
 
 fn usage_has_unknown_quota(usage: &openai_usage::WhamUsage) -> bool {
@@ -473,6 +624,31 @@ fn extract_access_token(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn account_with_email_id(email: &str) -> Account {
+        Account {
+            provider: PROVIDER_ID.into(),
+            id: AccountId(email.into()),
+            label: email.into(),
+            active: true,
+            created_at: Utc::now(),
+            last_used_at: None,
+            priority: 100,
+            extra: serde_json::Map::new(),
+        }
+    }
+
+    #[test]
+    fn active_auth_matches_registry_email_even_when_primary_id_is_account_key() {
+        let metadata = AuthMetadata {
+            account_key: Some("acc-stable-key".into()),
+            email: Some("achesjeremy819@gmail.com".into()),
+            ..AuthMetadata::default()
+        };
+        let account = account_with_email_id("achesjeremy819@gmail.com");
+
+        assert!(auth_metadata_matches_account(&metadata, &account));
+    }
 
     #[test]
     fn extract_access_token_finds_nested() {

@@ -18,6 +18,10 @@ pub fn ensure_daemon_running() -> Result<()> {
     if std::env::var_os("SUBSWAP_NO_DAEMON").is_some() {
         return Ok(());
     }
+    if !daemon_auto_start_enabled() {
+        tracing::debug!("daemon auto-start disabled on macOS; set SUBSWAP_AUTO_DAEMON=1 to opt in");
+        return Ok(());
+    }
     #[cfg(unix)]
     {
         use subswap_core::paths::AppPaths;
@@ -37,6 +41,18 @@ pub fn ensure_daemon_running() -> Result<()> {
         tracing::debug!("daemon auto-start not supported on this platform; run subswapd manually");
         Ok(())
     }
+}
+
+#[cfg(target_os = "macos")]
+fn daemon_auto_start_enabled() -> bool {
+    // macOS Keychain 授权绑定到具体进程/二进制签名。后台 daemon 默认读 keychain
+    // 会制造额外授权弹窗,所以 macOS 只在用户显式 opt-in 时自动拉起。
+    std::env::var_os("SUBSWAP_AUTO_DAEMON").is_some()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn daemon_auto_start_enabled() -> bool {
+    true
 }
 
 #[cfg(unix)]

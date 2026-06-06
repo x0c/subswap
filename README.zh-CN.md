@@ -99,7 +99,7 @@ subswap doctor
 
 只要你至少登录过一次 Claude Code / Codex CLI，第一次运行 `subswap` 时就会自动从 `~/.claude` 和 `~/.codex` 发现账号。
 
-第一次执行 `subswap` 还会启动一个分离的后台 daemon。它会轮询额度并在后台自动切换账号，同时保持 Claude OAuth token 新鲜，避免长期闲置账号在刚切换过去时立即返回 401。daemon 是单实例（文件锁）、仅 Unix，并且可以安全终止：`pkill -f 'subswap __daemon'` 或 `pkill subswapd`。如需完全禁用，导出 `SUBSWAP_NO_DAEMON=1`。
+第一次执行 `subswap` 会在非 macOS 的 Unix 平台启动一个分离的后台 daemon。它会轮询额度并在后台自动切换账号，同时保持 Claude OAuth token 新鲜，避免长期闲置账号在刚切换过去时立即返回 401。macOS 需要显式 opt-in，因为后台进程访问 Keychain 容易触发额外授权弹窗：导出 `SUBSWAP_AUTO_DAEMON=1` 即可启用自动拉起。daemon 是单实例（文件锁），并且可以安全终止：`pkill -f 'subswap __daemon'` 或 `pkill subswapd`。如需完全禁用，导出 `SUBSWAP_NO_DAEMON=1`。
 
 ## 设计不变量
 

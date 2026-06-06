@@ -24,9 +24,9 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use subswap_core::{
-    auto_decide, paths::AppPaths, settings, AccountRegistry, AccountWithQuotas, AuditEvent,
-    AuditLog, KeyringStore, PolicyConfig, PolicyDecision, Provider, ProviderRegistry,
-    ProviderSnapshot, QuotaFetchState,
+    auto_decide, paths::AppPaths, query_quota_with_retry, settings, AccountRegistry,
+    AccountWithQuotas, AuditEvent, AuditLog, KeyringStore, PolicyConfig, PolicyDecision, Provider,
+    ProviderRegistry, ProviderSnapshot, QuotaFetchState,
 };
 use subswap_provider_claude::ClaudeProvider;
 use subswap_provider_codex::CodexProvider;
@@ -228,7 +228,7 @@ async fn build_snapshots(providers: &ProviderRegistry) -> Vec<ProviderSnapshot> 
         let mut awqs = Vec::with_capacity(accounts.len());
         for account in accounts {
             let id = account.id.clone();
-            let (quotas, fetch_state) = match p.query_quota(&id).await {
+            let (quotas, fetch_state) = match query_quota_with_retry(p.as_ref(), &id).await {
                 Ok(q) => (q, QuotaFetchState::Ready),
                 Err(e) => (Vec::new(), QuotaFetchState::Failed(e.to_string())),
             };
