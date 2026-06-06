@@ -496,13 +496,11 @@ fn make_quota(
     util_value: Option<f64>,
     reset_at: Option<chrono::DateTime<Utc>>,
 ) -> Quota {
-    // Anthropic usage 返回的 utilization 当前是 0~100（百分比）。但为防止上游某天改成 0~1
-    // 的比例形式后影响状态判断，这里做 sanity 归一化：
-    // - 值在 (0, 1.5] 视为「比例」，乘以 100 转为百分比；
-    // - 值 > 1.5 视为「百分比」，直接使用。
+    // Anthropic usage 的 utilization 固定是 0~100 的已用百分比。
+    // 不能把小于 1 的值当成比例，否则 0.97% 会被误判成 97%。
     let (used, status) = match util_value {
         Some(v) if v.is_finite() => {
-            let pct = if v <= 1.5 { v * 100.0 } else { v };
+            let pct = v;
             let used = pct.round().clamp(0.0, 100.0) as u64;
             (used, QuotaStatus::from_percent(pct))
         }
@@ -578,15 +576,15 @@ mod tests {
     }
 
     #[test]
-    fn make_quota_ratio_input_normalized() {
+    fn make_quota_small_percent_is_not_treated_as_ratio() {
         let q = make_quota(
             &AccountId("x".into()),
             QuotaWindow::FiveHour,
             Some(0.97),
             None,
         );
-        assert_eq!(q.used, 97);
-        assert_eq!(q.status, QuotaStatus::Warn);
+        assert_eq!(q.used, 1);
+        assert_eq!(q.status, QuotaStatus::Ok);
     }
 
     #[test]
