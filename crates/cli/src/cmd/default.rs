@@ -268,6 +268,43 @@ fn quota_query_would_touch_inactive_keychain(_account: &Account) -> bool {
     false
 }
 
+fn apply_quota_update(snapshots: &mut [ProviderSnapshot], update: QuotaUpdate) {
+    let Some(snap) = snapshots
+        .iter_mut()
+        .find(|snap| snap.provider == update.provider)
+    else {
+        return;
+    };
+    let Some(awq) = snap
+        .accounts
+        .iter_mut()
+        .find(|awq| awq.account.id == update.account_id)
+    else {
+        return;
+    };
+    match update.result {
+        Ok(quotas) => {
+            awq.quotas = quotas;
+            awq.fetch_state = QuotaFetchState::Ready;
+        }
+        Err(err) => {
+            awq.quotas.clear();
+            awq.fetch_state = QuotaFetchState::Failed(err);
+        }
+    }
+}
+
+fn mark_active(snapshots: &mut [ProviderSnapshot], provider: &str, id: &AccountId) {
+    for snap in snapshots {
+        if snap.provider != provider {
+            continue;
+        }
+        for awq in &mut snap.accounts {
+            awq.account.active = awq.account.id == *id;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,42 +361,5 @@ mod tests {
             ),
             "auto: swapped"
         );
-    }
-}
-
-fn apply_quota_update(snapshots: &mut [ProviderSnapshot], update: QuotaUpdate) {
-    let Some(snap) = snapshots
-        .iter_mut()
-        .find(|snap| snap.provider == update.provider)
-    else {
-        return;
-    };
-    let Some(awq) = snap
-        .accounts
-        .iter_mut()
-        .find(|awq| awq.account.id == update.account_id)
-    else {
-        return;
-    };
-    match update.result {
-        Ok(quotas) => {
-            awq.quotas = quotas;
-            awq.fetch_state = QuotaFetchState::Ready;
-        }
-        Err(err) => {
-            awq.quotas.clear();
-            awq.fetch_state = QuotaFetchState::Failed(err);
-        }
-    }
-}
-
-fn mark_active(snapshots: &mut [ProviderSnapshot], provider: &str, id: &AccountId) {
-    for snap in snapshots {
-        if snap.provider != provider {
-            continue;
-        }
-        for awq in &mut snap.accounts {
-            awq.account.active = awq.account.id == *id;
-        }
     }
 }
