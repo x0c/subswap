@@ -10,7 +10,7 @@
 
 - [架构设计 — ARCHITECTURE.md](design/ARCHITECTURE.md)：模块划分、Provider 抽象、扩展机制。
 - [自动切换设计 — AUTO_SWAP_DESIGN.md](design/AUTO_SWAP_DESIGN.md)：阈值/限流双触发、降级到手动切换。
-- [窗口预热提案 — PREWARM_DESIGN.md](design/PREWARM_DESIGN.md)：给闲号发无头 hi 提前锚定 5h 窗口（提案/未实现；Claude 有效、Codex 待验证；#10 豁免）。
+- [窗口预热提案 — PREWARM_DESIGN.md](design/PREWARM_DESIGN.md)：给闲号发无头 hi 提前锚定 5h 窗口（提案/未实现；Claude 有效、Codex 待验证；#9 豁免）。
 
 ## 操作指南
 
@@ -22,6 +22,7 @@
 - [2026-05-28 — CLAUDE_CONFIG_DIR 自定义时 global config 写到上级目录](troubleshooting/2026-05-28-claude-config-dir-parent-pollution.md)
 - [2026-05-29 — Linux daemon keepalive 空转：keyutils 按 session 隔离](troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md)
 - [2026-05-29 — macOS Keychain 反复弹授权框](troubleshooting/2026-05-29-macos-keychain-prompts.md)
+- [2026-06-06 — 凭证改用明文文件后端，根治钥匙串弹窗 + Claude 额度跳过](troubleshooting/2026-06-06-filestore-credential-backend.md)
 
 ## Code Review 台账
 

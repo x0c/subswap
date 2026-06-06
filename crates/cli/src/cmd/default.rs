@@ -8,7 +8,7 @@ use std::io::{self, IsTerminal};
 use anyhow::Result;
 use futures::future::join_all;
 use subswap_core::{
-    auto_decide, query_quota_with_retry, Account, AccountId, AccountWithQuotas, AuditEvent,
+    auto_decide, query_quota_with_retry, AccountId, AccountWithQuotas, AuditEvent,
     PolicyConfig, PolicyDecision, ProviderRegistry, ProviderSnapshot, Quota, QuotaFetchState,
 };
 
@@ -216,10 +216,7 @@ async fn fill_quotas_progressively(
     for snap in snapshots.iter_mut() {
         let provider = snap.provider.clone();
         for awq in &mut snap.accounts {
-            if quota_query_would_touch_inactive_keychain(&awq.account) {
-                awq.fetch_state = QuotaFetchState::Ready;
-                continue;
-            }
+            // 凭证已走明文 FileStore，查任何账号都不再弹钥匙串，激活/非激活一律查额度。
             jobs.push((provider.clone(), awq.account.id.clone()));
         }
     }
@@ -256,16 +253,6 @@ async fn fill_quotas_progressively(
         }
     }
     Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn quota_query_would_touch_inactive_keychain(account: &Account) -> bool {
-    !account.active && std::env::var_os("SUBSWAP_QUERY_INACTIVE_KEYCHAIN").is_none()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn quota_query_would_touch_inactive_keychain(_account: &Account) -> bool {
-    false
 }
 
 fn apply_quota_update(snapshots: &mut [ProviderSnapshot], update: QuotaUpdate) {

@@ -20,7 +20,7 @@ tracker, or a unified multi-provider subscription swapper.
 - **Quota-aware status**: view provider quota windows such as Claude 5h / 7d usage and Codex / ChatGPT usage data when available.
 - **Automatic account swap**: a background daemon can move away from an account once usage crosses the configured threshold.
 - **Network-independent manual swap**: `subswap swap` still works when quota APIs fail, tokens expire, or the network is down.
-- **Keyring-backed credential storage**: secrets live in macOS Keychain, Windows Credential Manager, or Linux secret-service.
+- **File-backed credential storage**: tokens are kept in an owner-only (`0600`) file under the app data directory, so reading quota never triggers OS keychain prompts. Credentials from older keyring-based installs are migrated automatically on first run.
 - **Provider-based architecture**: Claude / Anthropic and Codex / ChatGPT are separate crates, so new AI providers can be added without changing core policy.
 
 ## Supported clients
@@ -54,7 +54,7 @@ If you pay for more than one AI subscription, you probably hit one of:
 - you keep two ChatGPT seats and want a one-liner to flip the active one;
 - you want to see how much of each window (5h / 7d) is left across accounts.
 
-subswap stores each account in the OS keyring (Keychain / Credential Manager / secret-service), swaps the active one atomically across all clients that read the same on-disk credential file, and never blocks swap on the network — quota lookups are advisory.
+subswap stores each account's credentials in an owner-only file under its data directory (migrating any existing OS-keyring entries on first run), swaps the active one atomically across all clients that read the same on-disk credential file, and never blocks swap on the network — quota lookups are advisory.
 
 ## Install
 

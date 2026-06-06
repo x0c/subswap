@@ -310,16 +310,8 @@ impl Provider for CodexProvider {
             })?
             .to_string();
 
-        if !quota_keychain_access_enabled() && self.read_active_auth_if_matches(&account)?.is_none()
-        {
-            return Err(Error::Credential(
-                "quota skipped on macOS; set SUBSWAP_QUERY_INACTIVE_KEYCHAIN=1 to allow keychain-backed quota"
-                    .into(),
-            ));
-        }
-
         // 2. 从 auth blob 抽 access_token。当前本地激活账号优先读 ~/.codex/auth.json，
-        //    避免 macOS 后台/前台 Keychain 授权影响状态页；非当前账号仍走 keyring。
+        //    非当前账号走凭证仓库(FileStore 明文文件,不弹钥匙串)。
         let raw = self.raw_auth_for_account(&account)?;
         let access_token = extract_access_token(&raw).ok_or_else(|| {
             Error::QuotaFetch(
@@ -389,17 +381,16 @@ impl Provider for CodexProvider {
 impl CodexProvider {
     fn raw_auth_for_account(&self, account: &Account) -> Result<String> {
         if let Some(raw) = self.read_active_auth_if_matches(account)? {
-            if active_keychain_repair_enabled() {
-                if let Err(e) = self
-                    .store
-                    .set(PROVIDER_ID, account.id.0.as_str(), AUTH_FIELD, &raw)
-                {
-                    tracing::debug!(
-                        account = %account.id,
-                        err = %e,
-                        "codex active auth matched but keyring repair failed"
-                    );
-                }
+            // 用激活账号的实时 auth.json 刷新凭证仓库副本(FileStore 明文写入,不弹钥匙串)。
+            if let Err(e) = self
+                .store
+                .set(PROVIDER_ID, account.id.0.as_str(), AUTH_FIELD, &raw)
+            {
+                tracing::debug!(
+                    account = %account.id,
+                    err = %e,
+                    "codex active auth matched but credential store repair failed"
+                );
             }
             return Ok(raw);
         }
@@ -495,26 +486,6 @@ impl CodexProvider {
         }
         None
     }
-}
-
-#[cfg(target_os = "macos")]
-fn active_keychain_repair_enabled() -> bool {
-    std::env::var_os("SUBSWAP_SYNC_KEYCHAIN_ON_START").is_some()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn active_keychain_repair_enabled() -> bool {
-    true
-}
-
-#[cfg(target_os = "macos")]
-fn quota_keychain_access_enabled() -> bool {
-    std::env::var_os("SUBSWAP_QUERY_INACTIVE_KEYCHAIN").is_some()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn quota_keychain_access_enabled() -> bool {
-    true
 }
 
 fn legacy_account_matches_account(legacy: &serde_json::Value, account: &Account) -> bool {

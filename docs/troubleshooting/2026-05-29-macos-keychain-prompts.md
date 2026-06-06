@@ -1,5 +1,12 @@
 # 2026-05-29 · macOS Keychain 反复弹授权框
 
+> **后续（2026-06-06）**：本文记录的是「尽量少碰 Keychain」的缓解方案，副作用是 Claude 激活账号
+> quota 在 macOS 上被误跳过、inactive 账号 quota 空白。最终根治改为**默认换用明文文件凭证后端
+> `FileStore`**，彻底不依赖 Keychain（仅首启从旧 Keychain 一次性迁移）。详见
+> [2026-06-06-filestore-credential-backend.md](2026-06-06-filestore-credential-backend.md)。
+> 下文「修复原则」中 inactive 跳过、`SUBSWAP_QUERY_INACTIVE_KEYCHAIN` / `SUBSWAP_SYNC_KEYCHAIN_ON_START`
+> 等环境变量与 skip 逻辑均已随之移除，保留本文仅作历史背景。
+
 ## 现象
 
 macOS 上运行 `subswap` 时反复弹系统 Keychain 授权框：

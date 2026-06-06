@@ -1,3 +1,50 @@
+<!-- managed:inherited-agents:start -->
+<!-- source: /Users/geraltgraham/Codes/Rust/AGENTS.md -->
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+This project is indexed by GitNexus as **Rust** (1017 symbols, 2038 relationships, 87 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+
+> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
+
+## Always Do
+
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
+
+## Never Do
+
+- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
+- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/Rust/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/Rust/clusters` | All functional areas |
+| `gitnexus://repo/Rust/processes` | All execution flows |
+| `gitnexus://repo/Rust/process/{name}` | Step-by-step execution trace |
+
+## CLI
+
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->
+<!-- managed:inherited-agents:end -->
+
 # subswap · Agent 规范
 
 > 全局规范见 `~/.claude/CLAUDE.md` 与 `~/.claude/AGENTS.md`，此处只补充项目特定内容。
@@ -42,30 +89,29 @@ subswap/
 1. **手动 `swap` 命令不得依赖额度查询**。`Provider::activate` 必须能在 `query_quota` 全部失败时仍正常工作。
    动机：用户可能在 quota 接口不可用、网络异常、密钥过期等情境下仍需要切走当前账号。
    **推论**：activate 路径上的 token 预刷新是 best-effort，失败只 warn 不阻塞。
-2. **敏感字段一律走 keyring**。registry.toml、审计日志、快照里都不允许出现明文 token / refresh_token。
-3. **多客户端切换必须可回滚**。`activate` 前先写快照到 `state_dir/snapshots/<ts>/`，任一目标写失败即回滚。
-4. **新增 Provider = 新建 `crates/providers/<id>` crate + 在 `AppContext::build()` 注册 + 在 `sync_local_active()` 加 import_active**。
+2. **多客户端切换必须可回滚**。`activate` 前先写快照到 `state_dir/snapshots/<ts>/`，任一目标写失败即回滚。
+3. **新增 Provider = 新建 `crates/providers/<id>` crate + 在 `AppContext::build()` 注册 + 在 `sync_local_active()` 加 import_active**。
    不要把 Provider 特定逻辑写到 core 里。
-5. **自动切换默认阈值只以 `defaults.rs` 为准**。运行时实际值由 `<config_dir>/config.toml` `[auto_swap].threshold` 覆盖，
+4. **自动切换默认阈值只以 `defaults.rs` 为准**。运行时实际值由 `<config_dir>/config.toml` `[auto_swap].threshold` 覆盖，
    缺失时回落到 `crates/core/src/defaults.rs::AUTO_SWAP_THRESHOLD`。改默认值只动 `defaults.rs` 一处，
    并同步更新 docs/design/AUTO_SWAP_DESIGN.md。配置字段定义见 docs/CONFIG.md。
-6. **`async fn` 不得直接做阻塞 IO**。文件锁（fs2）、std::fs 同步读写、keyring 等阻塞调用必须包在
+5. **`async fn` 不得直接做阻塞 IO**。文件锁（fs2）、std::fs 同步读写、keyring 等阻塞调用必须包在
    `tokio::task::spawn_blocking` 里。daemon 周期轮询 + 多 Provider 并发 query_quota 时,堵塞 worker 会让整体卡顿。
-7. **任何会被写入 `registry.toml` 的 `Option<T>` 字段必须加 `#[serde(skip_serializing_if = "Option::is_none")]`**。
+6. **任何会被写入 `registry.toml` 的 `Option<T>` 字段必须加 `#[serde(skip_serializing_if = "Option::is_none")]`**。
    原因：`serde_json` 把 `None` → `null`，而 TOML 规范不支持 null，否则保存时报 `unsupported unit type`。
    详见 docs/troubleshooting/2026-05-28-toml-null-serialization.md。
-8. **CLI 子命令、Rust 标识符、英文文案统一用 `swap`，不要用 `switch`**。中文「切换」不动。
+7. **CLI 子命令、Rust 标识符、英文文案统一用 `swap`，不要用 `switch`**。中文「切换」不动。
    `swap` / `rm` 接受数字编号引用（如 `subswap swap 3`），编号由 `AppContext::list_ordered()` 生成，
    必须与默认入口渲染的顺序严格一致 —— 增改这两处其一时务必同步检查另一处，否则用户会切到错误的账号。
-9. **所有跨模块数值调优参数走 `crates/core/src/settings.rs::current()` 读取**，源文件是
+8. **所有跨模块数值调优参数走 `crates/core/src/settings.rs::current()` 读取**，源文件是
    `<config_dir>/config.toml`（缺失 / 字段缺失时回落 `defaults.rs`）。不允许在 provider 或 cli 里硬编码
    阈值、时间窗口、百分比。新增一个调优参数：先在 `defaults.rs` 加常量 → `settings.rs::Settings` 加字段
    并接到对应 `Default impl` → `docs/CONFIG.md` 文档化 → 调用点用 `settings::current().group.field`。
    daemon 每轮、CLI 每次启动都会 `reload_from_file()`，运行期改 `config.toml` 即时生效。详见
    ARCHITECTURE.md §5.5 与 docs/CONFIG.md。
-10. **不得用高频请求模拟限流触发**。任何 quota / usage 轮询、daemon 后台保活、未来 429 上报机制都必须保守：
-    遵守上游服务条款、避免请求风暴、失败后退避；不要为了更快切换而增加封号/风控风险。
-11. **功能新增或缺陷修复后默认执行完整发布流程**。按语义化版本提升 workspace 的 patch/minor/major 版本并
+9. **不得用高频请求模拟限流触发**。任何 quota / usage 轮询、daemon 后台保活、未来 429 上报机制都必须保守：
+   遵守上游服务条款、避免请求风暴、失败后退避；不要为了更快切换而增加封号/风控风险。
+10. **功能新增或缺陷修复后默认执行完整发布流程**。按语义化版本提升 workspace 的 patch/minor/major 版本并
     同步 `Cargo.lock`，完成测试与 release 构建后，**先覆盖安装本机 `subswap` / `subswapd`、重启 daemon 并
     验证版本与构建产物哈希**；再提交 Git、创建并推送版本 tag、确认远端 release 发布成功。
     除非用户明确限制范围，不得只完成其中一部分或颠倒本地安装与远端发布的顺序。
@@ -110,7 +156,7 @@ cargo run -p subswap-cli
 | Provider 知识库 | docs/PROVIDER_KNOWLEDGE_BASE.md | 各 Provider 上游接口、文件结构、坑点 |
 | 架构设计 | docs/design/ARCHITECTURE.md | 模块划分、依赖关系、扩展机制 |
 | 自动切换设计 | docs/design/AUTO_SWAP_DESIGN.md | 触发策略、降级路径 |
-| 窗口预热提案 | docs/design/PREWARM_DESIGN.md | 无头 hi 预热 5h 窗口（提案/未实现，#10 豁免） |
+| 窗口预热提案 | docs/design/PREWARM_DESIGN.md | 无头 hi 预热 5h 窗口（提案/未实现，#9 豁免） |
 | 运行时配置 | docs/CONFIG.md | `config.toml` 字段表、热加载、风控约束 |
 | 故障排查记录 | docs/troubleshooting/YYYY-MM-DD-*.md | 时序归档 |
 
