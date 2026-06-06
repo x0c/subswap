@@ -120,7 +120,7 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
         };
     }
 
-    // 3. 筛候选：排除当前激活，优先选择当前可承接流量的账号。
+    // 3. 筛候选：排除当前激活，优先选择至少有一个窗口可承接流量的账号。
     let candidates: Vec<&AccountWithQuotas> = snapshot
         .accounts
         .iter()
@@ -130,7 +130,7 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
 
     if let Some(best) = candidates
         .into_iter()
-        .min_by(|a, b| compare_candidates(a, b))
+        .min_by(|a, b| compare_candidates(a, b, config.threshold))
     {
         let reason = match active {
             Some(a) => format!(
@@ -149,7 +149,34 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
         };
     }
 
-    // 4. 没有当前可用号时，允许切到「最早恢复可用」的账号。
+    // 4. 当前账号已明确耗尽时，quota 查询失败的其他账号仍可作为逃生候选。
+    // 查询失败不代表账号不可用；此时继续留在已耗尽账号一定无法承接流量。
+    if let Some(active) = active {
+        let failed_candidates: Vec<&AccountWithQuotas> = snapshot
+            .accounts
+            .iter()
+            .filter(|a| Some(&a.account.id) != active_id.as_ref())
+            .filter(|a| a.fetch_state.failed().is_some())
+            .collect();
+
+        if let Some(best) = failed_candidates
+            .into_iter()
+            .min_by(|a, b| compare_unknown_candidates(a, b))
+        {
+            return PolicyDecision::Swap {
+                from: active_id,
+                to: best.account.id.clone(),
+                reason: format!(
+                    "{} above {:.0}% threshold; pick {} (quota unavailable fallback)",
+                    active.account.id,
+                    config.threshold * 100.0,
+                    best.account.id
+                ),
+            };
+        }
+    }
+
+    // 5. 没有当前可用号时，允许切到「最早恢复可用」的账号。
     // 对多窗口账号取所有阻塞窗口 reset_at 的最大值，确保切过去后不会被另一个窗口继续卡住。
     let reset_candidates: Vec<(&AccountWithQuotas, DateTime<Utc>)> = snapshot
         .accounts
@@ -217,20 +244,16 @@ fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: boo
     if a.quotas.is_empty() {
         return allow_unknown;
     }
-    // 关键：候选不能在任何窗口达到/超过 threshold，否则切过去也是马上又得切，纯抖动。
-    // 同时所有窗口都不能是 Exhausted（防御性，理论上 used>=100 已包含在 is_above 里）。
-    let no_above_threshold = a.quotas.iter().all(|q| !q.is_above(threshold));
-    let no_exhausted = a
+    // 多窗口账号只要至少一个窗口明确可用，就比继续停留在已耗尽账号更有承接能力。
+    let has_known_available = a
         .quotas
         .iter()
-        .all(|q| !matches!(q.status, QuotaStatus::Exhausted));
-    if allow_unknown {
-        no_above_threshold && no_exhausted
-    } else {
-        // 默认模式下还要求至少有一个明确 Ok 窗口（拒收纯 Unknown 候选）。
-        let any_ok = a.quotas.iter().any(|q| matches!(q.status, QuotaStatus::Ok));
-        any_ok && no_above_threshold && no_exhausted
-    }
+        .any(|q| matches!(q.status, QuotaStatus::Ok) && !q.is_above(threshold));
+    has_known_available
+        || (allow_unknown
+            && a.quotas
+                .iter()
+                .any(|q| !quota_blocks_candidate(q, threshold)))
 }
 
 fn reset_ready_at(
@@ -271,10 +294,14 @@ fn quota_blocks_candidate(q: &Quota, threshold: f64) -> bool {
     matches!(q.status, QuotaStatus::Exhausted) || q.is_above(threshold)
 }
 
-fn compare_candidates(a: &AccountWithQuotas, b: &AccountWithQuotas) -> std::cmp::Ordering {
-    // 「最忙窗口」used 升序（剩余多的优先）
-    let a_busiest = busiest_used(&a.quotas);
-    let b_busiest = busiest_used(&b.quotas);
+fn compare_candidates(
+    a: &AccountWithQuotas,
+    b: &AccountWithQuotas,
+    threshold: f64,
+) -> std::cmp::Ordering {
+    // 只比较可承接流量窗口的最忙 used；已耗尽窗口不影响可用窗口之间的选择。
+    let a_busiest = busiest_available_used(&a.quotas, threshold);
+    let b_busiest = busiest_available_used(&b.quotas, threshold);
     a_busiest
         .cmp(&b_busiest)
         .then(a.account.priority.cmp(&b.account.priority))
@@ -293,8 +320,20 @@ fn compare_reset_candidates(
         .then(a.account.id.0.cmp(&b.account.id.0))
 }
 
-fn busiest_used(quotas: &[Quota]) -> u64 {
-    quotas.iter().map(|q| q.used).max().unwrap_or(0)
+fn compare_unknown_candidates(a: &AccountWithQuotas, b: &AccountWithQuotas) -> std::cmp::Ordering {
+    a.account
+        .priority
+        .cmp(&b.account.priority)
+        .then(a.account.id.0.cmp(&b.account.id.0))
+}
+
+fn busiest_available_used(quotas: &[Quota], threshold: f64) -> u64 {
+    quotas
+        .iter()
+        .filter(|q| matches!(q.status, QuotaStatus::Ok) && !q.is_above(threshold))
+        .map(|q| q.used)
+        .max()
+        .unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
@@ -434,6 +473,43 @@ mod tests {
         };
         let d = decide(&snap, &PolicyConfig::default());
         assert!(matches!(d, PolicyDecision::Degraded { .. }), "got {d:?}");
+    }
+
+    #[test]
+    fn swaps_to_candidate_with_one_available_window() {
+        let mut active = mk_awq("active", true, 100, QuotaStatus::Exhausted);
+        active.quotas.push(mk_quota(11, QuotaStatus::Ok));
+
+        let mut candidate = mk_awq("candidate", false, 10, QuotaStatus::Ok);
+        candidate.quotas.push(mk_quota(100, QuotaStatus::Exhausted));
+
+        let d = decide(
+            &ProviderSnapshot {
+                provider: "claude".into(),
+                accounts: vec![active, candidate],
+            },
+            &PolicyConfig::default(),
+        );
+        assert!(matches!(d, PolicyDecision::Swap { to, .. } if to.0 == "candidate"));
+    }
+
+    #[test]
+    fn exhausted_active_swaps_to_failed_quota_candidate() {
+        let mut candidate = mk_awq("candidate", false, 0, QuotaStatus::Unknown);
+        candidate.quotas.clear();
+        candidate.fetch_state = QuotaFetchState::Failed("429 rate limited".into());
+
+        let d = decide(
+            &ProviderSnapshot {
+                provider: "claude".into(),
+                accounts: vec![
+                    mk_awq("active", true, 100, QuotaStatus::Exhausted),
+                    candidate,
+                ],
+            },
+            &PolicyConfig::default(),
+        );
+        assert!(matches!(d, PolicyDecision::Swap { to, .. } if to.0 == "candidate"));
     }
 
     #[test]

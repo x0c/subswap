@@ -85,3 +85,19 @@ fn active_quota_fetch_error_degrades_instead_of_guessing() {
         PolicyDecision::Degraded { .. }
     ));
 }
+
+#[test]
+fn exhausted_active_uses_failed_quota_account_as_fallback() {
+    let mut candidate = awq("candidate", false, 0, QuotaStatus::Unknown);
+    candidate.quotas.clear();
+    candidate.fetch_state = QuotaFetchState::Failed("429 too many requests".into());
+    let snap = snapshot(vec![
+        awq("active", true, 100, QuotaStatus::Exhausted),
+        candidate,
+    ]);
+
+    assert!(matches!(
+        auto_decide(&snap, &PolicyConfig::default()),
+        PolicyDecision::Swap { to, .. } if to.0 == "candidate"
+    ));
+}
