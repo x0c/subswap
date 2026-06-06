@@ -54,6 +54,12 @@ impl AppPaths {
         self.config_dir.join("config.toml")
     }
 
+    /// 明文凭证文件：`<data_dir>/credentials.json`（[`crate::store::FileStore`] 后端，`0600`）。
+    /// 放 data 而非 config，避免被随 config 一起同步出去。
+    pub fn credentials_file(&self) -> PathBuf {
+        self.data_dir.join("credentials.json")
+    }
+
     /// 审计日志：`<data_dir>/audit.log`。
     pub fn audit_log(&self) -> PathBuf {
         self.data_dir.join("audit.log")

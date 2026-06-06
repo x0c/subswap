@@ -54,8 +54,7 @@ impl ClaudeProvider {
 
     /// 把当前 `~/.claude` 下激活的账号导入为 subswap 管理的账号。
     pub fn import_active(&self, label_hint: Option<String>) -> Result<Account> {
-        let creds_path = credentials_path(&self.claude_home);
-        let creds = read_credentials(&creds_path)?;
+        let creds = self.read_live_credentials()?;
         let oauth_account = read_oauth_account(&global_config_path(&self.claude_home))?
             .ok_or_else(|| Error::Provider(
                 "no oauthAccount in ~/.claude; log into Claude Code first, or use --credentials-file"
@@ -148,17 +147,47 @@ impl ClaudeProvider {
         Ok(())
     }
 
-    /// 从 keyring 读 `~/.claude/.credentials.json` 的 JSON 副本。
+    /// 读取当前激活账号的实时凭证：实体文件优先，macOS 上回落 Claude Code 钥匙串 item。
+    /// 动机：macOS 上 Claude Code 把凭证写进钥匙串、不写 `~/.claude/.credentials.json`。
+    fn read_live_credentials(&self) -> Result<CredentialsFile> {
+        match read_credentials(&credentials_path(&self.claude_home)) {
+            Ok(creds) => Ok(creds),
+            Err(file_err) => read_claude_code_keychain().ok_or(file_err),
+        }
+    }
+
+    /// 从凭证仓库读账号的 credentials JSON 副本。
+    /// 仓库缺失时(典型：macOS 首次,凭证只在 Claude Code 钥匙串里),对**当前激活账号**做一次性捕获:
+    /// 读 Claude Code 钥匙串 → 落盘进仓库,之后走仓库(FileStore 明文)不再碰钥匙串。
     fn load_credentials(&self, id: &AccountId) -> Result<CredentialsFile> {
-        let raw = self
-            .store
-            .get(PROVIDER_ID, id.0.as_str(), CRED_FIELD)?
-            .ok_or_else(|| {
-                Error::Credential(format!(
-                    "no keyring entry for {PROVIDER_ID}:{id}:{CRED_FIELD}"
-                ))
-            })?;
-        Ok(serde_json::from_str(&raw)?)
+        if let Some(raw) = self.store.get(PROVIDER_ID, id.0.as_str(), CRED_FIELD)? {
+            return Ok(serde_json::from_str(&raw)?);
+        }
+        if let Some(creds) = self.capture_from_claude_code_keychain(id)? {
+            return Ok(creds);
+        }
+        Err(Error::Credential(format!(
+            "no credentials for {PROVIDER_ID}:{id}; run `subswap login claude` (or swap to this account first)"
+        )))
+    }
+
+    /// 当 `id` 是 Claude Code 当前激活账号时,把它钥匙串里的凭证捕获进仓库。返回捕获到的凭证。
+    /// 非激活账号(钥匙串里的凭证不属于它)或读不到时返回 `None`,由调用方报「缺凭证」。
+    fn capture_from_claude_code_keychain(&self, id: &AccountId) -> Result<Option<CredentialsFile>> {
+        // 钥匙串 item 只保存「当前激活」那个账号的凭证;用 ~/.claude.json 的 oauthAccount 判断归属。
+        let Some(oauth_account) = read_oauth_account(&global_config_path(&self.claude_home))? else {
+            return Ok(None);
+        };
+        if oauth_account.email_address != id.0 {
+            return Ok(None);
+        }
+        let Some(creds) = read_claude_code_keychain() else {
+            return Ok(None);
+        };
+        // 落盘,后续查询走仓库、不再读钥匙串。
+        self.save_credentials(id, &creds)?;
+        tracing::info!(account=%id, "captured Claude credentials from Claude Code keychain into store");
+        Ok(Some(creds))
     }
 
     /// 把 [`CredentialsFile`] 写回 keyring。
@@ -335,13 +364,10 @@ impl Provider for ClaudeProvider {
 
     async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>> {
         let mut creds = match self.read_active_credentials_if_matches(id)? {
+            // 命中本地实体文件(~/.claude/.credentials.json)→ 直接用。
             Some(creds) => creds,
-            None if !quota_keychain_access_enabled() => {
-                return Err(Error::Credential(
-                    "quota skipped on macOS; set SUBSWAP_QUERY_INACTIVE_KEYCHAIN=1 to allow keychain-backed quota"
-                        .into(),
-                ));
-            }
+            // 实体文件缺失/不匹配时回落凭证仓库。macOS 上 Claude Code 把凭证存进钥匙串、
+            // 不写实体文件,激活账号也走这里;FileStore 后端是明文文件,读任何账号都不弹钥匙串。
             None => self.load_credentials(id)?,
         };
         // 进程内自愈：access_token 失效(401)且有 refresh_token 时，best-effort 刷新一次再重试。
@@ -352,9 +378,8 @@ impl Provider for ClaudeProvider {
             Ok(u) => u,
             Err(e) if is_auth_error(&e) && creds.oauth.refresh_token.is_some() => {
                 apply_refresh_to_creds(&mut creds).await?;
-                if keychain_write_back_enabled() {
-                    self.save_credentials(id, &creds)?;
-                }
+                // 刷新后的 token 写回凭证仓库,避免下次查询重复刷新(FileStore 写入不弹钥匙串)。
+                self.save_credentials(id, &creds)?;
                 oauth::fetch_usage(&creds.oauth.access_token).await?
             }
             Err(e) => return Err(e),
@@ -409,24 +434,21 @@ impl ClaudeProvider {
     }
 }
 
+/// macOS：读 Claude Code 的系统钥匙串 generic password —— `service = "Claude Code-credentials"`,
+/// `account = <登录用户名>`,内容与 `.credentials.json` 同构(`{"claudeAiOauth": {...}}`)。
+/// 这是 macOS 上 claude 凭证的唯一来源。读不到(不存在 / 用户拒绝授权 / 解析失败)一律返回 `None`。
 #[cfg(target_os = "macos")]
-fn keychain_write_back_enabled() -> bool {
-    std::env::var_os("SUBSWAP_SYNC_KEYCHAIN_ON_START").is_some()
+fn read_claude_code_keychain() -> Option<CredentialsFile> {
+    let user = std::env::var("USER").ok().filter(|u| !u.is_empty())?;
+    let entry = keyring::Entry::new("Claude Code-credentials", &user).ok()?;
+    let raw = entry.get_password().ok()?;
+    serde_json::from_str::<CredentialsFile>(&raw).ok()
 }
 
+/// 非 macOS：凭证走实体文件,无此回落。
 #[cfg(not(target_os = "macos"))]
-fn keychain_write_back_enabled() -> bool {
-    true
-}
-
-#[cfg(target_os = "macos")]
-fn quota_keychain_access_enabled() -> bool {
-    std::env::var_os("SUBSWAP_QUERY_INACTIVE_KEYCHAIN").is_some()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn quota_keychain_access_enabled() -> bool {
-    true
+fn read_claude_code_keychain() -> Option<CredentialsFile> {
+    None
 }
 
 /// best-effort 预刷新。返回 `true` 表示 token 已被刷新。

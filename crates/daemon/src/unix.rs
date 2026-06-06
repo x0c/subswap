@@ -25,8 +25,8 @@ use anyhow::{Context, Result};
 use fs2::FileExt;
 use subswap_core::{
     auto_decide, paths::AppPaths, query_quota_with_retry, settings, AccountRegistry,
-    AccountWithQuotas, AuditEvent, AuditLog, KeyringStore, PolicyConfig, PolicyDecision, Provider,
-    ProviderRegistry, ProviderSnapshot, QuotaFetchState,
+    AccountWithQuotas, AuditEvent, AuditLog, FileStore, KeyringStore, PolicyConfig, PolicyDecision,
+    Provider, ProviderRegistry, ProviderSnapshot, QuotaFetchState,
 };
 use subswap_provider_claude::ClaudeProvider;
 use subswap_provider_codex::CodexProvider;
@@ -59,7 +59,11 @@ pub async fn run() -> Result<()> {
     write_pid(&pid_path, process::id())?;
     tracing::info!(pid = process::id(), "subswapd started");
 
-    let store = Arc::new(KeyringStore::new());
+    // 凭证后端：明文文件 + 旧钥匙串懒迁移（与 CLI 一致，避免 macOS 钥匙串授权框）。
+    let store = Arc::new(FileStore::with_legacy_keyring(
+        paths.credentials_file(),
+        KeyringStore::new(),
+    ));
     let registry = Arc::new(AccountRegistry::from_default_paths()?);
     let audit = AuditLog::from_default_paths()?;
 

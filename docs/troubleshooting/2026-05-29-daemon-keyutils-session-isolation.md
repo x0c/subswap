@@ -37,7 +37,7 @@ WARN subswapd: claude token refresh failed
 
 1. **进程内自愈（已做）**：`query_quota` 在 401 且有 `refresh_token` 时，
    best-effort 刷新一次再重试。该路径跑在查询进程（CLI，与 keyring 同 session），
-   绕开 daemon 的 session 隔离。保守起见只在 401 时刷、且只重试一次（AGENTS.md #10）。
+   绕开 daemon 的 session 隔离。保守起见只在 401 时刷、且只重试一次（AGENTS.md #9）。
    切换路径本就有 `best_effort_pre_refresh`，同样在 CLI session，不受影响。
 2. **用户侧兜底**：若该账号 `refresh_token` 也已失效（刷新端点同样 401），自愈也救不了，
    需 `subswap login claude` 重新登录。日志里 `log in again if the client returns 401` 即此意。

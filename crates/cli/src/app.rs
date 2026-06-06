@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use subswap_core::{
-    Account, AccountRegistry, AuditLog, CredentialStore, KeyringStore, ProviderRegistry,
+    paths::AppPaths, Account, AccountRegistry, AuditLog, CredentialStore, FileStore, KeyringStore,
+    ProviderRegistry,
 };
 use subswap_provider_claude::ClaudeProvider;
 use subswap_provider_codex::CodexProvider;
@@ -20,7 +21,12 @@ pub struct AppContext {
 
 impl AppContext {
     pub fn build() -> Result<Self> {
-        let store: Arc<dyn CredentialStore> = Arc::new(KeyringStore::new());
+        // 凭证后端：明文文件 + 旧钥匙串懒迁移。避免 macOS 每次读凭证弹钥匙串授权框。
+        let paths = AppPaths::resolve()?;
+        let store: Arc<dyn CredentialStore> = Arc::new(FileStore::with_legacy_keyring(
+            paths.credentials_file(),
+            KeyringStore::new(),
+        ));
         let registry = Arc::new(AccountRegistry::from_default_paths()?);
 
         let claude = Arc::new(ClaudeProvider::new(store.clone(), registry.clone()));

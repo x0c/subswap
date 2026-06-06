@@ -206,12 +206,15 @@ pub fn compact_policy_reason(reason: &str) -> String {
 /// 把 reqwest/底层错误压成一行用户友好短语。语义粗判，不需要精确分类。
 pub fn compact_error(err: &str) -> String {
     let lower = err.to_ascii_lowercase();
-    if lower.contains("quota skipped on macos") {
-        return "skipped on macOS".into();
-    }
-    if lower.contains("no keyring entry") || lower.contains("no matching entry") {
+    if lower.contains("no keyring entry")
+        || lower.contains("no matching entry")
+        || lower.contains("no credentials")
+    {
         if lower.contains("subswap login codex") {
             return "missing credentials; run `subswap login codex`".into();
+        }
+        if lower.contains("subswap login claude") {
+            return "missing credentials; run `subswap login claude`".into();
         }
         return "missing credentials; re-login".into();
     }
@@ -394,27 +397,18 @@ mod tests {
     }
 
     #[test]
-    fn compact_error_does_not_repeat_quota_for_macos_skip() {
-        let text = compact_error(
-            "quota skipped on macOS; set SUBSWAP_QUERY_INACTIVE_KEYCHAIN=1 to allow keychain-backed quota",
-        );
-        assert_eq!(text, "skipped on macOS");
-    }
-
-    #[test]
-    fn compact_error_handles_wrapped_macos_skip_before_keyring_category() {
-        let text = compact_error(
-            "credential store: quota skipped on macOS; set SUBSWAP_QUERY_INACTIVE_KEYCHAIN=1 to allow keychain-backed quota",
-        );
-        assert_eq!(text, "skipped on macOS");
-    }
-
-    #[test]
     fn compact_error_names_missing_credentials() {
         let text = compact_error(
             "credential store: no keyring entry for codex:x:auth_json; run `subswap login codex`",
         );
         assert_eq!(text, "missing credentials; run `subswap login codex`");
+    }
+
+    #[test]
+    fn compact_error_names_claude_missing_credentials() {
+        let text =
+            compact_error("no credentials for claude:a@x.com; run `subswap login claude` ...");
+        assert_eq!(text, "missing credentials; run `subswap login claude`");
     }
 
     #[test]

@@ -125,19 +125,30 @@ Provider.activate(id)
 
 ## 4. 凭证与文件布局
 
-### 4.1 keyring（敏感）
+### 4.1 凭证仓库（敏感）
 
 ```
-service: subswap
-key:     {provider}:{account}:{field}
-field 例： access_token / refresh_token / oauth_metadata
+key:   {provider}:{account}:{field}
+field 例： credentials_json（Claude 整段）/ auth_json（Codex 整段）
 ```
 
-封装实现：`crates/core/src/store.rs`（`KeyringStore` 实现 `CredentialStore` trait，
-`compose_key()` 拼 `{provider}:{account}:{field}`，service 固定 `subswap`）。
-读不存在的条目返回 `Ok(None)`，仅平台/IO 错误才 `Err`。
+抽象：`crates/core/src/store.rs::CredentialStore` trait，`compose_key()` 拼
+`{provider}:{account}:{field}`。读不存在的条目返回 `Ok(None)`，仅平台/IO 错误才 `Err`。
+两种后端实现：
 
-**多端后端差异（重要，影响 daemon 保活正确性）**：
+- **`FileStore`（默认装配）**：明文 JSON 单文件 `<data_dir>/credentials.json`，Unix 下 `0600`。
+  cli/daemon 在 `AppContext::build()` / daemon `run()` 里默认用它。可挂 `with_legacy_keyring`
+  回退：文件未命中某项时从旧 `KeyringStore` 读出并落盘，实现 Keychain→文件的**按需一次性迁移**，
+  迁移后该项永不再碰钥匙串。
+- **`KeyringStore`**：系统钥匙串后端（见下表），现仅作为 `FileStore` 的迁移回退源保留。
+
+**为什么默认走文件而非钥匙串**：macOS 上每次读写钥匙串 item 都可能弹系统授权框，
+重编译/覆盖安装会换应用身份导致**反复弹框**（详见
+[troubleshooting/2026-05-29-macos-keychain-prompts.md](../troubleshooting/2026-05-29-macos-keychain-prompts.md)
+与 [troubleshooting/2026-06-06-filestore-credential-backend.md](../troubleshooting/2026-06-06-filestore-credential-backend.md)）。
+明文文件后端彻底规避此问题，代价是 token 明文落盘（`0600`，与 Codex 的 `~/.codex/auth.json` 同级）。
+
+**`KeyringStore` 多端后端差异（迁移回退源；也影响早期 daemon 保活正确性）**：
 
 | 平台 | keyring 后端 | 进程间可见 | 重启后持久 |
 |---|---|---|---|
@@ -147,10 +158,10 @@ field 例： access_token / refresh_token / oauth_metadata
 
 Linux 的 keyutils 后端按**内核 session keyring** 隔离。`subswapd` 由 CLI 经
 `fork + setsid` 拉起（`crates/cli/src/daemon_spawn.rs`），`setsid` 会进入**新 session**，
-因此 daemon 读不到 CLI 在自己 session 写入的条目 → 每个账号 keepalive 都报
-`No matching entry found in secure storage` → **该后端下 daemon 的 Claude token 后台保活实际空转**。
-影响与应对见 [troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md](../troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md)。
-推论：token 自愈不能只依赖 daemon；查询/切换路径（与 keyring 同 session）也要能 best-effort 刷新。
+因此 daemon 读不到 CLI 在自己 session 写入的条目。**换用 `FileStore` 后此隔离问题一并消失**
+（文件对所有 session 可见、跨重启持久），daemon 保活不再受 keyutils 隔离影响。
+背景见 [troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md](../troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md)。
+推论：token 自愈仍不只依赖 daemon；查询/切换路径也能 best-effort 刷新。
 
 ### 4.2 配置目录（元数据，明文）
 
@@ -171,7 +182,7 @@ Linux 的 keyutils 后端按**内核 session keyring** 隔离。`subswapd` 由 C
 - Codex：`~/.codex/accounts/registry.json` + `~/.codex/sessions/`
 - Claude：`~/.claude/`
 
-subswap 切换时**写**这些上游目录，但**只读不存** token 元数据（token 已在 keyring）。
+subswap 切换时**写**这些上游目录，但**只读不存** token 元数据（token 已在凭证仓库 `FileStore`）。
 
 ## 5. 扩展新 Provider 的步骤
 
@@ -201,7 +212,7 @@ provider / cli / daemon 都禁止硬编码阈值、时间窗口、百分比。
 | `daemon.idle_poll_interval_ms` | `900_000` ms | daemon 空闲时轮询周期 |
 | `codex.usage_cache_max_age_ms` | `600_000` ms | 旧版 Codex 本地 last_usage 缓存最大年龄 |
 
-调字段：用户改 `config.toml`；改默认值改 `defaults.rs` 一处 + AGENTS.md 不变量 #5 同步当前值。
+调字段：用户改 `config.toml`；改默认值改 `defaults.rs` 一处 + AGENTS.md 不变量 #4 同步当前值。
 完整说明见 [docs/CONFIG.md](../CONFIG.md)。
 
 ### Daemon 空闲退避
@@ -298,7 +309,7 @@ daemon 退避或真实客户端 hook 解决。
 | 职责 | 位置 |
 |---|---|
 | `AppContext`（注册所有 provider，**定义在 app.rs**，main.rs 只调用） | `app.rs::AppContext::build` |
-| 全局编号（与默认入口渲染顺序必须一致，AGENTS.md #8） | `app.rs::AppContext::list_ordered` |
+| 全局编号（与默认入口渲染顺序必须一致，AGENTS.md #7） | `app.rs::AppContext::list_ordered` |
 | 默认入口总流程 | `cmd/default.rs::run` |
 | 自动 import 本地激活账号 | `cmd/default.rs::sync_local_active` |
 | 账号骨架 → 并发拉 quota + mpsc 渐进渲染 + 整体超时（`quota.fetch_timeout_ms`） | `cmd/default.rs::build_loading_snapshots` / `fill_quotas_progressively` / `mark_pending_as_timed_out` |

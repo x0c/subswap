@@ -26,4 +26,4 @@ pub use model::{Account, AccountId, ClientTarget, Quota, QuotaStatus, QuotaWindo
 pub use provider::Provider;
 pub use quota_query::query_quota_with_retry;
 pub use registry::ProviderRegistry;
-pub use store::{CredentialStore, KeyringStore};
+pub use store::{CredentialStore, FileStore, KeyringStore};
