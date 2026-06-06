@@ -206,6 +206,18 @@ pub fn compact_policy_reason(reason: &str) -> String {
 /// 把 reqwest/底层错误压成一行用户友好短语。语义粗判，不需要精确分类。
 pub fn compact_error(err: &str) -> String {
     let lower = err.to_ascii_lowercase();
+    if lower.contains("quota skipped on macos") {
+        return "skipped on macOS".into();
+    }
+    if lower.contains("no keyring entry") || lower.contains("no matching entry") {
+        if lower.contains("subswap login codex") {
+            return "missing credentials; run `subswap login codex`".into();
+        }
+        return "missing credentials; re-login".into();
+    }
+    if lower.contains("credential store") {
+        return "keyring error".into();
+    }
     if lower.contains("401")
         || lower.contains("unauthorized")
         || lower.contains("authentication")
@@ -217,6 +229,9 @@ pub fn compact_error(err: &str) -> String {
         return "429 rate limited".into();
     }
     if lower.contains("timeout") {
+        if let Some(attempts) = attempt_count(err) {
+            return format!("timeout after {attempts} attempts");
+        }
         return "timeout".into();
     }
     if lower.contains("network") || lower.contains("request ") {
@@ -229,6 +244,16 @@ pub fn compact_error(err: &str) -> String {
         return "missing metadata".into();
     }
     err.split(':').next().unwrap_or("error").trim().to_string()
+}
+
+fn attempt_count(err: &str) -> Option<&str> {
+    let after = err.rsplit_once(" after ")?.1;
+    let (count, tail) = after.split_once(" attempt")?;
+    if count.chars().all(|c| c.is_ascii_digit()) && (tail.starts_with('s') || tail.is_empty()) {
+        Some(count)
+    } else {
+        None
+    }
 }
 
 pub fn format_quota_compact(q: &Quota, color: bool) -> String {
@@ -360,6 +385,42 @@ mod tests {
             note: None,
         };
         assert!(!quota_has_display_value(&q));
+    }
+
+    #[test]
+    fn compact_error_preserves_timeout_attempt_count() {
+        let text = compact_error("quota fetch: quota fetch timeout after 2 attempts");
+        assert_eq!(text, "timeout after 2 attempts");
+    }
+
+    #[test]
+    fn compact_error_does_not_repeat_quota_for_macos_skip() {
+        let text = compact_error(
+            "quota skipped on macOS; set SUBSWAP_QUERY_INACTIVE_KEYCHAIN=1 to allow keychain-backed quota",
+        );
+        assert_eq!(text, "skipped on macOS");
+    }
+
+    #[test]
+    fn compact_error_handles_wrapped_macos_skip_before_keyring_category() {
+        let text = compact_error(
+            "credential store: quota skipped on macOS; set SUBSWAP_QUERY_INACTIVE_KEYCHAIN=1 to allow keychain-backed quota",
+        );
+        assert_eq!(text, "skipped on macOS");
+    }
+
+    #[test]
+    fn compact_error_names_missing_credentials() {
+        let text = compact_error(
+            "credential store: no keyring entry for codex:x:auth_json; run `subswap login codex`",
+        );
+        assert_eq!(text, "missing credentials; run `subswap login codex`");
+    }
+
+    #[test]
+    fn compact_error_names_platform_missing_credentials() {
+        let text = compact_error("credential store: No matching entry found in secure storage");
+        assert_eq!(text, "missing credentials; re-login");
     }
 
     fn make_awq(id: &str, active: bool, fetch: QuotaFetchState) -> AccountWithQuotas {

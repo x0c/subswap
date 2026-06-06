@@ -10,6 +10,7 @@
 
 - [架构设计 — ARCHITECTURE.md](design/ARCHITECTURE.md)：模块划分、Provider 抽象、扩展机制。
 - [自动切换设计 — AUTO_SWAP_DESIGN.md](design/AUTO_SWAP_DESIGN.md)：阈值/限流双触发、降级到手动切换。
+- [窗口预热提案 — PREWARM_DESIGN.md](design/PREWARM_DESIGN.md)：给闲号发无头 hi 提前锚定 5h 窗口（提案/未实现；Claude 有效、Codex 待验证；#10 豁免）。
 
 ## 操作指南
 
@@ -20,6 +21,7 @@
 - [2026-05-28 — TOML 序列化报 `unsupported unit type`](troubleshooting/2026-05-28-toml-null-serialization.md)
 - [2026-05-28 — CLAUDE_CONFIG_DIR 自定义时 global config 写到上级目录](troubleshooting/2026-05-28-claude-config-dir-parent-pollution.md)
 - [2026-05-29 — Linux daemon keepalive 空转：keyutils 按 session 隔离](troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md)
+- [2026-05-29 — macOS Keychain 反复弹授权框](troubleshooting/2026-05-29-macos-keychain-prompts.md)
 
 ## Code Review 台账
 
@@ -43,7 +45,8 @@
 `--help` 里看不到,只给迁移旧数据的人用一次。
 
 辅助二进制 `subswapd`:由 CLI 在默认入口自动 detach 拉起,负责周期 quota 轮询 / 自动切换 /
-Claude token 后台保活。Unix-only,通过 `<state>/subswapd.pid` 上的文件锁保证单实例。
+Claude token 后台保活。Unix-only,但 macOS 默认不自动拉起,避免后台进程访问 Keychain 触发额外授权弹窗;
+如需启用 macOS 自动拉起,导出 `SUBSWAP_AUTO_DAEMON=1`。通过 `<state>/subswapd.pid` 上的文件锁保证单实例。
 关掉:`pkill subswapd`;不想被自动拉起:导出 `SUBSWAP_NO_DAEMON=1`。
 
 ## 里程碑（roadmap）

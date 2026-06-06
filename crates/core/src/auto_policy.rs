@@ -8,6 +8,8 @@
 //!
 //! 规则细节见 docs/design/AUTO_SWAP_DESIGN.md。
 
+use chrono::{DateTime, Utc};
+
 use crate::model::{Account, AccountId, Quota, QuotaStatus};
 use crate::settings;
 
@@ -118,7 +120,7 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
         };
     }
 
-    // 3. 筛候选：排除当前激活，排除耗尽/已超阈值的（切过去就是抖动），按 allow_unknown 决定是否包含 fetch_error/Unknown。
+    // 3. 筛候选：排除当前激活，优先选择当前可承接流量的账号。
     let candidates: Vec<&AccountWithQuotas> = snapshot
         .accounts
         .iter()
@@ -126,26 +128,67 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
         .filter(|a| is_viable_candidate(a, config.threshold, config.allow_unknown))
         .collect();
 
-    if candidates.is_empty() {
-        return PolicyDecision::Degraded {
-            reason: "no swap candidate (others exhausted / fetch failed / unknown status)".into(),
+    if let Some(best) = candidates
+        .into_iter()
+        .min_by(|a, b| compare_candidates(a, b))
+    {
+        let reason = match active {
+            Some(a) => format!(
+                "{} above {:.0}% threshold; pick {} (most headroom)",
+                a.account.id,
+                config.threshold * 100.0,
+                best.account.id
+            ),
+            None => format!("no active account; activate {}", best.account.id),
+        };
+
+        return PolicyDecision::Swap {
+            from: active_id,
+            to: best.account.id.clone(),
+            reason,
         };
     }
 
-    // 4. 选最优：「最忙窗口」剩余最多 → priority 小 → id 字典序。
-    let best = candidates
+    // 4. 没有当前可用号时，允许切到「最早恢复可用」的账号。
+    // 对多窗口账号取所有阻塞窗口 reset_at 的最大值，确保切过去后不会被另一个窗口继续卡住。
+    let reset_candidates: Vec<(&AccountWithQuotas, DateTime<Utc>)> = snapshot
+        .accounts
+        .iter()
+        .filter_map(|a| reset_ready_at(a, config.threshold, config.allow_unknown).map(|t| (a, t)))
+        .collect();
+
+    let Some((best, ready_at)) = reset_candidates
         .into_iter()
-        .min_by(|a, b| compare_candidates(a, b))
-        .expect("non-empty");
+        .min_by(|(a, a_ready), (b, b_ready)| compare_reset_candidates(a, *a_ready, b, *b_ready))
+    else {
+        return PolicyDecision::Degraded {
+            reason: "no swap candidate (others exhausted / fetch failed / unknown status)".into(),
+        };
+    };
+
+    if Some(&best.account.id) == active_id.as_ref() {
+        return PolicyDecision::NoOp {
+            reason: format!(
+                "{} waiting for soonest reset at {}",
+                best.account.id,
+                ready_at.to_rfc3339()
+            ),
+        };
+    }
 
     let reason = match active {
         Some(a) => format!(
-            "{} above {:.0}% threshold; pick {} (most headroom)",
+            "{} above {:.0}% threshold; pick {} (soonest reset at {})",
             a.account.id,
             config.threshold * 100.0,
-            best.account.id
+            best.account.id,
+            ready_at.to_rfc3339()
         ),
-        None => format!("no active account; activate {}", best.account.id),
+        None => format!(
+            "no active account; activate {} (soonest reset at {})",
+            best.account.id,
+            ready_at.to_rfc3339()
+        ),
     };
 
     PolicyDecision::Swap {
@@ -190,12 +233,62 @@ fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: boo
     }
 }
 
+fn reset_ready_at(
+    a: &AccountWithQuotas,
+    threshold: f64,
+    allow_unknown: bool,
+) -> Option<DateTime<Utc>> {
+    if a.fetch_state.failed().is_some() || a.quotas.is_empty() {
+        return None;
+    }
+
+    let mut ready_at: Option<DateTime<Utc>> = None;
+    let mut has_blocking_window = false;
+    let mut has_known_ok_after_reset = false;
+
+    for q in &a.quotas {
+        let blocking = quota_blocks_candidate(q, threshold);
+        has_blocking_window |= blocking;
+        has_known_ok_after_reset |= blocking || matches!(q.status, QuotaStatus::Ok);
+
+        if blocking {
+            let reset_at = q.reset_at?;
+            ready_at = Some(ready_at.map_or(reset_at, |current| current.max(reset_at)));
+        }
+    }
+
+    if !has_blocking_window {
+        return None;
+    }
+    if !allow_unknown && !has_known_ok_after_reset {
+        return None;
+    }
+
+    ready_at
+}
+
+fn quota_blocks_candidate(q: &Quota, threshold: f64) -> bool {
+    matches!(q.status, QuotaStatus::Exhausted) || q.is_above(threshold)
+}
+
 fn compare_candidates(a: &AccountWithQuotas, b: &AccountWithQuotas) -> std::cmp::Ordering {
     // 「最忙窗口」used 升序（剩余多的优先）
     let a_busiest = busiest_used(&a.quotas);
     let b_busiest = busiest_used(&b.quotas);
     a_busiest
         .cmp(&b_busiest)
+        .then(a.account.priority.cmp(&b.account.priority))
+        .then(a.account.id.0.cmp(&b.account.id.0))
+}
+
+fn compare_reset_candidates(
+    a: &AccountWithQuotas,
+    a_ready: DateTime<Utc>,
+    b: &AccountWithQuotas,
+    b_ready: DateTime<Utc>,
+) -> std::cmp::Ordering {
+    a_ready
+        .cmp(&b_ready)
         .then(a.account.priority.cmp(&b.account.priority))
         .then(a.account.id.0.cmp(&b.account.id.0))
 }
@@ -223,13 +316,21 @@ mod tests {
     }
 
     fn mk_quota(used: u64, status: QuotaStatus) -> Quota {
+        mk_quota_with_reset(used, status, None)
+    }
+
+    fn mk_quota_with_reset(
+        used: u64,
+        status: QuotaStatus,
+        reset_at: Option<chrono::DateTime<Utc>>,
+    ) -> Quota {
         Quota {
             provider: "claude".into(),
             account_id: AccountId("x".into()),
             window: QuotaWindow::FiveHour,
             used,
             limit: 100,
-            reset_at: None,
+            reset_at,
             status,
             note: None,
         }
@@ -350,5 +451,71 @@ mod tests {
             PolicyDecision::Swap { to, .. } => assert_eq!(to.0, "c"),
             other => panic!("expected Swap, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn picks_soonest_reset_when_no_candidate_has_headroom() {
+        let now = Utc::now();
+        let mut active = mk_awq("a", true, 100, QuotaStatus::Exhausted);
+        active.quotas = vec![
+            mk_quota_with_reset(
+                100,
+                QuotaStatus::Exhausted,
+                Some(now + chrono::Duration::hours(5)),
+            ),
+            mk_quota_with_reset(80, QuotaStatus::Ok, Some(now + chrono::Duration::hours(46))),
+        ];
+
+        let mut sooner = mk_awq("b", false, 100, QuotaStatus::Exhausted);
+        sooner.quotas = vec![
+            mk_quota_with_reset(
+                100,
+                QuotaStatus::Exhausted,
+                Some(now + chrono::Duration::minutes(3)),
+            ),
+            mk_quota_with_reset(72, QuotaStatus::Ok, Some(now + chrono::Duration::days(4))),
+        ];
+
+        let mut later = mk_awq("c", false, 100, QuotaStatus::Exhausted);
+        later.quotas = vec![mk_quota_with_reset(
+            100,
+            QuotaStatus::Exhausted,
+            Some(now + chrono::Duration::hours(1)),
+        )];
+
+        let snap = ProviderSnapshot {
+            provider: "codex".into(),
+            accounts: vec![active, later, sooner],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        match d {
+            PolicyDecision::Swap { to, .. } => assert_eq!(to.0, "b"),
+            other => panic!("expected Swap, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn waits_when_active_account_has_soonest_reset() {
+        let now = Utc::now();
+        let mut active = mk_awq("a", true, 100, QuotaStatus::Exhausted);
+        active.quotas = vec![mk_quota_with_reset(
+            100,
+            QuotaStatus::Exhausted,
+            Some(now + chrono::Duration::minutes(3)),
+        )];
+
+        let mut later = mk_awq("b", false, 100, QuotaStatus::Exhausted);
+        later.quotas = vec![mk_quota_with_reset(
+            100,
+            QuotaStatus::Exhausted,
+            Some(now + chrono::Duration::hours(1)),
+        )];
+
+        let snap = ProviderSnapshot {
+            provider: "codex".into(),
+            accounts: vec![active, later],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
     }
 }

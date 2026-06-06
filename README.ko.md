@@ -99,7 +99,7 @@ subswap doctor
 
 Claude Code / Codex CLI에 최소 한 번 로그인했다면, 처음 `subswap`을 실행할 때 `~/.claude`와 `~/.codex`에서 계정을 자동으로 가져옵니다.
 
-첫 `subswap` 실행은 분리된 백그라운드 daemon(`subswapd`)도 시작합니다. 이 daemon은 quota를 폴링하고 백그라운드에서 자동 전환을 수행하며, Claude OAuth token을 최신 상태로 유지해 오래 쉬던 계정으로 전환하는 순간 401이 발생하는 일을 줄입니다. daemon은 단일 인스턴스(파일 잠금)이며 Unix 전용입니다. 종료해도 안전합니다: `pkill subswapd`. 완전히 비활성화하려면 `SUBSWAP_NO_DAEMON=1`을 export하세요.
+첫 `subswap` 실행은 macOS가 아닌 Unix 플랫폼에서 분리된 백그라운드 daemon(`subswapd`)도 시작합니다. 이 daemon은 quota를 폴링하고 백그라운드에서 자동 전환을 수행하며, Claude OAuth token을 최신 상태로 유지해 오래 쉬던 계정으로 전환하는 순간 401이 발생하는 일을 줄입니다. macOS에서는 분리된 프로세스의 Keychain 접근이 추가 인증 프롬프트를 만들 수 있으므로 명시적인 opt-in이 필요합니다. 자동 시작을 켜려면 `SUBSWAP_AUTO_DAEMON=1`을 export하세요. daemon은 단일 인스턴스(파일 잠금)입니다. 종료해도 안전합니다: `pkill -f 'subswap __daemon'` 또는 `pkill subswapd`. 완전히 비활성화하려면 `SUBSWAP_NO_DAEMON=1`을 export하세요.
 
 ## 설계 불변 조건
 

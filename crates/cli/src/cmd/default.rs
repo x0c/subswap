@@ -4,20 +4,17 @@
 //! 详见 docs/design/ARCHITECTURE.md §3.1。
 
 use std::io::{self, IsTerminal};
-use std::time::Duration;
 
 use anyhow::Result;
 use futures::future::join_all;
 use subswap_core::{
-    auto_decide, settings, AccountId, AccountWithQuotas, AuditEvent, PolicyConfig, PolicyDecision,
-    ProviderRegistry, ProviderSnapshot, Quota, QuotaFetchState,
+    auto_decide, query_quota_with_retry, Account, AccountId, AccountWithQuotas, AuditEvent,
+    PolicyConfig, PolicyDecision, ProviderRegistry, ProviderSnapshot, Quota, QuotaFetchState,
 };
 
 use crate::app::AppContext;
 use crate::daemon_spawn::ensure_daemon_running;
-use crate::render::{
-    account_ref, compact_error, compact_policy_reason, AutoLine, AutoLineKind, InlineRenderer,
-};
+use crate::render::{compact_error, compact_policy_reason, AutoLine, AutoLineKind, InlineRenderer};
 
 pub async fn run(ctx: &AppContext) -> Result<()> {
     // 1. 自动 import 本地激活账号（如果没记录过）。
@@ -56,7 +53,7 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
                     Ok(()) => {
                         auto_lines.push(AutoLine {
                             provider: snap.provider.clone(),
-                            text: format!("auto: swapped to {}", account_ref(&to.0)),
+                            text: auto_swap_success_text(snap, &to),
                             kind: AutoLineKind::Info,
                         });
                         ctx.audit.append(AuditEvent::ok(
@@ -106,9 +103,33 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
     Ok(())
 }
 
+fn auto_swap_success_text(snap: &ProviderSnapshot, to: &AccountId) -> String {
+    let target = snap
+        .accounts
+        .iter()
+        .find(|a| a.account.id == *to)
+        .and_then(|a| {
+            let label = a.account.label.trim();
+            if label.is_empty() || label == a.account.id.0.as_str() {
+                None
+            } else {
+                Some(label.to_string())
+            }
+        });
+
+    match target {
+        Some(label) => format!("auto: swapped to {label}"),
+        None => "auto: swapped".into(),
+    }
+}
+
 /// 扫本地 ~/.claude / ~/.codex；如果有当前激活账号则 import 到 registry（已存在时 upsert）。
 /// 任一 provider 失败（用户没登录过）静默跳过。
 fn sync_local_active(ctx: &AppContext) {
+    if default_entry_avoids_keychain_sync() {
+        sync_local_active_metadata(ctx);
+        return;
+    }
     match ctx.claude.import_active(None) {
         Ok(account) => {
             if let Err(e) = ctx.registry.set_active("claude", &account.id) {
@@ -125,6 +146,35 @@ fn sync_local_active(ctx: &AppContext) {
         }
         Err(e) => tracing::debug!(err=%e, "skip codex auto-import"),
     }
+}
+
+fn sync_local_active_metadata(ctx: &AppContext) {
+    match ctx.claude.sync_active_metadata(None) {
+        Ok(account) => {
+            if let Err(e) = ctx.registry.set_active("claude", &account.id) {
+                tracing::debug!(err=%e, "skip claude active marker");
+            }
+        }
+        Err(e) => tracing::debug!(err=%e, "skip claude active metadata sync"),
+    }
+    match ctx.codex.sync_active_metadata(None) {
+        Ok(account) => {
+            if let Err(e) = ctx.registry.set_active("codex", &account.id) {
+                tracing::debug!(err=%e, "skip codex active marker");
+            }
+        }
+        Err(e) => tracing::debug!(err=%e, "skip codex active metadata sync"),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn default_entry_avoids_keychain_sync() -> bool {
+    std::env::var_os("SUBSWAP_SYNC_KEYCHAIN_ON_START").is_none()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn default_entry_avoids_keychain_sync() -> bool {
+    false
 }
 
 async fn build_loading_snapshots(registry: &ProviderRegistry) -> Vec<ProviderSnapshot> {
@@ -162,65 +212,118 @@ async fn fill_quotas_progressively(
         return Ok(());
     }
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel(total);
-    for snap in snapshots.iter() {
+    let mut jobs = Vec::new();
+    for snap in snapshots.iter_mut() {
         let provider = snap.provider.clone();
-        let p = registry.get(&provider)?;
-        for awq in &snap.accounts {
-            let tx = tx.clone();
-            let p = p.clone();
-            let provider = provider.clone();
-            let account_id = awq.account.id.clone();
-            tokio::spawn(async move {
-                let result = p.query_quota(&account_id).await.map_err(|e| e.to_string());
-                let _ = tx
-                    .send(QuotaUpdate {
-                        provider,
-                        account_id,
-                        result,
-                    })
-                    .await;
-            });
+        for awq in &mut snap.accounts {
+            if quota_query_would_touch_inactive_keychain(&awq.account) {
+                awq.fetch_state = QuotaFetchState::Ready;
+                continue;
+            }
+            jobs.push((provider.clone(), awq.account.id.clone()));
         }
+    }
+    if let Some(renderer) = renderer.as_deref_mut() {
+        renderer.render(snapshots, &[])?;
+    }
+    if jobs.is_empty() {
+        return Ok(());
+    }
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(jobs.len());
+    for (provider, account_id) in jobs {
+        let p = registry.get(&provider)?;
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let result = query_quota_with_retry(p.as_ref(), &account_id)
+                .await
+                .map_err(|e| e.to_string());
+            let _ = tx
+                .send(QuotaUpdate {
+                    provider,
+                    account_id,
+                    result,
+                })
+                .await;
+        });
     }
     drop(tx);
 
-    // 整体超时：超过 quota.fetch_timeout_ms 仍未返回的账号标记为超时失败，停止等待。
-    // 动机：单个账号网络卡住不应拖住整条命令。已成功账号的结果不受影响。
-    let timeout = Duration::from_millis(settings::current().quota.fetch_timeout_ms);
-    let deadline = tokio::time::sleep(timeout);
-    tokio::pin!(deadline);
-    loop {
-        tokio::select! {
-            maybe = rx.recv() => match maybe {
-                Some(update) => {
-                    apply_quota_update(snapshots, update);
-                    if let Some(renderer) = renderer.as_deref_mut() {
-                        renderer.render(snapshots, &[])?;
-                    }
-                }
-                None => break, // 全部账号已返回
-            },
-            _ = &mut deadline => {
-                mark_pending_as_timed_out(snapshots);
-                if let Some(renderer) = renderer.as_deref_mut() {
-                    renderer.render(snapshots, &[])?;
-                }
-                break;
-            }
+    while let Some(update) = rx.recv().await {
+        apply_quota_update(snapshots, update);
+        if let Some(renderer) = renderer.as_deref_mut() {
+            renderer.render(snapshots, &[])?;
         }
     }
     Ok(())
 }
 
-/// 把仍处于 `Loading`（超时未返回）的账号标记为超时失败。
-fn mark_pending_as_timed_out(snapshots: &mut [ProviderSnapshot]) {
-    for snap in snapshots.iter_mut() {
-        for awq in &mut snap.accounts {
-            if matches!(awq.fetch_state, QuotaFetchState::Loading) {
-                awq.fetch_state = QuotaFetchState::Failed("quota fetch timeout".into());
-            }
+#[cfg(target_os = "macos")]
+fn quota_query_would_touch_inactive_keychain(account: &Account) -> bool {
+    !account.active && std::env::var_os("SUBSWAP_QUERY_INACTIVE_KEYCHAIN").is_none()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn quota_query_would_touch_inactive_keychain(_account: &Account) -> bool {
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use subswap_core::{Account, QuotaFetchState};
+
+    fn snap_with_account(id: &str, label: &str) -> ProviderSnapshot {
+        ProviderSnapshot {
+            provider: "codex".into(),
+            accounts: vec![AccountWithQuotas {
+                account: Account {
+                    provider: "codex".into(),
+                    id: AccountId(id.into()),
+                    label: label.into(),
+                    active: false,
+                    created_at: Utc::now(),
+                    last_used_at: None,
+                    priority: 100,
+                    extra: serde_json::Map::new(),
+                },
+                quotas: Vec::new(),
+                fetch_state: QuotaFetchState::Ready,
+            }],
         }
+    }
+
+    #[test]
+    fn auto_swap_success_text_uses_friendly_label() {
+        let snap = snap_with_account(
+            "c1311d9b-47d1-4b8b-95e9-3401f967abd6",
+            "stromandanika707621@gmail.com",
+        );
+
+        assert_eq!(
+            auto_swap_success_text(
+                &snap,
+                &AccountId("c1311d9b-47d1-4b8b-95e9-3401f967abd6".into())
+            ),
+            "auto: swapped to stromandanika707621@gmail.com"
+        );
+    }
+
+    #[test]
+    fn auto_swap_success_text_hides_raw_id_without_label() {
+        let snap = snap_with_account(
+            "c1311d9b-47d1-4b8b-95e9-3401f967abd6",
+            "c1311d9b-47d1-4b8b-95e9-3401f967abd6",
+        );
+
+        assert_eq!(
+            auto_swap_success_text(
+                &snap,
+                &AccountId("c1311d9b-47d1-4b8b-95e9-3401f967abd6".into())
+            ),
+            "auto: swapped"
+        );
     }
 }
 

@@ -64,6 +64,16 @@ impl ClaudeProvider {
         self.store_account(creds, oauth_account, label_hint)
     }
 
+    /// 仅同步当前 Claude 账号的非敏感元数据,不读写 keyring。
+    pub fn sync_active_metadata(&self, label_hint: Option<String>) -> Result<Account> {
+        let oauth_account = read_oauth_account(&global_config_path(&self.claude_home))?
+            .ok_or_else(|| Error::Provider(
+                "no oauthAccount in ~/.claude; log into Claude Code first, or use --credentials-file"
+                    .into(),
+            ))?;
+        self.upsert_metadata_account(oauth_account, label_hint, Some(true))
+    }
+
     /// 从给定 credentials.json + 可选 oauthAccount 信息导入一个账号。
     pub fn import_from_files(
         &self,
@@ -199,6 +209,39 @@ impl ClaudeProvider {
         self.registry.upsert(account.clone())?;
         Ok(account)
     }
+
+    fn upsert_metadata_account(
+        &self,
+        oauth_account: OauthAccount,
+        label_hint: Option<String>,
+        active_override: Option<bool>,
+    ) -> Result<Account> {
+        let id = AccountId(oauth_account.email_address.clone());
+        let label = label_hint.unwrap_or_else(|| oauth_account.email_address.clone());
+
+        let mut extra = serde_json::Map::new();
+        extra.insert(
+            "oauth_account".into(),
+            serde_json::to_value(&oauth_account)?,
+        );
+
+        let existing = self.registry.find(PROVIDER_ID, &id)?;
+        let account = Account {
+            provider: PROVIDER_ID.into(),
+            id: id.clone(),
+            label,
+            active: active_override.unwrap_or_else(|| existing.as_ref().is_some_and(|a| a.active)),
+            created_at: existing
+                .as_ref()
+                .map(|a| a.created_at)
+                .unwrap_or_else(Utc::now),
+            last_used_at: existing.and_then(|a| a.last_used_at),
+            priority: 100,
+            extra,
+        };
+        self.registry.upsert(account.clone())?;
+        Ok(account)
+    }
 }
 
 #[async_trait]
@@ -291,7 +334,16 @@ impl Provider for ClaudeProvider {
     }
 
     async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>> {
-        let mut creds = self.load_credentials(id)?;
+        let mut creds = match self.read_active_credentials_if_matches(id)? {
+            Some(creds) => creds,
+            None if !quota_keychain_access_enabled() => {
+                return Err(Error::Credential(
+                    "quota skipped on macOS; set SUBSWAP_QUERY_INACTIVE_KEYCHAIN=1 to allow keychain-backed quota"
+                        .into(),
+                ));
+            }
+            None => self.load_credentials(id)?,
+        };
         // 进程内自愈：access_token 失效(401)且有 refresh_token 时，best-effort 刷新一次再重试。
         // 动机：daemon 后台保活在部分环境(如 Linux keyutils 按 session 隔离)读不到本进程写入的
         //       keyring 条目，无法保活；查询进程能看到自己的 keyring，因此在这里自愈最可靠。
@@ -300,7 +352,9 @@ impl Provider for ClaudeProvider {
             Ok(u) => u,
             Err(e) if is_auth_error(&e) && creds.oauth.refresh_token.is_some() => {
                 apply_refresh_to_creds(&mut creds).await?;
-                self.save_credentials(id, &creds)?;
+                if keychain_write_back_enabled() {
+                    self.save_credentials(id, &creds)?;
+                }
                 oauth::fetch_usage(&creds.oauth.access_token).await?
             }
             Err(e) => return Err(e),
@@ -333,6 +387,46 @@ impl Provider for ClaudeProvider {
         }
         Ok(out)
     }
+}
+
+impl ClaudeProvider {
+    fn read_active_credentials_if_matches(
+        &self,
+        id: &AccountId,
+    ) -> Result<Option<CredentialsFile>> {
+        let creds = match read_credentials(&credentials_path(&self.claude_home)) {
+            Ok(creds) => creds,
+            Err(_) => return Ok(None),
+        };
+        let Some(oauth_account) = read_oauth_account(&global_config_path(&self.claude_home))?
+        else {
+            return Ok(None);
+        };
+        if oauth_account.email_address == id.0 {
+            return Ok(Some(creds));
+        }
+        Ok(None)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_write_back_enabled() -> bool {
+    std::env::var_os("SUBSWAP_SYNC_KEYCHAIN_ON_START").is_some()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn keychain_write_back_enabled() -> bool {
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn quota_keychain_access_enabled() -> bool {
+    std::env::var_os("SUBSWAP_QUERY_INACTIVE_KEYCHAIN").is_some()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn quota_keychain_access_enabled() -> bool {
+    true
 }
 
 /// best-effort 预刷新。返回 `true` 表示 token 已被刷新。

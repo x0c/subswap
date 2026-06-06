@@ -18,6 +18,9 @@
 //! poll_interval_ms = 60000
 //! idle_threshold_ms = 1800000
 //! idle_poll_interval_ms = 900000
+//!
+//! [quota]
+//! fetch_retries = 1
 //! ```
 
 use std::path::Path;
@@ -55,8 +58,12 @@ pub struct Quota {
     pub warn_pct: f64,
     /// 展示用 Exhausted 阈值（百分比 0~100）。不参与切换决策。
     pub exhausted_pct: f64,
-    /// `subswap` 默认入口拉 quota 的整体超时（毫秒）。超时后未返回的账号标记为超时失败并停止等待。
+    /// 单次 quota 查询 attempt 的超时（毫秒）。
     pub fetch_timeout_ms: u64,
+    /// quota 查询失败后额外重试几次；默认 1 表示总共最多 2 次 attempt。
+    pub fetch_retries: u32,
+    /// 每次重试前等待多久（毫秒）。
+    pub fetch_retry_delay_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -99,6 +106,8 @@ impl Default for Quota {
             warn_pct: defaults::QUOTA_WARN_PCT,
             exhausted_pct: defaults::QUOTA_EXHAUSTED_PCT,
             fetch_timeout_ms: defaults::QUOTA_FETCH_TIMEOUT_MS,
+            fetch_retries: defaults::QUOTA_FETCH_RETRIES,
+            fetch_retry_delay_ms: defaults::QUOTA_FETCH_RETRY_DELAY_MS,
         }
     }
 }
@@ -190,6 +199,11 @@ mod tests {
         assert_eq!(
             s.daemon.idle_threshold_ms,
             defaults::DAEMON_IDLE_THRESHOLD_MS
+        );
+        assert_eq!(s.quota.fetch_retries, defaults::QUOTA_FETCH_RETRIES);
+        assert_eq!(
+            s.quota.fetch_retry_delay_ms,
+            defaults::QUOTA_FETCH_RETRY_DELAY_MS
         );
     }
 

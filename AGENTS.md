@@ -65,6 +65,10 @@ subswap/
    ARCHITECTURE.md §5.5 与 docs/CONFIG.md。
 10. **不得用高频请求模拟限流触发**。任何 quota / usage 轮询、daemon 后台保活、未来 429 上报机制都必须保守：
     遵守上游服务条款、避免请求风暴、失败后退避；不要为了更快切换而增加封号/风控风险。
+11. **功能新增或缺陷修复后默认执行完整发布流程**。按语义化版本提升 workspace 的 patch/minor/major 版本并
+    同步 `Cargo.lock`，完成测试与 release 构建后提交 Git、创建并推送版本 tag、确认远端 release 发布成功，
+    再覆盖安装本机 `subswap` / `subswapd` 并重启 daemon；最后用 `subswap --version` 和构建产物哈希验证。
+    除非用户明确限制范围，不得只完成其中一部分。
 
 ## 代码风格
 
@@ -106,6 +110,7 @@ cargo run -p subswap-cli
 | Provider 知识库 | docs/PROVIDER_KNOWLEDGE_BASE.md | 各 Provider 上游接口、文件结构、坑点 |
 | 架构设计 | docs/design/ARCHITECTURE.md | 模块划分、依赖关系、扩展机制 |
 | 自动切换设计 | docs/design/AUTO_SWAP_DESIGN.md | 触发策略、降级路径 |
+| 窗口预热提案 | docs/design/PREWARM_DESIGN.md | 无头 hi 预热 5h 窗口（提案/未实现，#10 豁免） |
 | 运行时配置 | docs/CONFIG.md | `config.toml` 字段表、热加载、风控约束 |
 | 故障排查记录 | docs/troubleshooting/YYYY-MM-DD-*.md | 时序归档 |
 
