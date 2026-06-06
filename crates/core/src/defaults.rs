@@ -50,13 +50,12 @@ pub const QUOTA_FETCH_TIMEOUT_MS: u64 = 3000;
 
 /// quota 查询失败后的重试次数。
 ///
-/// 这里表示「首次请求之外」额外再试几次。默认 1 次，避免偶发网络抖动直接让账号进入 Failed；
-/// 仍保持保守，避免高频请求触发上游风控。
-pub const QUOTA_FETCH_RETRIES: u32 = 1;
+/// 这里表示「首次请求之外」额外再试几次。默认 5 次；401/403 不会重试。
+pub const QUOTA_FETCH_RETRIES: u32 = 5;
 
-/// quota 查询重试前等待多久（毫秒）。
+/// quota 查询首次重试前等待多久（毫秒）。
 ///
-/// 配合 [`QUOTA_FETCH_RETRIES`] 使用，给瞬时网络错误一个短暂恢复窗口。
+/// 后续按 `base * 2^(attempt-1)` 指数退避，给瞬时网络错误恢复窗口。
 pub const QUOTA_FETCH_RETRY_DELAY_MS: u64 = 500;
 
 // ============================================================
