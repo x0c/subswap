@@ -58,7 +58,9 @@
    └─ 只读 registry，立即渲染账号骨架；quota 显示 loading
 
 ③ fill_quotas_progressively（并发）
-   └─ N 个 query_quota 并发；每个账号返回后刷新对应行
+   ├─ N 个 query_quota 并发；每个账号返回后刷新对应行
+   ├─ 单个 Provider 的账号全部返回后，立即对该 Provider 跑 AutoSwapPolicy
+   └─ 如需切换：Provider.activate(to) → write audit → 标记当前快照 active
       （交互终端渐进刷新；非交互/管道只输出最终状态）
 
 ④ auto_decide（纯函数，无 IO）
@@ -66,9 +68,7 @@
                      active quota 查询失败 → Degraded（提示手动 swap）
                      否则 → NoOp
 
-⑤ 如需切换：Provider.activate(to) → write audit
-
-⑥ render 最终状态
+⑤ render 最终状态
 ```
 
 `find_unique(id)` 支持全局 id 反查（唯一时省略 provider；歧义时用 `<provider>/<id>`）。
