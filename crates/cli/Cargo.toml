@@ -36,4 +36,5 @@ fs2.workspace = true
 libc = "0.2"
 
 [dev-dependencies]
+async-trait.workspace = true
 tempfile = "3"

@@ -34,7 +34,7 @@
 
 | 命令 | 说明 |
 |---|---|
-| `subswap` | 默认入口：扫本地自动 import → 立即显示账号骨架 → quota 渐进刷新 → AutoSwap 决策 → 最终状态;同时 best-effort 拉起 `subswapd`(用户无感) |
+| `subswap` | 默认入口：扫本地自动 import → 立即显示账号骨架 → quota 渐进刷新 → 单 Provider 就绪即做 AutoSwap 决策 → 最终状态;同时 best-effort 拉起 `subswapd`(用户无感) |
 | `subswap login <claude\|codex>` | 调用官方 CLI 登录流程，完成后导入/覆盖当前登录账号并标记为 active |
 | `subswap swap [<id\|N>]` | 手动切换；`<id>` 用 id/label/`<provider>/<id>`，`<N>` 用默认入口列出的全局序号。无参打印编号清单 |
 | `subswap rm <id\|N>` | 删除账号（registry + keyring），引用形式同 `swap` |

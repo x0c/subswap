@@ -1,14 +1,15 @@
 //! `subswap`（无参）默认入口。
 //!
-//! 流程：sync_local_active → 先渲染骨架 → 并发拉 quota 渐进刷新 → AutoSwapPolicy → 最终渲染。
+//! 流程：sync_local_active → 先渲染骨架 → 并发拉 quota 渐进刷新 → per-provider AutoSwapPolicy → 最终渲染。
 //! 详见 docs/design/ARCHITECTURE.md §3.1。
 
+use std::collections::HashSet;
 use std::io::{self, IsTerminal};
 
 use anyhow::Result;
 use futures::future::join_all;
 use subswap_core::{
-    auto_decide, query_quota_with_retry, AccountId, AccountWithQuotas, AuditEvent,
+    auto_decide, query_quota_with_retry, AccountId, AccountWithQuotas, AuditEvent, AuditLog,
     PolicyConfig, PolicyDecision, ProviderRegistry, ProviderSnapshot, Quota, QuotaFetchState,
 };
 
@@ -27,9 +28,14 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
     if interactive {
         renderer.render(&snapshots, &[])?;
     }
+    let cfg = PolicyConfig::default();
+    let mut auto_lines: Vec<AutoLine> = Vec::new();
     fill_quotas_progressively(
         &ctx.providers,
+        &ctx.audit,
         &mut snapshots,
+        &cfg,
+        &mut auto_lines,
         if interactive {
             Some(&mut renderer)
         } else {
@@ -38,64 +44,10 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
     )
     .await?;
 
-    // 3. 应用 AutoSwapPolicy；只在完整 quota 返回后决策，避免半截数据乱切。
-    let cfg = PolicyConfig::default();
-    let mut auto_lines: Vec<AutoLine> = Vec::new();
-    let mut activated: Vec<(String, AccountId)> = Vec::new();
-    for snap in &snapshots {
-        if snap.accounts.is_empty() {
-            continue;
-        }
-        match auto_decide(snap, &cfg) {
-            PolicyDecision::Swap { to, .. } => {
-                let p = ctx.providers.get(&snap.provider)?;
-                match p.activate(&to).await {
-                    Ok(()) => {
-                        auto_lines.push(AutoLine {
-                            provider: snap.provider.clone(),
-                            text: auto_swap_success_text(snap, &to),
-                            kind: AutoLineKind::Info,
-                        });
-                        ctx.audit.append(AuditEvent::ok(
-                            "auto_swap",
-                            &snap.provider,
-                            Some(to.0.as_str()),
-                        ));
-                        activated.push((snap.provider.clone(), to));
-                    }
-                    Err(e) => {
-                        auto_lines.push(AutoLine {
-                            provider: snap.provider.clone(),
-                            text: format!("auto: failed ({})", compact_error(&e.to_string())),
-                            kind: AutoLineKind::Error,
-                        });
-                        ctx.audit.append(AuditEvent::err(
-                            "auto_swap",
-                            &snap.provider,
-                            Some(to.0.as_str()),
-                            &e.to_string(),
-                        ));
-                    }
-                }
-            }
-            PolicyDecision::Degraded { reason } => {
-                tracing::debug!(
-                    provider=%snap.provider,
-                    reason=%compact_policy_reason(&reason),
-                    "auto swap degraded"
-                );
-            }
-            PolicyDecision::NoOp { .. } => {} // 沉默是金
-        }
-    }
-    for (provider, id) in activated {
-        mark_active(&mut snapshots, &provider, &id);
-    }
-
-    // 4. 最终渲染。交互场景刷新原输出块；非交互场景只输出最终版。
+    // 3. 最终渲染。交互场景刷新原输出块；非交互场景只输出最终版。
     renderer.render(&snapshots, &auto_lines)?;
 
-    // 5. 后台保活:用户无感地拉起 daemon(已经在跑则什么都不做)。
+    // 4. 后台保活:用户无感地拉起 daemon(已经在跑则什么都不做)。
     //    失败仅 debug 日志,不影响默认命令的退出码。
     if let Err(e) = ensure_daemon_running() {
         tracing::debug!(err = %e, "ensure_daemon_running failed; continuing");
@@ -204,7 +156,10 @@ struct QuotaUpdate {
 
 async fn fill_quotas_progressively(
     registry: &ProviderRegistry,
+    audit: &AuditLog,
     snapshots: &mut [ProviderSnapshot],
+    cfg: &PolicyConfig,
+    auto_lines: &mut Vec<AutoLine>,
     mut renderer: Option<&mut InlineRenderer>,
 ) -> Result<()> {
     let total: usize = snapshots.iter().map(|snap| snap.accounts.len()).sum();
@@ -221,12 +176,13 @@ async fn fill_quotas_progressively(
         }
     }
     if let Some(renderer) = renderer.as_deref_mut() {
-        renderer.render(snapshots, &[])?;
+        renderer.render(snapshots, auto_lines)?;
     }
     if jobs.is_empty() {
         return Ok(());
     }
 
+    let mut decided_providers = HashSet::new();
     let (tx, mut rx) = tokio::sync::mpsc::channel(jobs.len());
     for (provider, account_id) in jobs {
         let p = registry.get(&provider)?;
@@ -247,11 +203,85 @@ async fn fill_quotas_progressively(
     drop(tx);
 
     while let Some(update) = rx.recv().await {
+        let provider = update.provider.clone();
         apply_quota_update(snapshots, update);
+        try_auto_swap_ready_provider(
+            registry,
+            audit,
+            snapshots,
+            &provider,
+            cfg,
+            auto_lines,
+            &mut decided_providers,
+        )
+        .await?;
         if let Some(renderer) = renderer.as_deref_mut() {
-            renderer.render(snapshots, &[])?;
+            renderer.render(snapshots, auto_lines)?;
         }
     }
+    Ok(())
+}
+
+async fn try_auto_swap_ready_provider(
+    registry: &ProviderRegistry,
+    audit: &AuditLog,
+    snapshots: &mut [ProviderSnapshot],
+    provider: &str,
+    cfg: &PolicyConfig,
+    auto_lines: &mut Vec<AutoLine>,
+    decided_providers: &mut HashSet<String>,
+) -> Result<()> {
+    if decided_providers.contains(provider) {
+        return Ok(());
+    }
+    let Some(index) = snapshots.iter().position(|snap| snap.provider == provider) else {
+        return Ok(());
+    };
+    let snap = &snapshots[index];
+    if snap.accounts.is_empty() || snap.accounts.iter().any(|a| a.fetch_state.is_loading()) {
+        return Ok(());
+    }
+    decided_providers.insert(provider.to_string());
+
+    match auto_decide(snap, cfg) {
+        PolicyDecision::Swap { to, .. } => {
+            let p = registry.get(provider)?;
+            let success_text = auto_swap_success_text(snap, &to);
+            match p.activate(&to).await {
+                Ok(()) => {
+                    auto_lines.push(AutoLine {
+                        provider: provider.to_string(),
+                        text: success_text,
+                        kind: AutoLineKind::Info,
+                    });
+                    audit.append(AuditEvent::ok("auto_swap", provider, Some(to.0.as_str())));
+                    mark_active(snapshots, provider, &to);
+                }
+                Err(e) => {
+                    auto_lines.push(AutoLine {
+                        provider: provider.to_string(),
+                        text: format!("auto: failed ({})", compact_error(&e.to_string())),
+                        kind: AutoLineKind::Error,
+                    });
+                    audit.append(AuditEvent::err(
+                        "auto_swap",
+                        provider,
+                        Some(to.0.as_str()),
+                        &e.to_string(),
+                    ));
+                }
+            }
+        }
+        PolicyDecision::Degraded { reason } => {
+            tracing::debug!(
+                provider=%provider,
+                reason=%compact_policy_reason(&reason),
+                "auto swap degraded"
+            );
+        }
+        PolicyDecision::NoOp { .. } => {} // 沉默是金
+    }
+
     Ok(())
 }
 
@@ -296,7 +326,13 @@ fn mark_active(snapshots: &mut [ProviderSnapshot], provider: &str, id: &AccountI
 mod tests {
     use super::*;
     use chrono::Utc;
-    use subswap_core::{Account, QuotaFetchState};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use subswap_core::{
+        Account, ClientTarget, Provider, QuotaFetchState, QuotaStatus, QuotaWindow,
+    };
+    use tokio::sync::{mpsc, Notify};
 
     fn snap_with_account(id: &str, label: &str) -> ProviderSnapshot {
         ProviderSnapshot {
@@ -348,5 +384,151 @@ mod tests {
             ),
             "auto: swapped"
         );
+    }
+
+    struct MockProvider {
+        id: &'static str,
+        accounts: Vec<Account>,
+        quotas: HashMap<String, Vec<Quota>>,
+        wait_for_quota: Option<Arc<Notify>>,
+        activated: mpsc::UnboundedSender<(String, String)>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for MockProvider {
+        fn id(&self) -> &'static str {
+            self.id
+        }
+
+        fn display_name(&self) -> &'static str {
+            self.id
+        }
+
+        fn client_targets(&self) -> Vec<ClientTarget> {
+            Vec::new()
+        }
+
+        async fn list_accounts(&self) -> subswap_core::Result<Vec<Account>> {
+            Ok(self.accounts.clone())
+        }
+
+        async fn activate(&self, id: &AccountId) -> subswap_core::Result<()> {
+            let _ = self.activated.send((self.id.to_string(), id.0.clone()));
+            Ok(())
+        }
+
+        async fn query_quota(&self, id: &AccountId) -> subswap_core::Result<Vec<Quota>> {
+            if let Some(wait_for_quota) = &self.wait_for_quota {
+                wait_for_quota.notified().await;
+            }
+            Ok(self.quotas.get(&id.0).cloned().unwrap_or_default())
+        }
+    }
+
+    fn account(provider: &str, id: &str, active: bool) -> Account {
+        Account {
+            provider: provider.into(),
+            id: AccountId(id.into()),
+            label: id.into(),
+            active,
+            created_at: Utc::now(),
+            last_used_at: None,
+            priority: 100,
+            extra: serde_json::Map::new(),
+        }
+    }
+
+    fn quota(provider: &str, id: &str, used: u64, status: QuotaStatus) -> Quota {
+        Quota {
+            provider: provider.into(),
+            account_id: AccountId(id.into()),
+            window: QuotaWindow::Month,
+            used,
+            limit: 100,
+            reset_at: None,
+            status,
+            note: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn ready_provider_auto_swaps_before_other_provider_finishes() {
+        let (activated_tx, mut activated_rx) = mpsc::unbounded_channel();
+        let slow_claude = Arc::new(Notify::new());
+
+        let mut codex_quotas = HashMap::new();
+        codex_quotas.insert(
+            "codex-active".into(),
+            vec![quota("codex", "codex-active", 99, QuotaStatus::Warn)],
+        );
+        codex_quotas.insert(
+            "codex-candidate".into(),
+            vec![quota("codex", "codex-candidate", 1, QuotaStatus::Ok)],
+        );
+
+        let mut registry = ProviderRegistry::new();
+        registry.register(Arc::new(MockProvider {
+            id: "claude",
+            accounts: vec![account("claude", "claude-active", true)],
+            quotas: HashMap::new(),
+            wait_for_quota: Some(slow_claude.clone()),
+            activated: activated_tx.clone(),
+        }));
+        registry.register(Arc::new(MockProvider {
+            id: "codex",
+            accounts: vec![
+                account("codex", "codex-active", true),
+                account("codex", "codex-candidate", false),
+            ],
+            quotas: codex_quotas,
+            wait_for_quota: None,
+            activated: activated_tx,
+        }));
+
+        let mut snapshots = build_loading_snapshots(&registry).await;
+        let cfg = PolicyConfig {
+            threshold: 0.98,
+            allow_unknown: false,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let audit = AuditLog::new(tmp.path().join("audit.log"));
+        let mut auto_lines = Vec::new();
+
+        let handle = tokio::spawn(async move {
+            let _tmp = tmp;
+            fill_quotas_progressively(
+                &registry,
+                &audit,
+                &mut snapshots,
+                &cfg,
+                &mut auto_lines,
+                None,
+            )
+            .await
+            .unwrap();
+            (snapshots, auto_lines)
+        });
+
+        let activated = tokio::time::timeout(Duration::from_millis(300), activated_rx.recv())
+            .await
+            .expect("codex should activate before claude quota finishes")
+            .expect("activation channel should stay open");
+        assert_eq!(
+            activated,
+            ("codex".to_string(), "codex-candidate".to_string())
+        );
+
+        slow_claude.notify_waiters();
+        let (snapshots, auto_lines) = handle.await.unwrap();
+        let codex = snapshots
+            .iter()
+            .find(|snap| snap.provider == "codex")
+            .unwrap();
+        assert!(codex
+            .accounts
+            .iter()
+            .any(|account| account.account.id.0 == "codex-candidate" && account.account.active));
+        assert_eq!(auto_lines.len(), 1);
+        assert_eq!(auto_lines[0].provider, "codex");
     }
 }
