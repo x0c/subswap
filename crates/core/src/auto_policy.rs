@@ -34,8 +34,8 @@ impl Default for PolicyConfig {
 pub struct AccountWithQuotas {
     pub account: Account,
     pub quotas: Vec<Quota>,
-    /// 拉取状态。决策时只看 [`QuotaFetchState::Failed`]；
-    /// [`QuotaFetchState::Loading`] 是 CLI 首屏占位，不应进入 [`decide`]。
+    /// 拉取状态。CLI 渐进刷新时可能把 [`QuotaFetchState::Loading`] 传入决策；
+    /// active 仍在 loading 且已有明确可用候选时，允许先切走。
     pub fetch_state: QuotaFetchState,
 }
 
@@ -95,19 +95,23 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
     let active = snapshot.accounts.iter().find(|a| a.account.active);
     let active_id = active.map(|a| a.account.id.clone());
 
-    // 1. active 账号自身额度查询失败时，若有额度明确可用的其他账号则切走。
+    // 1. active 账号自身额度尚未可用时，若有额度明确可用的其他账号则切走。
     // 没有明确可用候选时才降级，避免从未知切到未知。
     if let Some(a) = active {
+        if a.fetch_state.is_loading() {
+            if let Some(best) = best_known_available_candidate(snapshot, &a.account.id, config) {
+                return PolicyDecision::Swap {
+                    from: Some(a.account.id.clone()),
+                    to: best.account.id.clone(),
+                    reason: format!(
+                        "active account {} quota still loading; pick {} (known available)",
+                        a.account.id, best.account.id
+                    ),
+                };
+            }
+        }
         if let Some(err) = a.fetch_state.failed() {
-            if let Some(best) = snapshot
-                .accounts
-                .iter()
-                .filter(|candidate| candidate.account.id != a.account.id)
-                .filter(|candidate| {
-                    is_viable_candidate(candidate, config.threshold, config.allow_unknown)
-                })
-                .min_by(|left, right| compare_candidates(left, right))
-            {
+            if let Some(best) = best_known_available_candidate(snapshot, &a.account.id, config) {
                 return PolicyDecision::Swap {
                     from: Some(a.account.id.clone()),
                     to: best.account.id.clone(),
@@ -254,6 +258,19 @@ fn account_needs_swap(a: &AccountWithQuotas, threshold: f64) -> bool {
     a.quotas
         .iter()
         .any(|q| matches!(q.status, QuotaStatus::Exhausted) || q.is_above(threshold))
+}
+
+fn best_known_available_candidate<'a>(
+    snapshot: &'a ProviderSnapshot,
+    active_id: &AccountId,
+    config: &PolicyConfig,
+) -> Option<&'a AccountWithQuotas> {
+    snapshot
+        .accounts
+        .iter()
+        .filter(|candidate| candidate.account.id != *active_id)
+        .filter(|candidate| is_viable_candidate(candidate, config.threshold, config.allow_unknown))
+        .min_by(|left, right| compare_candidates(left, right))
 }
 
 fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: bool) -> bool {
@@ -446,6 +463,19 @@ mod tests {
     fn active_quota_fetch_failure_swaps_to_known_available_candidate() {
         let mut a = mk_awq("a", true, 0, QuotaStatus::Unknown);
         a.fetch_state = QuotaFetchState::Failed("timeout".into());
+        let snap = ProviderSnapshot {
+            provider: "claude".into(),
+            accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(matches!(d, PolicyDecision::Swap { to, .. } if to.0 == "b"));
+    }
+
+    #[test]
+    fn active_quota_loading_swaps_to_known_available_candidate() {
+        let mut a = mk_awq("a", true, 0, QuotaStatus::Unknown);
+        a.quotas.clear();
+        a.fetch_state = QuotaFetchState::Loading;
         let snap = ProviderSnapshot {
             provider: "claude".into(),
             accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
