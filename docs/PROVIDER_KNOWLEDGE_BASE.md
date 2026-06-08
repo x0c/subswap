@@ -188,6 +188,29 @@ ChatGPT 后端响应字段会随产品调整；subswap 在 `openai_usage::normal
 Claude 那边的保活由 subswap daemon (M4) 自己做，因为非活跃 Claude 账号的凭证只存在 keyring 里、
 没有 Claude CLI 帮它刷；Codex 没这个问题（所有账号最终都流经 `~/.codex/auth.json`，Codex CLI 持续维护）。
 
+### Refresh token 轮换与 capture-on-leave（核心安全约束）
+
+**两边的 refresh token 都是一次性轮换**：刷新一次旧 token 立即作废。subswap 与原生客户端
+（Codex CLI / Claude Code）若各自独立持有同一份 refresh token 并各自刷新，必然有一方被服务端
+作废，表现为 `refresh token already used` 强制重登（排查见
+[troubleshooting/2026-06-08](troubleshooting/2026-06-08-codex-refresh-token-already-used.md)）。
+
+**不变量：原生客户端是 active 账号 live token 的唯一轮换者。** subswap 对 active 账号只读不刷；
+只对停泊（parked）账号刷新/恢复。落地两个机制：
+
+1. **Capture-on-leave**：`Provider::activate` 在覆盖 live 文件前，先读当前 live 凭证、找受管
+   owner 账号、回写其 store（`capture_live_into_store`，Codex/Claude 各一份）。否则切走的账号
+   store 副本会停在旧 token，下次切回写回旧 token → 作废。所有 swap（手动 + daemon 自动）唯一
+   经过 `activate`，一处生效覆盖两条路径；找不到 owner 直接跳过（best-effort，不阻塞 swap）。
+2. **绝不轮换 active 账号 token（仅 Claude，Codex 本就不刷）**：
+   - `refresh_if_near_expiry` 开头加 active 守卫（`active_account_id()` 命中即返回 `Ok(false)`），
+     daemon 后台保活只对 parked 账号生效。
+   - `query_quota` 401 自愈仅当凭证来自 store（parked）才刷新；来自 live（active）直接返回错误，
+     交还 Claude Code 自刷。
+
+> 改动 `activate` / keepalive / `query_quota` 自愈逻辑时务必维持本约束，别让 subswap 在
+> 后台刷 active 账号、或把陈旧 token 写回 live。
+
 ### auth.json schema 不稳定（透传策略）
 
 Codex 经历过 schema_version v2→v3→v4 迁移。subswap 故意**不绑定具体 schema**：
