@@ -269,9 +269,16 @@ impl Provider for CodexProvider {
         let codex_home = self.codex_home.clone();
         let auth_path = active_auth_path(&self.codex_home);
         let registry = self.registry.clone();
+        let store = self.store.clone();
         let id_for_blocking = id.clone();
 
         tokio::task::spawn_blocking(move || {
+            // capture-on-leave：覆盖 live auth.json 前，先把当前 live 凭证回灌进它所属账号的 store。
+            // 否则切走的账号 store 副本会停在旧 refresh token，下次切回写回旧 token → "already used"。
+            if let Err(e) = capture_live_into_store(store.as_ref(), &registry, &codex_home) {
+                tracing::warn!(err = %e, "codex capture-on-leave failed; continuing swap");
+            }
+
             let auth_blob = target_raw;
             let targets = vec![SwapTarget {
                 snapshot_name: "auth.json",
@@ -502,6 +509,33 @@ fn legacy_account_matches_account(legacy: &serde_json::Value, account: &Account)
             && legacy_chatgpt_account_id == account_chatgpt_account_id)
 }
 
+/// 在覆盖 live auth.json 之前，把当前 live 凭证回灌进它所属账号的 store。
+///
+/// 动机：codex 在使用期间会轮换 refresh token，store 里的冻结快照会逐渐落后；
+/// 若不回灌，下次 swap 回该账号会写回旧 token，导致 "refresh token already used"。
+/// best-effort：没有 live 文件、或匹配不到受管账号时直接跳过（返回 `Ok`）。
+fn capture_live_into_store(
+    store: &dyn CredentialStore,
+    registry: &AccountRegistry,
+    codex_home: &Path,
+) -> Result<()> {
+    let live_raw = match read_auth(&active_auth_path(codex_home)) {
+        Ok(raw) => raw,
+        Err(_) => return Ok(()),
+    };
+    let metadata = parse_metadata(&live_raw);
+    let owner = registry
+        .list_by_provider(PROVIDER_ID)?
+        .into_iter()
+        .find(|account| auth_metadata_matches_account(&metadata, account));
+    let Some(owner) = owner else {
+        return Ok(());
+    };
+    store.set(PROVIDER_ID, owner.id.0.as_str(), AUTH_FIELD, &live_raw)?;
+    tracing::debug!(account = %owner.id, "codex live auth captured into store before swap");
+    Ok(())
+}
+
 fn auth_metadata_matches_account(metadata: &AuthMetadata, account: &Account) -> bool {
     let account_chatgpt_account_id = account_chatgpt_account_id(account);
     string_matches_account(metadata.primary_id().as_deref(), account)
@@ -619,6 +653,67 @@ mod tests {
         let account = account_with_email_id("achesjeremy819@gmail.com");
 
         assert!(auth_metadata_matches_account(&metadata, &account));
+    }
+
+    #[test]
+    fn capture_on_leave_updates_store_for_owner() {
+        use subswap_core::FileStore;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let codex_home = tmp.path().join("codex");
+        std::fs::create_dir_all(&codex_home).unwrap();
+
+        // live auth.json:account_key=k1,refresh_token=R2(原生客户端刚轮换到的最新值)。
+        let live = r#"{"account_key":"k1","email":"a@x.com","tokens":{"access_token":"AT2","refresh_token":"R2"}}"#;
+        std::fs::write(active_auth_path(&codex_home), live).unwrap();
+
+        let store = FileStore::new(tmp.path().join("creds.json"));
+        let registry = AccountRegistry::new(tmp.path().join("registry.toml"));
+
+        // store 先放一份陈旧副本(refresh_token=R1)。
+        store
+            .set(
+                PROVIDER_ID,
+                "k1",
+                AUTH_FIELD,
+                r#"{"account_key":"k1","tokens":{"refresh_token":"R1"}}"#,
+            )
+            .unwrap();
+
+        // 注册 owner 账号(id=k1)。
+        let mut account = account_with_email_id("a@x.com");
+        account.id = AccountId("k1".into());
+        registry.upsert(account).unwrap();
+
+        capture_live_into_store(&store, &registry, &codex_home).unwrap();
+
+        // 回灌后 store 应为 live 全文(含 R2),不再是陈旧 R1。
+        let stored = store.get(PROVIDER_ID, "k1", AUTH_FIELD).unwrap().unwrap();
+        assert_eq!(stored, live);
+    }
+
+    #[test]
+    fn capture_on_leave_skips_when_no_owner() {
+        use subswap_core::FileStore;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let codex_home = tmp.path().join("codex");
+        std::fs::create_dir_all(&codex_home).unwrap();
+        std::fs::write(
+            active_auth_path(&codex_home),
+            r#"{"account_key":"unmanaged"}"#,
+        )
+        .unwrap();
+
+        let store = FileStore::new(tmp.path().join("creds.json"));
+        let registry = AccountRegistry::new(tmp.path().join("registry.toml"));
+
+        // 无匹配账号 → 不写 store。
+        capture_live_into_store(&store, &registry, &codex_home).unwrap();
+        assert!(store
+            .get(PROVIDER_ID, "unmanaged", AUTH_FIELD)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

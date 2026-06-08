@@ -11,7 +11,7 @@ mod claude_files;
 mod oauth;
 mod paths;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -122,6 +122,12 @@ impl ClaudeProvider {
     ///
     /// 不动 `~/.claude/` 下任何文件,只回写 keyring。这是 daemon 周期任务,任一账号失败不影响其它。
     pub async fn refresh_if_near_expiry(&self, id: &AccountId) -> Result<bool> {
+        // active 账号的 token 由 Claude Code 自己轮换;subswap 在后台刷新只写 keyring、
+        // 不写 ~/.claude,会让 live 文件持有的 refresh token 被服务端作废 → "already used"。
+        // 因此后台保活只对停泊(parked)账号生效,active 账号直接跳过。
+        if self.active_account_id()?.as_ref() == Some(id) {
+            return Ok(false);
+        }
         let mut creds = self.load_credentials(id)?;
         if !is_expired_or_soon(&creds, settings::current().token.refresh_slack_ms) {
             return Ok(false);
@@ -154,6 +160,16 @@ impl ClaudeProvider {
             Ok(creds) => Ok(creds),
             Err(file_err) => read_claude_code_keychain().ok_or(file_err),
         }
+    }
+
+    /// 当前 Claude Code 激活账号的 id(取自 `~/.claude.json` 的 `oauthAccount`)。不读 keyring。
+    /// 没有 oauthAccount(未登录)时返回 `None`。daemon 保活与 quota 自愈用它跳过 active 账号——
+    /// active 账号的 token 由 Claude Code 唯一轮换,subswap 不得在后台抢刷。
+    fn active_account_id(&self) -> Result<Option<AccountId>> {
+        let Some(oauth_account) = read_oauth_account(&global_config_path(&self.claude_home))? else {
+            return Ok(None);
+        };
+        Ok(Some(AccountId(oauth_account.email_address)))
     }
 
     /// 从凭证仓库读账号的 credentials JSON 副本。
@@ -333,9 +349,16 @@ impl Provider for ClaudeProvider {
         let conf_path = global_config_path(&self.claude_home);
         let claude_home = self.claude_home.clone();
         let registry = self.registry.clone();
+        let store = self.store.clone();
         let id_for_blocking = id.clone();
 
         tokio::task::spawn_blocking(move || {
+            // capture-on-leave：覆盖 live 文件前，把当前 live 凭证回灌进它所属账号的 store。
+            // 否则切走的账号 store 副本会停在旧 refresh token，下次切回写回旧 token → "already used"。
+            if let Err(e) = capture_live_into_store(store.as_ref(), &registry, &claude_home) {
+                tracing::warn!(err = %e, "claude capture-on-leave failed; continuing swap");
+            }
+
             let targets = vec![
                 SwapTarget {
                     snapshot_name: "credentials.json",
@@ -363,20 +386,22 @@ impl Provider for ClaudeProvider {
     }
 
     async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>> {
-        let mut creds = match self.read_active_credentials_if_matches(id)? {
-            // 命中本地实体文件(~/.claude/.credentials.json)→ 直接用。
-            Some(creds) => creds,
-            // 实体文件缺失/不匹配时回落凭证仓库。macOS 上 Claude Code 把凭证存进钥匙串、
+        let (mut creds, from_live) = match self.read_active_credentials_if_matches(id)? {
+            // 命中本地实体文件(~/.claude/.credentials.json)→ 这是 active 账号,Claude Code 持有它。
+            Some(creds) => (creds, true),
+            // 实体文件缺失/不匹配时回落凭证仓库(parked 账号)。macOS 上 Claude Code 把凭证存进钥匙串、
             // 不写实体文件,激活账号也走这里;FileStore 后端是明文文件,读任何账号都不弹钥匙串。
-            None => self.load_credentials(id)?,
+            None => (self.load_credentials(id)?, false),
         };
         // 进程内自愈：access_token 失效(401)且有 refresh_token 时，best-effort 刷新一次再重试。
         // 动机：daemon 后台保活在部分环境(如 Linux keyutils 按 session 隔离)读不到本进程写入的
         //       keyring 条目，无法保活；查询进程能看到自己的 keyring，因此在这里自愈最可靠。
-        // 保守起见只在 401 时刷新、且只重试一次，避免请求风暴(AGENTS.md #10)。
+        // 关键约束：仅对 parked 账号自愈刷新。active 账号(from_live)的 token 由 Claude Code 唯一
+        // 轮换,subswap 刷新只写 keyring、不写 live 文件,会让 live 持有的 refresh token 被作废 →
+        // "refresh token already used"。保守起见只在 401 时刷新、且只重试一次,避免请求风暴(AGENTS.md #10)。
         let usage = match oauth::fetch_usage(&creds.oauth.access_token).await {
             Ok(u) => u,
-            Err(e) if is_auth_error(&e) && creds.oauth.refresh_token.is_some() => {
+            Err(e) if is_auth_error(&e) && !from_live && creds.oauth.refresh_token.is_some() => {
                 apply_refresh_to_creds(&mut creds).await?;
                 // 刷新后的 token 写回凭证仓库,避免下次查询重复刷新(FileStore 写入不弹钥匙串)。
                 self.save_credentials(id, &creds)?;
@@ -449,6 +474,39 @@ fn read_claude_code_keychain() -> Option<CredentialsFile> {
 #[cfg(not(target_os = "macos"))]
 fn read_claude_code_keychain() -> Option<CredentialsFile> {
     None
+}
+
+/// 在覆盖 live 文件之前，把当前 live 凭证回灌进它所属账号的 store。
+///
+/// 动机：Claude Code 在使用期间会轮换 refresh token，store 里的冻结快照会逐渐落后；
+/// 若不回灌，下次 swap 回该账号会写回旧 token，导致 "refresh token already used"。
+/// best-effort：读不到 live 凭证、没有 oauthAccount、或该账号未受管时直接跳过(返回 `Ok`)。
+fn capture_live_into_store(
+    store: &dyn CredentialStore,
+    registry: &AccountRegistry,
+    claude_home: &Path,
+) -> Result<()> {
+    // live 凭证：实体文件优先,失败回落 macOS Claude Code 钥匙串。
+    let live_creds = match read_credentials(&credentials_path(claude_home)) {
+        Ok(creds) => creds,
+        Err(_) => match read_claude_code_keychain() {
+            Some(creds) => creds,
+            None => return Ok(()),
+        },
+    };
+    // 归属判定:~/.claude.json 的 oauthAccount.emailAddress。
+    let Some(oauth_account) = read_oauth_account(&global_config_path(claude_home))? else {
+        return Ok(());
+    };
+    let id = AccountId(oauth_account.email_address);
+    // 仅当该账号确实受 subswap 管理时才回灌(直接登录的临时账号不碰)。
+    if registry.find(PROVIDER_ID, &id)?.is_none() {
+        return Ok(());
+    }
+    let serialized = serde_json::to_string(&live_creds)?;
+    store.set(PROVIDER_ID, id.0.as_str(), CRED_FIELD, &serialized)?;
+    tracing::debug!(account = %id, "claude live credentials captured into store before swap");
+    Ok(())
 }
 
 /// best-effort 预刷新。返回 `true` 表示 token 已被刷新。
@@ -618,5 +676,109 @@ mod tests {
             None,
         );
         assert_eq!(q.status, QuotaStatus::Exhausted);
+    }
+
+    #[test]
+    fn capture_on_leave_updates_store_for_owner() {
+        use subswap_core::FileStore;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("claude");
+        std::fs::create_dir_all(&home).unwrap();
+
+        // live credentials.json:refreshToken=R2(Claude Code 刚轮换到的最新值)。
+        let live_creds =
+            r#"{"claudeAiOauth":{"accessToken":"AT2","refreshToken":"R2","expiresAt":111}}"#;
+        std::fs::write(credentials_path(&home), live_creds).unwrap();
+        std::fs::write(
+            global_config_path(&home),
+            r#"{"oauthAccount":{"emailAddress":"a@x.com"}}"#,
+        )
+        .unwrap();
+
+        let store = FileStore::new(tmp.path().join("creds.json"));
+        let registry = AccountRegistry::new(tmp.path().join("registry.toml"));
+
+        // store 先放陈旧副本 R1。
+        store
+            .set(
+                PROVIDER_ID,
+                "a@x.com",
+                CRED_FIELD,
+                r#"{"claudeAiOauth":{"accessToken":"AT1","refreshToken":"R1"}}"#,
+            )
+            .unwrap();
+        registry
+            .upsert(Account {
+                provider: PROVIDER_ID.into(),
+                id: AccountId("a@x.com".into()),
+                label: "a@x.com".into(),
+                active: true,
+                created_at: Utc::now(),
+                last_used_at: None,
+                priority: 100,
+                extra: serde_json::Map::new(),
+            })
+            .unwrap();
+
+        capture_live_into_store(&store, &registry, &home).unwrap();
+
+        // 回灌后 store 应反映 live 的 R2。
+        let stored = store.get(PROVIDER_ID, "a@x.com", CRED_FIELD).unwrap().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(v["claudeAiOauth"]["refreshToken"], "R2");
+    }
+
+    #[test]
+    fn capture_on_leave_skips_unmanaged_account() {
+        use subswap_core::FileStore;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("claude");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            credentials_path(&home),
+            r#"{"claudeAiOauth":{"accessToken":"AT","refreshToken":"R"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            global_config_path(&home),
+            r#"{"oauthAccount":{"emailAddress":"unmanaged@x.com"}}"#,
+        )
+        .unwrap();
+
+        let store = FileStore::new(tmp.path().join("creds.json"));
+        let registry = AccountRegistry::new(tmp.path().join("registry.toml"));
+
+        // 该账号未注册 → 不回灌。
+        capture_live_into_store(&store, &registry, &home).unwrap();
+        assert!(store
+            .get(PROVIDER_ID, "unmanaged@x.com", CRED_FIELD)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn active_account_id_reads_oauth_account() {
+        use subswap_core::FileStore;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("claude");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            global_config_path(&home),
+            r#"{"oauthAccount":{"emailAddress":"active@x.com"}}"#,
+        )
+        .unwrap();
+
+        let provider = ClaudeProvider {
+            store: Arc::new(FileStore::new(tmp.path().join("creds.json"))),
+            registry: Arc::new(AccountRegistry::new(tmp.path().join("registry.toml"))),
+            claude_home: home,
+        };
+        assert_eq!(
+            provider.active_account_id().unwrap(),
+            Some(AccountId("active@x.com".into()))
+        );
     }
 }

@@ -23,6 +23,7 @@
 - [2026-05-29 — Linux daemon keepalive 空转：keyutils 按 session 隔离](troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md)
 - [2026-05-29 — macOS Keychain 反复弹授权框](troubleshooting/2026-05-29-macos-keychain-prompts.md)
 - [2026-06-06 — 凭证改用明文文件后端，根治钥匙串弹窗 + Claude 额度跳过](troubleshooting/2026-06-06-filestore-credential-backend.md)
+- [2026-06-08 — Codex/Claude 报 "refresh token already used"：refresh token 轮换冲突，加 capture-on-leave + 不抢刷 active](troubleshooting/2026-06-08-codex-refresh-token-already-used.md)
 
 ## Code Review 台账
 
