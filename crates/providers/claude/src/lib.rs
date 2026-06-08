@@ -357,9 +357,21 @@ impl Provider for ClaudeProvider {
         tokio::task::spawn_blocking(move || {
             // capture-on-leave：覆盖 live 文件前，把当前 live 凭证回灌进它所属账号的 store。
             // 否则切走的账号 store 副本会停在旧 refresh token，下次切回写回旧 token → "already used"。
-            if let Err(e) = capture_live_into_store(store.as_ref(), &registry, &claude_home) {
+            if let Err(e) = capture_live_into_store(
+                store.as_ref(),
+                &registry,
+                &claude_home,
+                prefer_keychain_for_live_capture(),
+            ) {
                 tracing::warn!(err = %e, "claude capture-on-leave failed; continuing swap");
             }
+
+            // macOS 上 Claude Code 只认自己的 Keychain item；仅写 `.credentials.json`
+            // 会导致列表显示已切换，但 Claude Code 启动后仍恢复成旧账号。
+            #[cfg(target_os = "macos")]
+            let keychain_backup = snapshot_claude_code_keychain()?;
+            #[cfg(target_os = "macos")]
+            write_claude_code_keychain(&target_creds)?;
 
             let targets = vec![
                 SwapTarget {
@@ -378,6 +390,12 @@ impl Provider for ClaudeProvider {
             let result = swap_with_snapshot(PROVIDER_ID, &claude_home, targets, || {
                 registry.set_active(PROVIDER_ID, &id_for_blocking)
             });
+            #[cfg(target_os = "macos")]
+            if result.is_err() {
+                if let Err(e) = restore_claude_code_keychain(keychain_backup) {
+                    tracing::error!(err = %e, "Claude Code keychain rollback failed");
+                }
+            }
             if result.is_ok() {
                 tracing::info!(account = %id_for_blocking, "Claude swap done");
             }
@@ -466,16 +484,75 @@ impl ClaudeProvider {
 /// 这是 macOS 上 claude 凭证的唯一来源。读不到(不存在 / 用户拒绝授权 / 解析失败)一律返回 `None`。
 #[cfg(target_os = "macos")]
 fn read_claude_code_keychain() -> Option<CredentialsFile> {
-    let user = std::env::var("USER").ok().filter(|u| !u.is_empty())?;
-    let entry = keyring::Entry::new("Claude Code-credentials", &user).ok()?;
+    let entry = claude_code_keychain_entry().ok()?;
     let raw = entry.get_password().ok()?;
     serde_json::from_str::<CredentialsFile>(&raw).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn claude_code_keychain_entry() -> Result<keyring::Entry> {
+    let user = std::env::var("USER")
+        .ok()
+        .filter(|u| !u.is_empty())
+        .ok_or_else(|| {
+            Error::Credential("USER is empty; cannot access Claude Code keychain".into())
+        })?;
+    keyring::Entry::new("Claude Code-credentials", &user)
+        .map_err(|e| Error::Credential(format!("open Claude Code keychain failed: {e}")))
+}
+
+/// 在写入目标账号前保存 Claude Code Keychain 原值，供后续事务失败时恢复。
+#[cfg(target_os = "macos")]
+fn snapshot_claude_code_keychain() -> Result<Option<String>> {
+    let entry = claude_code_keychain_entry()?;
+    match entry.get_password() {
+        Ok(raw) => Ok(Some(raw)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(Error::Credential(format!(
+            "read Claude Code keychain before swap failed: {e}"
+        ))),
+    }
+}
+
+/// 把目标账号凭证写入 Claude Code 在 macOS 上真正读取的 Keychain item。
+#[cfg(target_os = "macos")]
+fn write_claude_code_keychain(creds: &CredentialsFile) -> Result<()> {
+    let raw = serde_json::to_string(creds)?;
+    claude_code_keychain_entry()?
+        .set_password(&raw)
+        .map_err(|e| Error::Credential(format!("write Claude Code keychain failed: {e}")))
+}
+
+#[cfg(target_os = "macos")]
+fn restore_claude_code_keychain(backup: Option<String>) -> Result<()> {
+    let entry = claude_code_keychain_entry()?;
+    match backup {
+        Some(raw) => entry
+            .set_password(&raw)
+            .map_err(|e| Error::Credential(format!("restore Claude Code keychain failed: {e}"))),
+        None => match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(Error::Credential(format!(
+                "delete Claude Code keychain during rollback failed: {e}"
+            ))),
+        },
+    }
 }
 
 /// 非 macOS：凭证走实体文件,无此回落。
 #[cfg(not(target_os = "macos"))]
 fn read_claude_code_keychain() -> Option<CredentialsFile> {
     None
+}
+
+#[cfg(target_os = "macos")]
+fn prefer_keychain_for_live_capture() -> bool {
+    true
+}
+
+#[cfg(not(target_os = "macos"))]
+fn prefer_keychain_for_live_capture() -> bool {
+    false
 }
 
 /// 在覆盖 live 文件之前，把当前 live 凭证回灌进它所属账号的 store。
@@ -487,14 +564,18 @@ fn capture_live_into_store(
     store: &dyn CredentialStore,
     registry: &AccountRegistry,
     claude_home: &Path,
+    prefer_keychain: bool,
 ) -> Result<()> {
-    // live 凭证：实体文件优先,失败回落 macOS Claude Code 钥匙串。
-    let live_creds = match read_credentials(&credentials_path(claude_home)) {
-        Ok(creds) => creds,
-        Err(_) => match read_claude_code_keychain() {
-            Some(creds) => creds,
-            None => return Ok(()),
-        },
+    // macOS 的真实 live 凭证在 Claude Code Keychain；`.credentials.json` 可能是上次
+    // subswap 切换残留的 stale 副本，若优先读文件会把错误凭证回灌给当前账号。
+    let file_creds = || read_credentials(&credentials_path(claude_home)).ok();
+    let live_creds = if prefer_keychain {
+        read_claude_code_keychain()
+    } else {
+        file_creds().or_else(read_claude_code_keychain)
+    };
+    let Some(live_creds) = live_creds else {
+        return Ok(());
     };
     // 归属判定:~/.claude.json 的 oauthAccount.emailAddress。
     let Some(oauth_account) = read_oauth_account(&global_config_path(claude_home))? else {
@@ -723,7 +804,7 @@ mod tests {
             })
             .unwrap();
 
-        capture_live_into_store(&store, &registry, &home).unwrap();
+        capture_live_into_store(&store, &registry, &home, false).unwrap();
 
         // 回灌后 store 应反映 live 的 R2。
         let stored = store
@@ -756,7 +837,7 @@ mod tests {
         let registry = AccountRegistry::new(tmp.path().join("registry.toml"));
 
         // 该账号未注册 → 不回灌。
-        capture_live_into_store(&store, &registry, &home).unwrap();
+        capture_live_into_store(&store, &registry, &home, false).unwrap();
         assert!(store
             .get(PROVIDER_ID, "unmanaged@x.com", CRED_FIELD)
             .unwrap()
