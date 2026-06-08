@@ -239,7 +239,10 @@ mod tests {
     #[test]
     fn set_get_delete_roundtrip() {
         let (_dir, store) = temp_store();
-        assert_eq!(store.get("claude", "a@x.com", "credentials_json").unwrap(), None);
+        assert_eq!(
+            store.get("claude", "a@x.com", "credentials_json").unwrap(),
+            None
+        );
 
         store
             .set("claude", "a@x.com", "credentials_json", "{\"t\":1}")
@@ -261,7 +264,10 @@ mod tests {
         store
             .delete("claude", "a@x.com", "credentials_json")
             .unwrap();
-        assert_eq!(store.get("claude", "a@x.com", "credentials_json").unwrap(), None);
+        assert_eq!(
+            store.get("claude", "a@x.com", "credentials_json").unwrap(),
+            None
+        );
         // 删不存在的项幂等。
         store
             .delete("claude", "a@x.com", "credentials_json")

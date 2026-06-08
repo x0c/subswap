@@ -166,7 +166,8 @@ impl ClaudeProvider {
     /// 没有 oauthAccount(未登录)时返回 `None`。daemon 保活与 quota 自愈用它跳过 active 账号——
     /// active 账号的 token 由 Claude Code 唯一轮换,subswap 不得在后台抢刷。
     fn active_account_id(&self) -> Result<Option<AccountId>> {
-        let Some(oauth_account) = read_oauth_account(&global_config_path(&self.claude_home))? else {
+        let Some(oauth_account) = read_oauth_account(&global_config_path(&self.claude_home))?
+        else {
             return Ok(None);
         };
         Ok(Some(AccountId(oauth_account.email_address)))
@@ -191,7 +192,8 @@ impl ClaudeProvider {
     /// 非激活账号(钥匙串里的凭证不属于它)或读不到时返回 `None`,由调用方报「缺凭证」。
     fn capture_from_claude_code_keychain(&self, id: &AccountId) -> Result<Option<CredentialsFile>> {
         // 钥匙串 item 只保存「当前激活」那个账号的凭证;用 ~/.claude.json 的 oauthAccount 判断归属。
-        let Some(oauth_account) = read_oauth_account(&global_config_path(&self.claude_home))? else {
+        let Some(oauth_account) = read_oauth_account(&global_config_path(&self.claude_home))?
+        else {
             return Ok(None);
         };
         if oauth_account.email_address != id.0 {
@@ -724,7 +726,10 @@ mod tests {
         capture_live_into_store(&store, &registry, &home).unwrap();
 
         // 回灌后 store 应反映 live 的 R2。
-        let stored = store.get(PROVIDER_ID, "a@x.com", CRED_FIELD).unwrap().unwrap();
+        let stored = store
+            .get(PROVIDER_ID, "a@x.com", CRED_FIELD)
+            .unwrap()
+            .unwrap();
         let v: serde_json::Value = serde_json::from_str(&stored).unwrap();
         assert_eq!(v["claudeAiOauth"]["refreshToken"], "R2");
     }
