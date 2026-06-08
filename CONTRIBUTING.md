@@ -18,7 +18,7 @@ Thanks for considering a contribution. subswap is a small Rust workspace, and th
    - Secrets only live in the OS keyring; `registry.toml`, the audit log, and snapshots must never contain plaintext tokens or refresh tokens.
    - `async fn` must not do blocking IO directly — wrap `fs2`, `std::fs`, `keyring` calls in `tokio::task::spawn_blocking`.
    - Don't poll high-frequency to "probe" rate limits.
-2. Skim [`docs/OVERVIEW.md`](docs/OVERVIEW.md) — index for the rest of the docs.
+2. Skim [`AGENTS.md`](AGENTS.md) — index for the rest of the docs.
 3. If you're adding a new provider, read [`docs/PROVIDER_KNOWLEDGE_BASE.md`](docs/PROVIDER_KNOWLEDGE_BASE.md) and [`docs/design/ARCHITECTURE.md`](docs/design/ARCHITECTURE.md) first.
 
 ## Local checks

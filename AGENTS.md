@@ -1,7 +1,6 @@
 # subswap · Agent 快速规则
 
-> 全局规范仍适用；本文件只保留本项目最容易漏掉、最影响安全性的规则。文档索引见
-> [docs/OVERVIEW.md](docs/OVERVIEW.md)。
+> 全局规范仍适用；本文件只保留本项目最容易漏掉、最影响安全性的规则。文档索引见下方「文档导航」。
 
 ## 最高优先级
 
@@ -52,6 +51,8 @@
 cargo check --workspace
 cargo test --workspace
 cargo build --workspace
+# 升版本号后必须先同步 lock,否则下面的 --locked 构建会报 "cannot update the lock file"。
+cargo update --workspace --offline
 cargo build --locked --release -p subswap-cli -p subswap-daemon
 ```
 
@@ -91,6 +92,11 @@ docs/                     中文项目文档
 | [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md) | 自动切换触发与降级策略 |
 | [docs/design/PREWARM_DESIGN.md](docs/design/PREWARM_DESIGN.md) | 窗口预热提案 |
 | [docs/CONFIG.md](docs/CONFIG.md) | `config.toml` 字段与热加载 |
-| [docs/troubleshooting/](docs/troubleshooting/) | 故障排查记录 |
-
-新增文档类型时，同步更新本节和 [docs/OVERVIEW.md](docs/OVERVIEW.md)。
+| [docs/CLI.md](docs/CLI.md) | CLI 命令面、`subswapd` 辅助进程 |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | 里程碑进度 |
+| [docs/troubleshooting/2026-05-28-claude-config-dir-parent-pollution.md](docs/troubleshooting/2026-05-28-claude-config-dir-parent-pollution.md) | 排查 Claude 配置父目录污染、路径误判或配置目录隔离问题 |
+| [docs/troubleshooting/2026-05-28-toml-null-serialization.md](docs/troubleshooting/2026-05-28-toml-null-serialization.md) | 排查 TOML 序列化写出 null、配置保存异常前阅读 |
+| [docs/troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md](docs/troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md) | 排查 daemon 与 keyutils session 隔离、凭据读取失败前阅读 |
+| [docs/troubleshooting/2026-05-29-macos-keychain-prompts.md](docs/troubleshooting/2026-05-29-macos-keychain-prompts.md) | 排查 macOS Keychain 弹窗、凭据访问提示或权限体验前阅读 |
+| [docs/troubleshooting/2026-06-06-filestore-credential-backend.md](docs/troubleshooting/2026-06-06-filestore-credential-backend.md) | 排查 filestore 凭据后端、跨平台凭据保存行为前阅读 |
+| [docs/troubleshooting/2026-06-08-codex-refresh-token-already-used.md](docs/troubleshooting/2026-06-08-codex-refresh-token-already-used.md) | 排查 Codex refresh token already used、令牌刷新竞态前阅读 |
