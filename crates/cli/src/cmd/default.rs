@@ -238,12 +238,17 @@ async fn try_auto_swap_ready_provider(
         return Ok(());
     };
     let snap = &snapshots[index];
-    if snap.accounts.is_empty() || snap.accounts.iter().any(|a| a.fetch_state.is_loading()) {
+    if snap.accounts.is_empty() {
+        return Ok(());
+    }
+    let has_loading = snap.accounts.iter().any(|a| a.fetch_state.is_loading());
+    let decision = auto_decide(snap, cfg);
+    if has_loading && !matches!(decision, PolicyDecision::Swap { .. }) {
         return Ok(());
     }
     decided_providers.insert(provider.to_string());
 
-    match auto_decide(snap, cfg) {
+    match decision {
         PolicyDecision::Swap { to, .. } => {
             let p = registry.get(provider)?;
             let success_text = auto_swap_success_text(snap, &to);
@@ -391,6 +396,7 @@ mod tests {
         accounts: Vec<Account>,
         quotas: HashMap<String, Vec<Quota>>,
         wait_for_quota: Option<Arc<Notify>>,
+        wait_by_account: HashMap<String, Arc<Notify>>,
         activated: mpsc::UnboundedSender<(String, String)>,
     }
 
@@ -418,7 +424,9 @@ mod tests {
         }
 
         async fn query_quota(&self, id: &AccountId) -> subswap_core::Result<Vec<Quota>> {
-            if let Some(wait_for_quota) = &self.wait_for_quota {
+            if let Some(wait_for_quota) = self.wait_by_account.get(&id.0) {
+                wait_for_quota.notified().await;
+            } else if let Some(wait_for_quota) = &self.wait_for_quota {
                 wait_for_quota.notified().await;
             }
             Ok(self.quotas.get(&id.0).cloned().unwrap_or_default())
@@ -472,6 +480,7 @@ mod tests {
             accounts: vec![account("claude", "claude-active", true)],
             quotas: HashMap::new(),
             wait_for_quota: Some(slow_claude.clone()),
+            wait_by_account: HashMap::new(),
             activated: activated_tx.clone(),
         }));
         registry.register(Arc::new(MockProvider {
@@ -482,6 +491,7 @@ mod tests {
             ],
             quotas: codex_quotas,
             wait_for_quota: None,
+            wait_by_account: HashMap::new(),
             activated: activated_tx,
         }));
 
@@ -530,5 +540,80 @@ mod tests {
             .any(|account| account.account.id.0 == "codex-candidate" && account.account.active));
         assert_eq!(auto_lines.len(), 1);
         assert_eq!(auto_lines[0].provider, "codex");
+    }
+
+    #[tokio::test]
+    async fn active_loading_auto_swaps_to_known_candidate() {
+        let (activated_tx, mut activated_rx) = mpsc::unbounded_channel();
+        let slow_active = Arc::new(Notify::new());
+
+        let mut quotas = HashMap::new();
+        quotas.insert(
+            "active".into(),
+            vec![quota("claude", "active", 10, QuotaStatus::Ok)],
+        );
+        quotas.insert(
+            "candidate".into(),
+            vec![quota("claude", "candidate", 0, QuotaStatus::Ok)],
+        );
+
+        let mut wait_by_account = HashMap::new();
+        wait_by_account.insert("active".into(), slow_active.clone());
+
+        let mut registry = ProviderRegistry::new();
+        registry.register(Arc::new(MockProvider {
+            id: "claude",
+            accounts: vec![
+                account("claude", "active", true),
+                account("claude", "candidate", false),
+            ],
+            quotas,
+            wait_for_quota: None,
+            wait_by_account,
+            activated: activated_tx,
+        }));
+
+        let mut snapshots = build_loading_snapshots(&registry).await;
+        let cfg = PolicyConfig {
+            threshold: 0.98,
+            allow_unknown: false,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let audit = AuditLog::new(tmp.path().join("audit.log"));
+        let mut auto_lines = Vec::new();
+
+        let handle = tokio::spawn(async move {
+            let _tmp = tmp;
+            fill_quotas_progressively(
+                &registry,
+                &audit,
+                &mut snapshots,
+                &cfg,
+                &mut auto_lines,
+                None,
+            )
+            .await
+            .unwrap();
+            (snapshots, auto_lines)
+        });
+
+        let activated = tokio::time::timeout(Duration::from_millis(300), activated_rx.recv())
+            .await
+            .expect("candidate should activate while active quota is still loading")
+            .expect("activation channel should stay open");
+        assert_eq!(activated, ("claude".to_string(), "candidate".to_string()));
+
+        slow_active.notify_waiters();
+        let (snapshots, auto_lines) = handle.await.unwrap();
+        let claude = snapshots
+            .iter()
+            .find(|snap| snap.provider == "claude")
+            .unwrap();
+        assert!(claude
+            .accounts
+            .iter()
+            .any(|account| account.account.id.0 == "candidate" && account.account.active));
+        assert_eq!(auto_lines.len(), 1);
+        assert_eq!(auto_lines[0].provider, "claude");
     }
 }
