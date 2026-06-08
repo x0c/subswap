@@ -69,6 +69,21 @@ Keychain」缓解方案的副作用：
   需 `swap` 过去（成为激活账号后即被捕获）或 `subswap login`。这是 macOS 的固有限制，非缺陷。
 - subswap 捕获到的副本带 `refreshToken`，过期由自身 401→refresh→写回 `FileStore` 维持，不再依赖钥匙串。
 
+## macOS 切换必须同步 Claude Code Keychain
+
+macOS 上 Claude Code 不使用 subswap 写入的 `~/.claude/.credentials.json` 作为最终凭证源，而是读取
+`Claude Code-credentials` Keychain item。若切换流程只写 `.credentials.json` 和 `~/.claude.json`：
+
+- subswap registry 与状态页会显示目标账号已激活；
+- Claude Code 启动后仍读取旧 Keychain 凭证，并把 `~/.claude.json` 写回旧账号；
+- 最终出现「subswap 显示账号 1，Claude Code 实际仍使用账号 2」。
+
+因此 `ClaudeProvider::activate` 在 macOS 上必须先快照并写入 Claude Code Keychain，再更新文件与 registry；
+后续文件或 registry 更新失败时，同时恢复原 Keychain 内容，避免状态与真实凭证再次分裂。
+
+同一原因下，macOS 的 capture-on-leave 必须只读取 Keychain；Keychain 读不到时直接跳过，不能回落
+`.credentials.json`。旧版本切换留下的 stale 文件可能被错误归属给当前账号，并覆盖其 `FileStore` 副本。
+
 ## 影响
 
 - macOS 上状态页**所有账号（激活/非激活）都能正常显示 quota**，不再有 `skipped on macOS`。
