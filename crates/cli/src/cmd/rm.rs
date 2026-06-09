@@ -2,7 +2,7 @@
 //!
 //! 引用形式与 `subswap swap` 一致：数字编号 / id / label / `provider/id`，详见 [`crate::cmd::resolve_account`]。
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use subswap_core::AuditEvent;
 
 use crate::app::AppContext;
@@ -10,11 +10,18 @@ use crate::cmd::resolve_account;
 
 pub async fn run(ctx: &AppContext, id_input: &str) -> Result<()> {
     let acc = resolve_account(ctx, id_input)?;
+    if acc.active && acc.manual_only() {
+        bail!(
+            "cannot remove active manual-only account {}/{}; swap away first",
+            acc.provider,
+            acc.id
+        );
+    }
 
     ctx.registry.remove(&acc.provider, &acc.id)?;
 
     let fields: &[&str] = match acc.provider.as_str() {
-        "claude" => &["credentials_json"],
+        "claude" => &["credentials_json", "api_key"],
         "codex" => &["auth_json"],
         _ => &[],
     };

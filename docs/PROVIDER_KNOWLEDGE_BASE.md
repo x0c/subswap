@@ -126,6 +126,27 @@ HTTP 429 + body 含 rate-limit 字样的话术，而不是 401。
 切换路径上 token 预刷新是 **best-effort**：检测到 `expiresAt` 在 5 分钟内过期且
 keyring 中有 `refreshToken` 时调 refresh 端点；失败仅 warn 不阻塞切换（不变量 #1）。
 
+### Claude Code 自定义 API
+
+Claude Code 支持在 `~/.claude/settings.json` 的 `env` 中配置兼容端点。DeepSeek 官方 Anthropic
+兼容端点为 `https://api.deepseek.com/anthropic`，认证使用 `ANTHROPIC_AUTH_TOKEN`，并需要把
+Claude 的主模型 / Opus / Sonnet / Haiku / subagent 角色映射到 DeepSeek 模型。
+
+subswap 中自定义 API 与 OAuth 账号共用 `provider = "claude"`，但账号元数据带：
+
+```toml
+[accounts.extra]
+kind = "api"
+manual_only = true
+```
+
+- API Key 单独存入 `CredentialStore(field=api_key)`；registry 只存端点与模型映射。
+- 激活 API 时合并写 `settings.json.env`，保留 hooks、permissions、plugins 和其他 env。
+- `.subswap-api.json` 保存 active API id 与切入前受管 env 的恢复值；文件与切换快照都必须为 `0600`。
+- 切回 OAuth 时恢复原受管 env 并删除标记，避免 OAuth 凭证已切回但请求仍被 API env 覆盖。
+- API active 时 API Key 按 Claude Code 的要求以明文存在于 `settings.json`；这是上游配置机制的安全边界。
+- API 账号 `query_quota` 返回空列表，`manual_only` 保证它只能手动切入，active 时自动换号停用。
+
 ---
 
 ## Codex / ChatGPT

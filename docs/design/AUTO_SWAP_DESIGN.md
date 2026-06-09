@@ -46,6 +46,9 @@
    可用候选时才降级，禁止从未知状态盲切到另一个未知状态。
 8. **active 查询仍在加载兜底**：CLI 渐进刷新期间，如果 active 仍在 loading，而候选账号已经返回明确可用 quota，
    立即切换；如果尚无明确可用候选，则继续等待后续 quota 更新，不提前定案。
+9. **`manual_only` 强制边界**：`Account.extra.manual_only == true` 的账号只能由用户手动激活；
+   active 命中时立即 `NoOp`，即使 quota 仍在 loading / 查询失败也不自动切走；inactive 时从所有候选路径排除。
+   Claude 自定义 API 使用此语义，因为它没有可比较的订阅 quota。
 
 ## 2.5 风控与合规边界
 
@@ -143,4 +146,5 @@ max_flap_per_5min = 3           # 抖动上限，超过进入 Degraded
 
 - 单元：`AutoSwapPolicy` 给定一组 Quota 列表，断言挑选结果。
 - 集成：mock Provider 模拟 quota 失败、429、Exhausted 等组合，验证降级路径。
+- `manual_only`：验证 active 时不自动切走、inactive 时不成为已知可用 / 查询失败 / reset 兜底候选。
 - 端到端：本地双账号 + mock HTTP server，跑 `subswap` 看 keyring 与 client_targets 是否同步。

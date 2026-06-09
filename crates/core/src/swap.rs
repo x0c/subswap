@@ -85,7 +85,9 @@ where
     for target in targets {
         let backup = if target.live_path.exists() {
             let raw = fs::read_to_string(&target.live_path)?;
-            fs::write(snap_dir.join(target.snapshot_name), &raw)?;
+            let snapshot_path = snap_dir.join(target.snapshot_name);
+            fs::write(&snapshot_path, &raw)?;
+            restrict_snapshot_permissions(&snapshot_path)?;
             Some(raw)
         } else {
             None
@@ -123,6 +125,18 @@ where
     Ok(())
 }
 
+#[cfg(unix)]
+fn restrict_snapshot_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn restrict_snapshot_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
 struct TargetPlan<'a> {
     live_path: PathBuf,
     writer: SwapWriter<'a>,
@@ -133,7 +147,9 @@ fn rollback(backups: &[(PathBuf, Option<String>)]) {
     for (path, backup) in backups {
         match backup {
             Some(raw) => {
-                if let Err(e) = fs::write(path, raw) {
+                if let Err(e) = fs::write(path, raw).and_then(|()| {
+                    restrict_rollback_permissions(path).map_err(std::io::Error::other)
+                }) {
                     tracing::error!(err=%e, path=%path.display(), "rollback restore failed");
                 }
             }
@@ -143,4 +159,16 @@ fn rollback(backups: &[(PathBuf, Option<String>)]) {
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn restrict_rollback_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn restrict_rollback_permissions(_path: &Path) -> Result<()> {
+    Ok(())
 }

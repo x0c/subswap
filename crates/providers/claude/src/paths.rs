@@ -23,6 +23,16 @@ pub fn credentials_path(home: &Path) -> PathBuf {
     home.join(".credentials.json")
 }
 
+/// `<claude_home>/settings.json`：Claude Code 用户级设置。
+pub fn settings_path(home: &Path) -> PathBuf {
+    home.join("settings.json")
+}
+
+/// `<claude_home>/.subswap-api.json`：subswap 自定义 API 激活状态与恢复信息。
+pub fn api_state_path(home: &Path) -> PathBuf {
+    home.join(".subswap-api.json")
+}
+
 /// 全局配置文件路径解析。
 ///
 /// 兼容三种布局：

@@ -112,6 +112,28 @@ Provider.activate(id)
 
 **重要**：此路径不依赖 `query_quota`，网络完全不通时仍可用。`subswap rm` 走同一份 `resolve_account` 解析。
 
+### 3.3.5 Claude 自定义 API
+
+```
+subswap add-api
+   ├─ 交互向导 / DeepSeek 预设
+   ├─ API Key → CredentialStore(field=api_key)
+   └─ 非敏感端点与模型映射 → registry extra(kind=api, manual_only=true)
+
+subswap swap <api-id>
+   ├─ 捕获切入前 settings.json.env 受管字段
+   ├─ 合并写入 API endpoint / key / 模型映射
+   └─ 写 .subswap-api.json 激活标记
+
+subswap swap <oauth-id>
+   ├─ 正常恢复 OAuth credentials + oauthAccount
+   ├─ 恢复进入 API 模式前的 settings.json.env 受管字段
+   └─ 删除 .subswap-api.json
+```
+
+API 配置仍属于 `claude` Provider，因此列表、编号、`swap`、`rm` 保持一致。它没有 quota，并以
+`manual_only` 明确禁止自动切入和自动切出。
+
 ### 3.4 `subswapd` daemon（M4）
 
 ```
@@ -278,6 +300,8 @@ daemon 退避或真实客户端 hook 解决。
 | 上游端点：`fetch_usage`(GET usage) / `refresh_access_token`(POST oauth/token) | `oauth.rs` |
 | `~/.claude/.credentials.json` schema（camelCase） | `claude_files.rs` |
 | credentials_path / global_config_path | `paths.rs` |
+| 自定义 API 登记 / 切入 / OAuth 恢复 | `lib.rs::add_api` / `activate_api` / `activate` |
+| `settings.json` API env 合并与恢复 | `claude_files.rs` |
 
 > 401 在 `oauth::fetch_usage` 里变成 `Error::QuotaFetch("usage returned 401 ...")`；`query_quota` 靠
 > `is_auth_error` substring 判它再决定是否刷新。端点常量与各状态码真实含义见
