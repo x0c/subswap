@@ -3,7 +3,7 @@
 use std::io::{self, IsTerminal};
 
 use anyhow::{bail, Context, Result};
-use dialoguer::{Confirm, Input, Password, Select};
+use dialoguer::{Confirm, Input, Select};
 use subswap_core::AuditEvent;
 use subswap_provider_claude::ClaudeApiConfig;
 
@@ -128,10 +128,16 @@ fn build_draft(options: AddApiOptions, interactive: bool) -> Result<Draft> {
     let api_key = match options.api_key {
         Some(value) if !value.trim().is_empty() => value,
         Some(_) => bail!("API key cannot be empty"),
-        None if interactive => Password::new()
+        None if interactive => Input::new()
             .with_prompt("API key")
-            .allow_empty_password(false)
-            .interact()?,
+            .validate_with(|value: &String| -> Result<(), &str> {
+                if value.trim().is_empty() {
+                    Err("API key cannot be empty")
+                } else {
+                    Ok(())
+                }
+            })
+            .interact_text()?,
         None => bail!("--api-key is required without an interactive terminal"),
     };
     let auth = match options.auth {
