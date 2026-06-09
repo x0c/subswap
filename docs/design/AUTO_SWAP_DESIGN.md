@@ -49,6 +49,8 @@
 9. **`manual_only` 强制边界**：`Account.extra.manual_only == true` 的账号只能由用户手动激活；
    active 命中时立即 `NoOp`，即使 quota 仍在 loading / 查询失败也不自动切走；inactive 时从所有候选路径排除。
    Claude 自定义 API 使用此语义，因为它没有可比较的订阅 quota。
+10. **执行前重验 active**：daemon 的 quota 查询期间用户可能手动切换账号；执行自动切换前必须重新读取 registry。
+    只有当前 active 仍等于决策快照中的 active、且当前 active 不是 `manual_only` 时才能执行，否则丢弃过期决策。
 
 ## 2.5 风控与合规边界
 

@@ -143,7 +143,7 @@ async fn run_cycle(
         }
 
         match auto_decide(snap, policy) {
-            PolicyDecision::Swap { to, .. } => {
+            PolicyDecision::Swap { from, to, .. } => {
                 // 冷却:刚被切走 / 切到的账号短期不再选回。
                 if state.in_cooldown(&snap.provider, &to) {
                     tracing::debug!(
@@ -161,6 +161,24 @@ async fn run_cycle(
                         continue;
                     }
                 };
+                let current_accounts = match provider.list_accounts().await {
+                    Ok(accounts) => accounts,
+                    Err(e) => {
+                        tracing::warn!(
+                            err = %e,
+                            provider = %snap.provider,
+                            "recheck active account failed; skip stale auto swap"
+                        );
+                        continue;
+                    }
+                };
+                if !auto_swap_still_allowed(&current_accounts, from.as_ref()) {
+                    tracing::info!(
+                        provider = %snap.provider,
+                        "active account changed during quota query; skip stale auto swap"
+                    );
+                    continue;
+                }
                 match provider.activate(&to).await {
                     Ok(()) => {
                         audit.append(AuditEvent::ok(
@@ -216,6 +234,18 @@ async fn run_cycle(
     // (c) Claude token 后台保活:对所有 Claude 账号检查 expires_at。
     keep_claude_tokens_alive(claude).await;
     Ok(())
+}
+
+/// quota 查询期间用户可能手动切换账号；自动切换执行前必须丢弃过期决策。
+fn auto_swap_still_allowed(
+    current_accounts: &[subswap_core::Account],
+    expected_from: Option<&subswap_core::AccountId>,
+) -> bool {
+    let current = current_accounts.iter().find(|account| account.active);
+    if current.is_some_and(|account| account.manual_only()) {
+        return false;
+    }
+    current.map(|account| &account.id) == expected_from
 }
 
 async fn build_snapshots(providers: &ProviderRegistry) -> Vec<ProviderSnapshot> {
@@ -327,4 +357,62 @@ fn decide_next_interval(
 fn mtime_age(path: &Path, now: SystemTime) -> Option<Duration> {
     let mtime = std::fs::metadata(path).ok()?.modified().ok()?;
     now.duration_since(mtime).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use subswap_core::{Account, AccountId};
+
+    use super::auto_swap_still_allowed;
+
+    fn account(id: &str, active: bool, manual_only: bool) -> Account {
+        let mut account = Account {
+            provider: "claude".into(),
+            id: AccountId(id.into()),
+            label: id.into(),
+            active,
+            created_at: Utc::now(),
+            last_used_at: None,
+            priority: 100,
+            extra: Default::default(),
+        };
+        if manual_only {
+            account.extra.insert("manual_only".into(), true.into());
+        }
+        account
+    }
+
+    #[test]
+    fn stale_auto_swap_is_rejected_after_manual_switch() {
+        let accounts = vec![
+            account("oauth", false, false),
+            account("deepseek", true, true),
+        ];
+
+        assert!(!auto_swap_still_allowed(
+            &accounts,
+            Some(&AccountId("oauth".into()))
+        ));
+    }
+
+    #[test]
+    fn active_manual_only_account_always_blocks_auto_swap() {
+        let accounts = vec![account("deepseek", true, true)];
+
+        assert!(!auto_swap_still_allowed(
+            &accounts,
+            Some(&AccountId("deepseek".into()))
+        ));
+    }
+
+    #[test]
+    fn unchanged_oauth_active_allows_current_decision() {
+        let accounts = vec![account("oauth", true, false)];
+
+        assert!(auto_swap_still_allowed(
+            &accounts,
+            Some(&AccountId("oauth".into()))
+        ));
+    }
 }
