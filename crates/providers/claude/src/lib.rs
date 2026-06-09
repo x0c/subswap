@@ -25,17 +25,72 @@ use subswap_core::{
 };
 
 use crate::claude_files::{
-    read_credentials, read_oauth_account, write_credentials, write_oauth_account_into_global,
-    CredentialsFile, OauthAccount,
+    capture_managed_env, read_api_state, read_credentials, read_oauth_account, read_settings,
+    remove_api_state, restore_oauth_env_in_settings, write_api_env_into_settings, write_api_state,
+    write_credentials, write_oauth_account_into_global, ApiState, CredentialsFile, OauthAccount,
 };
-use crate::paths::{claude_home, credentials_path, global_config_path};
+use crate::paths::{
+    api_state_path, claude_home, credentials_path, global_config_path, settings_path,
+};
 
 /// 凭证字段名：整段 credentials.json 的 JSON 序列化结果。
 const CRED_FIELD: &str = "credentials_json";
+/// 自定义 API 密钥字段名。
+pub const API_KEY_FIELD: &str = "api_key";
 /// Provider 标识。
 pub const PROVIDER_ID: &str = "claude";
+const ACCOUNT_KIND_FIELD: &str = "kind";
+const API_CONFIG_FIELD: &str = "api_config";
+const API_KIND: &str = "api";
 // 数值调优参数运行时取自 [`subswap_core::settings::current`]；config.toml 即时生效。
 use subswap_core::settings;
+
+/// Claude Code 自定义 API 配置。密钥不在这里，由 [`CredentialStore`] 单独保存。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ClaudeApiConfig {
+    pub base_url: String,
+    /// `ANTHROPIC_AUTH_TOKEN` 或 `ANTHROPIC_API_KEY`。
+    pub auth_field: String,
+    pub model: String,
+    pub opus_model: String,
+    pub sonnet_model: String,
+    pub haiku_model: String,
+    pub subagent_model: String,
+    pub effort_level: String,
+}
+
+impl ClaudeApiConfig {
+    fn env(&self, api_key: &str) -> Result<serde_json::Map<String, serde_json::Value>> {
+        if !matches!(
+            self.auth_field.as_str(),
+            "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_API_KEY"
+        ) {
+            return Err(Error::Config(format!(
+                "unsupported Claude API auth field: {}",
+                self.auth_field
+            )));
+        }
+        let mut env = serde_json::Map::new();
+        for (key, value) in [
+            ("ANTHROPIC_BASE_URL", self.base_url.as_str()),
+            (self.auth_field.as_str(), api_key),
+            ("ANTHROPIC_MODEL", self.model.as_str()),
+            ("ANTHROPIC_DEFAULT_OPUS_MODEL", self.opus_model.as_str()),
+            ("ANTHROPIC_DEFAULT_SONNET_MODEL", self.sonnet_model.as_str()),
+            ("ANTHROPIC_DEFAULT_HAIKU_MODEL", self.haiku_model.as_str()),
+            ("CLAUDE_CODE_SUBAGENT_MODEL", self.subagent_model.as_str()),
+            ("CLAUDE_CODE_EFFORT_LEVEL", self.effort_level.as_str()),
+        ] {
+            if !value.trim().is_empty() {
+                env.insert(
+                    key.to_string(),
+                    serde_json::Value::String(value.to_string()),
+                );
+            }
+        }
+        Ok(env)
+    }
+}
 
 pub struct ClaudeProvider {
     store: Arc<dyn CredentialStore>,
@@ -52,8 +107,60 @@ impl ClaudeProvider {
         }
     }
 
+    /// 登记一个 Claude Code 自定义 API 配置。只保存，不自动激活。
+    pub fn add_api(
+        &self,
+        id: String,
+        label: String,
+        api_key: String,
+        config: ClaudeApiConfig,
+    ) -> Result<Account> {
+        validate_api_id(&id)?;
+        if api_key.trim().is_empty() {
+            return Err(Error::Config("Claude API key cannot be empty".into()));
+        }
+        if config.base_url.trim().is_empty() {
+            return Err(Error::Config("Claude API endpoint cannot be empty".into()));
+        }
+        // 提前验证认证字段与环境变量结构，避免保存后首次切换才报错。
+        config.env(&api_key)?;
+
+        let existing = self.registry.find(PROVIDER_ID, &AccountId(id.clone()))?;
+        if existing
+            .as_ref()
+            .is_some_and(|account| !is_api_account(account))
+        {
+            return Err(Error::Config(format!(
+                "Claude account id {id} is already used by an OAuth account"
+            )));
+        }
+        self.store.set(PROVIDER_ID, &id, API_KEY_FIELD, &api_key)?;
+        let mut extra = serde_json::Map::new();
+        extra.insert(ACCOUNT_KIND_FIELD.into(), API_KIND.into());
+        extra.insert("manual_only".into(), true.into());
+        extra.insert(API_CONFIG_FIELD.into(), serde_json::to_value(config)?);
+        let account = Account {
+            provider: PROVIDER_ID.into(),
+            id: AccountId(id),
+            label,
+            active: existing.as_ref().is_some_and(|account| account.active),
+            created_at: existing
+                .as_ref()
+                .map(|account| account.created_at)
+                .unwrap_or_else(Utc::now),
+            last_used_at: existing.and_then(|account| account.last_used_at),
+            priority: 100,
+            extra,
+        };
+        self.registry.upsert(account.clone())?;
+        Ok(account)
+    }
+
     /// 把当前 `~/.claude` 下激活的账号导入为 subswap 管理的账号。
     pub fn import_active(&self, label_hint: Option<String>) -> Result<Account> {
+        if let Some(account) = self.active_api_account()? {
+            return Ok(account);
+        }
         let creds = self.read_live_credentials()?;
         let oauth_account = read_oauth_account(&global_config_path(&self.claude_home))?
             .ok_or_else(|| Error::Provider(
@@ -65,6 +172,9 @@ impl ClaudeProvider {
 
     /// 仅同步当前 Claude 账号的非敏感元数据,不读写 keyring。
     pub fn sync_active_metadata(&self, label_hint: Option<String>) -> Result<Account> {
+        if let Some(account) = self.active_api_account()? {
+            return Ok(account);
+        }
         let oauth_account = read_oauth_account(&global_config_path(&self.claude_home))?
             .ok_or_else(|| Error::Provider(
                 "no oauthAccount in ~/.claude; log into Claude Code first, or use --credentials-file"
@@ -122,6 +232,14 @@ impl ClaudeProvider {
     ///
     /// 不动 `~/.claude/` 下任何文件,只回写 keyring。这是 daemon 周期任务,任一账号失败不影响其它。
     pub async fn refresh_if_near_expiry(&self, id: &AccountId) -> Result<bool> {
+        if self
+            .registry
+            .find(PROVIDER_ID, id)?
+            .as_ref()
+            .is_some_and(is_api_account)
+        {
+            return Ok(false);
+        }
         // active 账号的 token 由 Claude Code 自己轮换;subswap 在后台刷新只写 keyring、
         // 不写 ~/.claude,会让 live 文件持有的 refresh token 被服务端作废 → "already used"。
         // 因此后台保活只对停泊(parked)账号生效,active 账号直接跳过。
@@ -166,6 +284,9 @@ impl ClaudeProvider {
     /// 没有 oauthAccount(未登录)时返回 `None`。daemon 保活与 quota 自愈用它跳过 active 账号——
     /// active 账号的 token 由 Claude Code 唯一轮换,subswap 不得在后台抢刷。
     fn active_account_id(&self) -> Result<Option<AccountId>> {
+        if let Some(state) = read_api_state(&api_state_path(&self.claude_home))? {
+            return Ok(Some(AccountId(state.account_id)));
+        }
         let Some(oauth_account) = read_oauth_account(&global_config_path(&self.claude_home))?
         else {
             return Ok(None);
@@ -213,6 +334,69 @@ impl ClaudeProvider {
         let serialized = serde_json::to_string(creds)?;
         self.store
             .set(PROVIDER_ID, id.0.as_str(), CRED_FIELD, &serialized)
+    }
+
+    fn active_api_account(&self) -> Result<Option<Account>> {
+        let Some(state) = read_api_state(&api_state_path(&self.claude_home))? else {
+            return Ok(None);
+        };
+        let id = AccountId(state.account_id);
+        let account = self.registry.find(PROVIDER_ID, &id)?.ok_or_else(|| {
+            Error::Provider(format!(
+                "active Claude API marker references missing account {PROVIDER_ID}:{id}"
+            ))
+        })?;
+        if !is_api_account(&account) {
+            return Err(Error::Provider(format!(
+                "active Claude API marker references non-API account {PROVIDER_ID}:{id}"
+            )));
+        }
+        Ok(Some(account))
+    }
+
+    async fn activate_api(&self, account: Account) -> Result<()> {
+        let id = account.id.clone();
+        let config = api_config(&account)?;
+        let api_key = self
+            .store
+            .get(PROVIDER_ID, &id.0, API_KEY_FIELD)?
+            .ok_or_else(|| {
+                Error::Credential(format!(
+                    "no API key for {PROVIDER_ID}:{id}; re-add it with `subswap add-api`"
+                ))
+            })?;
+        let api_env = config.env(&api_key)?;
+        let settings_path = settings_path(&self.claude_home);
+        let state_path = api_state_path(&self.claude_home);
+        let restore_env = match read_api_state(&state_path)? {
+            Some(state) => state.restore_env,
+            None => capture_managed_env(&read_settings(&settings_path)?),
+        };
+        let state = ApiState {
+            account_id: id.0.clone(),
+            restore_env,
+        };
+        let registry = self.registry.clone();
+        let claude_home = self.claude_home.clone();
+        tokio::task::spawn_blocking(move || {
+            let targets = vec![
+                SwapTarget {
+                    snapshot_name: "settings.json",
+                    live_path: settings_path,
+                    writer: Box::new(move |path| write_api_env_into_settings(path, &api_env)),
+                },
+                SwapTarget {
+                    snapshot_name: "api-state.json",
+                    live_path: state_path,
+                    writer: Box::new(move |path| write_api_state(path, &state)),
+                },
+            ];
+            swap_with_snapshot(PROVIDER_ID, &claude_home, targets, || {
+                registry.set_active(PROVIDER_ID, &id)
+            })
+        })
+        .await
+        .map_err(|e| Error::Provider(format!("spawn_blocking join failed: {e}")))?
     }
 
     /// 公共入库逻辑：写 keyring + 写 registry.toml。
@@ -313,6 +497,11 @@ impl Provider for ClaudeProvider {
                 display_name: "Claude global config".into(),
                 probe_path: global_config_path(&self.claude_home),
             },
+            ClientTarget {
+                id: "claude_settings".into(),
+                display_name: "Claude settings".into(),
+                probe_path: settings_path(&self.claude_home),
+            },
         ]
     }
 
@@ -329,6 +518,9 @@ impl Provider for ClaudeProvider {
                     provider: PROVIDER_ID.into(),
                     id: id.to_string(),
                 })?;
+        if is_api_account(&account) {
+            return self.activate_api(account).await;
+        }
         let mut target_creds = self.load_credentials(id)?;
         let target_oauth_account: OauthAccount = serde_json::from_value(
             account.extra.get("oauth_account").cloned().ok_or_else(|| {
@@ -349,6 +541,9 @@ impl Provider for ClaudeProvider {
         // ----- 阶段 2：同步阻塞部分（flock + 文件 IO + registry 更新） -----
         let creds_path = credentials_path(&self.claude_home);
         let conf_path = global_config_path(&self.claude_home);
+        let settings_path = settings_path(&self.claude_home);
+        let state_path = api_state_path(&self.claude_home);
+        let api_state = read_api_state(&state_path)?;
         let claude_home = self.claude_home.clone();
         let registry = self.registry.clone();
         let store = self.store.clone();
@@ -373,7 +568,7 @@ impl Provider for ClaudeProvider {
             #[cfg(target_os = "macos")]
             write_claude_code_keychain(&target_creds)?;
 
-            let targets = vec![
+            let mut targets = vec![
                 SwapTarget {
                     snapshot_name: "credentials.json",
                     live_path: creds_path,
@@ -387,6 +582,20 @@ impl Provider for ClaudeProvider {
                     }),
                 },
             ];
+            if let Some(state) = api_state {
+                targets.push(SwapTarget {
+                    snapshot_name: "settings.json",
+                    live_path: settings_path,
+                    writer: Box::new(move |path| {
+                        restore_oauth_env_in_settings(path, &state.restore_env)
+                    }),
+                });
+                targets.push(SwapTarget {
+                    snapshot_name: "api-state.json",
+                    live_path: state_path,
+                    writer: Box::new(remove_api_state),
+                });
+            }
             let result = swap_with_snapshot(PROVIDER_ID, &claude_home, targets, || {
                 registry.set_active(PROVIDER_ID, &id_for_blocking)
             });
@@ -406,6 +615,14 @@ impl Provider for ClaudeProvider {
     }
 
     async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>> {
+        if self
+            .registry
+            .find(PROVIDER_ID, id)?
+            .as_ref()
+            .is_some_and(is_api_account)
+        {
+            return Ok(Vec::new());
+        }
         let (mut creds, from_live) = match self.read_active_credentials_if_matches(id)? {
             // 命中本地实体文件(~/.claude/.credentials.json)→ 这是 active 账号,Claude Code 持有它。
             Some(creds) => (creds, true),
@@ -457,6 +674,44 @@ impl Provider for ClaudeProvider {
         }
         Ok(out)
     }
+}
+
+fn is_api_account(account: &Account) -> bool {
+    account
+        .extra
+        .get(ACCOUNT_KIND_FIELD)
+        .and_then(serde_json::Value::as_str)
+        == Some(API_KIND)
+}
+
+fn api_config(account: &Account) -> Result<ClaudeApiConfig> {
+    serde_json::from_value(
+        account
+            .extra
+            .get(API_CONFIG_FIELD)
+            .cloned()
+            .ok_or_else(|| {
+                Error::Provider(format!(
+                    "registry entry {PROVIDER_ID}:{} missing api_config field",
+                    account.id
+                ))
+            })?,
+    )
+    .map_err(Error::from)
+}
+
+fn validate_api_id(id: &str) -> Result<()> {
+    if id.is_empty()
+        || id.contains('/')
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(Error::Config(
+            "Claude API id must use only letters, numbers, '-', '_' or '.'".into(),
+        ));
+    }
+    Ok(())
 }
 
 impl ClaudeProvider {

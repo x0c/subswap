@@ -43,6 +43,16 @@ pub struct Account {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
+impl Account {
+    /// 是否只能由用户手动激活。此类账号不会触发自动切出，也不会成为自动切换候选。
+    pub fn manual_only(&self) -> bool {
+        self.extra
+            .get("manual_only")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
+}
+
 fn default_priority() -> i32 {
     100
 }

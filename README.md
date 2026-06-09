@@ -17,6 +17,7 @@ tracker, or a unified multi-provider subscription swapper.
 ## Features
 
 - **Multi-account swap for Claude Code and Codex CLI**: flip the active account without re-logging-in.
+- **Claude Code custom API endpoints**: add DeepSeek or another Anthropic-compatible endpoint through an interactive terminal wizard, then swap to and from it like any Claude account.
 - **Quota-aware status**: view provider quota windows such as Claude 5h / 7d usage and Codex / ChatGPT usage data when available.
 - **Automatic account swap**: a background daemon can move away from an account once usage crosses the configured threshold.
 - **Network-independent manual swap**: `subswap swap` still works when quota APIs fail, tokens expire, or the network is down.
@@ -27,7 +28,7 @@ tracker, or a unified multi-provider subscription swapper.
 
 | Provider | Local client | What subswap manages |
 |---|---|---|
-| Claude / Anthropic | Claude Code (`~/.claude`) | OAuth credentials, active account files, 5h / 7d quota, token keepalive |
+| Claude / Anthropic | Claude Code (`~/.claude`) | OAuth credentials, custom API endpoints, active account files, 5h / 7d quota, token keepalive |
 | Codex / ChatGPT | Codex CLI (`~/.codex`) | `auth.json` passthrough, active account files, ChatGPT usage lookup |
 
 ## Common use cases
@@ -98,6 +99,11 @@ subswap swap alice@example.com
 # disambiguate when the same id exists under multiple providers:
 subswap swap claude/alice@example.com
 
+# interactively add DeepSeek or another Claude Code compatible API endpoint
+subswap add-api
+# custom API endpoints are manual-only and never participate in auto-swap
+subswap swap deepseek
+
 # remove an account from the registry and the keyring
 subswap rm alice@example.com
 
@@ -114,7 +120,7 @@ The first `subswap` invocation also spawns a detached background daemon on Unix 
 These are load-bearing and worth knowing before contributing:
 
 1. **`swap` never depends on quota lookups.** If the API is down, the keyring is unreachable, or the token is expired, manual swap must still flip the active account.
-2. **Secrets only live in the OS keyring.** `registry.toml`, the audit log, and snapshots never contain plaintext tokens or refresh tokens.
+2. **Secrets stay out of registry metadata and snapshots are owner-only.** OAuth/API secrets live in the owner-only credential store. While a custom API is active, Claude Code also requires its API key in `~/.claude/settings.json`; subswap preserves and restores that file atomically.
 3. **Swap is atomic and rollback-able.** Each `activate` writes a snapshot under `state_dir/snapshots/<ts>/` before touching anything; any failed write rolls back.
 4. **Adding a provider = adding a `crates/providers/<id>` crate + one line in `cli/src/main.rs::AppContext::build()`.** No provider-specific logic in `core`.
 5. **Auto-swap threshold is centralized and configurable.** The compiled default lives in `crates/core/src/defaults.rs`, and runtime config can override it.
@@ -135,9 +141,13 @@ More: [`docs/`](docs/) (Chinese — internal collaboration docs).
 
 No. Manual swap is an escape hatch and never depends on quota lookup. If the upstream API is down or a token is expired, `subswap swap claude/alice@example.com` still tries to activate that local account.
 
+### Do custom API endpoints participate in auto-swap?
+
+No. They are manual-only: subswap never automatically selects one, and auto-swap remains disabled while one is active. Manually swapping back to an OAuth account restores the Claude Code settings that existed before API mode.
+
 ### Where are tokens stored?
 
-Tokens and refresh tokens are stored only in the OS keyring. `registry.toml`, audit logs, and snapshots are designed not to contain plaintext secrets.
+Tokens and refresh tokens live in owner-only credential files under the app data directory. While a custom API is active, Claude Code also requires its API key in `~/.claude/settings.json`; subswap keeps that file and switch snapshots owner-only.
 
 ### Is this only for Claude?
 

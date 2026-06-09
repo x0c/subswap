@@ -95,6 +95,13 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
     let active = snapshot.accounts.iter().find(|a| a.account.active);
     let active_id = active.map(|a| a.account.id.clone());
 
+    // manual_only 账号只允许用户显式切换。激活后自动切换完全停用。
+    if let Some(active) = active.filter(|active| active.account.manual_only()) {
+        return PolicyDecision::NoOp {
+            reason: format!("{} is manual-only", active.account.id),
+        };
+    }
+
     // 1. active 账号自身额度尚未可用时，若有额度明确可用的其他账号则切走。
     // 没有明确可用候选时才降级，避免从未知切到未知。
     if let Some(a) = active {
@@ -148,6 +155,7 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
         .accounts
         .iter()
         .filter(|a| Some(&a.account.id) != active_id.as_ref())
+        .filter(|a| !a.account.manual_only())
         .filter(|a| is_viable_candidate(a, config.threshold, config.allow_unknown))
         .collect();
 
@@ -179,6 +187,7 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
             .accounts
             .iter()
             .filter(|a| Some(&a.account.id) != active_id.as_ref())
+            .filter(|a| !a.account.manual_only())
             .filter(|a| a.fetch_state.failed().is_some())
             .collect();
 
@@ -204,6 +213,7 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
     let reset_candidates: Vec<(&AccountWithQuotas, DateTime<Utc>)> = snapshot
         .accounts
         .iter()
+        .filter(|a| !a.account.manual_only())
         .filter_map(|a| reset_ready_at(a, config.threshold, config.allow_unknown).map(|t| (a, t)))
         .collect();
 
@@ -274,6 +284,9 @@ fn best_known_available_candidate<'a>(
 }
 
 fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: bool) -> bool {
+    if a.account.manual_only() {
+        return false;
+    }
     if a.fetch_state.failed().is_some() {
         return allow_unknown;
     }
@@ -482,6 +495,32 @@ mod tests {
         };
         let d = decide(&snap, &PolicyConfig::default());
         assert!(matches!(d, PolicyDecision::Swap { to, .. } if to.0 == "b"));
+    }
+
+    #[test]
+    fn active_manual_only_account_disables_auto_swap_while_loading() {
+        let mut api = mk_awq("api", true, 0, QuotaStatus::Unknown);
+        api.account.extra.insert("manual_only".into(), true.into());
+        api.quotas.clear();
+        api.fetch_state = QuotaFetchState::Loading;
+        let snap = ProviderSnapshot {
+            provider: "claude".into(),
+            accounts: vec![api, mk_awq("oauth", false, 0, QuotaStatus::Ok)],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(matches!(d, PolicyDecision::NoOp { .. }));
+    }
+
+    #[test]
+    fn manual_only_account_is_never_an_auto_swap_candidate() {
+        let mut api = mk_awq("api", false, 0, QuotaStatus::Ok);
+        api.account.extra.insert("manual_only".into(), true.into());
+        let snap = ProviderSnapshot {
+            provider: "claude".into(),
+            accounts: vec![mk_awq("oauth", true, 100, QuotaStatus::Exhausted), api],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(matches!(d, PolicyDecision::Degraded { .. }));
     }
 
     #[test]

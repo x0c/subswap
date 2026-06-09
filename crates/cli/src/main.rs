@@ -4,6 +4,7 @@
 //! - `subswap`          — default: sync local active accounts, fetch quotas, auto-swap if
 //!   active is past threshold, render a one-screen status.
 //! - `subswap login <provider>` — run the native provider login, then import/overwrite it.
+//! - `subswap add-api` — interactively add a Claude Code compatible API endpoint.
 //! - `subswap swap [<id|N>]` — escape hatch: force-swap. Never depends on quota.
 //!   With no argument, prints the numbered listing instead of swapping.
 //! - `subswap rm <id|N>`     — remove an account (registry + keyring).
@@ -29,7 +30,7 @@ use crate::app::AppContext;
     about = "Manage and auto-swap between multiple AI subscription accounts.",
     long_about = "Run `subswap` with no arguments to sync local accounts, check quotas, \
                   and auto-swap if the active account is past threshold. \
-                  Use `login`/`swap`/`rm`/`doctor` for explicit actions."
+                  Use `add-api`/`login`/`swap`/`rm`/`doctor` for explicit actions."
 )]
 struct Cli {
     /// Log level (equivalent to RUST_LOG).
@@ -41,7 +42,64 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+// clap 子命令只在进程启动时构造一次；为 add-api 的向导参数逐字段装箱只会增加样板。
+#[allow(clippy::large_enum_variant)]
 enum Cmd {
+    /// Add a Claude Code compatible API endpoint without activating it.
+    AddApi {
+        /// Preset: deepseek or custom.
+        #[arg(long)]
+        preset: Option<String>,
+
+        /// Stable account id used by `subswap swap`.
+        #[arg(long)]
+        id: Option<String>,
+
+        /// Display name.
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Anthropic-compatible API base URL.
+        #[arg(long)]
+        endpoint: Option<String>,
+
+        /// API key. Prefer the interactive prompt to avoid shell history.
+        #[arg(long)]
+        api_key: Option<String>,
+
+        /// Authentication mode: bearer or api-key.
+        #[arg(long)]
+        auth: Option<String>,
+
+        /// Primary model.
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Opus role model.
+        #[arg(long)]
+        opus_model: Option<String>,
+
+        /// Sonnet role model.
+        #[arg(long)]
+        sonnet_model: Option<String>,
+
+        /// Haiku role model.
+        #[arg(long)]
+        haiku_model: Option<String>,
+
+        /// Subagent model.
+        #[arg(long)]
+        subagent_model: Option<String>,
+
+        /// Claude Code effort level.
+        #[arg(long)]
+        effort: Option<String>,
+
+        /// Skip the final confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
+
     /// Log in through the native provider CLI, then import and activate that account.
     Login {
         /// Provider to log in: claude or codex.
@@ -106,6 +164,38 @@ async fn main() -> Result<()> {
 
     match cli.cmd {
         None => cmd::default::run(&ctx).await,
+        Some(Cmd::AddApi {
+            preset,
+            id,
+            name,
+            endpoint,
+            api_key,
+            auth,
+            model,
+            opus_model,
+            sonnet_model,
+            haiku_model,
+            subagent_model,
+            effort,
+            yes,
+        }) => cmd::add_api::run(
+            &ctx,
+            cmd::add_api::AddApiOptions {
+                preset,
+                id,
+                name,
+                endpoint,
+                api_key,
+                auth,
+                model,
+                opus_model,
+                sonnet_model,
+                haiku_model,
+                subagent_model,
+                effort,
+                yes,
+            },
+        ),
         Some(Cmd::Login {
             provider,
             email,

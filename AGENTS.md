@@ -22,6 +22,8 @@
 ## 项目不变量
 
 - 手动 `subswap swap` 永远不依赖 quota 查询；网络坏、quota API 坏、token 过期时也要能切走。
+- Claude 自定义 API 账号必须标记 `manual_only`：只能手动切入，active 时禁用自动换号，也不能成为自动候选；
+  切回 OAuth 时必须恢复进入 API 模式前的 `settings.json.env` 受管字段。
 - `Provider::activate` 必须先写快照，任一目标写失败要回滚。
 - refresh token 是一次性轮换：subswap 对 active 账号只读不刷，由原生客户端唯一轮换。
   `activate` 覆盖 live 文件前先 capture-on-leave 回灌 live 凭证进 owner 账号 store；
@@ -87,12 +89,12 @@ docs/                     中文项目文档
 
 | 文档 | 用途 |
 |---|---|
-| [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) | Provider 上游接口、文件结构、坑点 |
+| [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) | 改 Provider 切换、认证、额度或自定义 API 逻辑前必读 |
 | [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) | 架构、模块边界、数据流 |
-| [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md) | 自动切换触发与降级策略 |
+| [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md) | 改自动切换候选筛选、阈值、manual_only 行为前必读 |
 | [docs/design/PREWARM_DESIGN.md](docs/design/PREWARM_DESIGN.md) | 窗口预热提案 |
 | [docs/CONFIG.md](docs/CONFIG.md) | `config.toml` 字段与热加载 |
-| [docs/CLI.md](docs/CLI.md) | CLI 命令面、`subswapd` 辅助进程 |
+| [docs/CLI.md](docs/CLI.md) | 改 CLI 命令面、交互向导或 `subswapd` 辅助进程前必读 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 里程碑进度 |
 | [docs/troubleshooting/2026-05-28-claude-config-dir-parent-pollution.md](docs/troubleshooting/2026-05-28-claude-config-dir-parent-pollution.md) | 排查 Claude 配置父目录污染、路径误判或配置目录隔离问题 |
 | [docs/troubleshooting/2026-05-28-toml-null-serialization.md](docs/troubleshooting/2026-05-28-toml-null-serialization.md) | 排查 TOML 序列化写出 null、配置保存异常前阅读 |
