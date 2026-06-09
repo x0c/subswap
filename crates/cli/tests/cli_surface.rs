@@ -34,6 +34,23 @@ fn write(path: &Path, contents: &str) {
     fs::write(path, contents).unwrap();
 }
 
+fn app_config_dir(tmp: &tempfile::TempDir) -> std::path::PathBuf {
+    if cfg!(target_os = "macos") {
+        tmp.path()
+            .join("home/Library/Application Support/dev.subswap.subswap")
+    } else {
+        tmp.path().join("config/subswap")
+    }
+}
+
+fn app_data_dir(tmp: &tempfile::TempDir) -> std::path::PathBuf {
+    if cfg!(target_os = "macos") {
+        app_config_dir(tmp)
+    } else {
+        tmp.path().join("data/subswap")
+    }
+}
+
 #[test]
 fn help_shows_only_current_commands() {
     let output = subswap().arg("--help").output().unwrap();
@@ -102,8 +119,8 @@ fn default_with_empty_home_is_quiet_and_does_not_probe_real_accounts() {
 fn deepseek_api_can_be_added_manually_activated_and_switched_back_to_oauth() {
     let tmp = tempfile::tempdir().unwrap();
     let claude = tmp.path().join("claude");
-    let registry = tmp.path().join("config/subswap/registry.toml");
-    let credentials = tmp.path().join("data/subswap/credentials.json");
+    let registry = app_config_dir(&tmp).join("registry.toml");
+    let credentials = app_data_dir(&tmp).join("credentials.json");
 
     write(
         &registry,
@@ -172,7 +189,7 @@ emailAddress = "oauth@example.com"
 
     // API active 时运行默认入口，manual_only 语义必须阻止自动切回 OAuth。
     write(
-        &tmp.path().join("config/subswap/config.toml"),
+        &app_config_dir(&tmp).join("config.toml"),
         "[quota]\nfetch_timeout_ms = 1\nfetch_retries = 0\n",
     );
     assert_success(isolated_subswap(&tmp).output().unwrap());

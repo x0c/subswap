@@ -81,4 +81,9 @@ impl AppPaths {
     pub fn daemon_log_file(&self) -> PathBuf {
         self.data_dir.join("subswapd.log")
     }
+
+    /// quota 查询结果缓存：`<cache_dir>/quota_cache.json`。
+    pub fn quota_cache_file(&self) -> PathBuf {
+        self.cache_dir.join("quota_cache.json")
+    }
 }
