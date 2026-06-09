@@ -9,8 +9,9 @@ use std::io::{self, IsTerminal};
 use anyhow::Result;
 use futures::future::join_all;
 use subswap_core::{
-    auto_decide, query_quota_with_retry, AccountId, AccountWithQuotas, AuditEvent, AuditLog,
-    PolicyConfig, PolicyDecision, ProviderRegistry, ProviderSnapshot, Quota, QuotaFetchState,
+    auto_decide, paths::AppPaths, query_quota_with_retry, AccountId, AccountWithQuotas, AuditEvent,
+    AuditLog, PolicyConfig, PolicyDecision, ProviderRegistry, ProviderSnapshot, Quota, QuotaCache,
+    QuotaFetchState,
 };
 
 use crate::app::AppContext;
@@ -30,6 +31,9 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
     }
     let cfg = PolicyConfig::default();
     let mut auto_lines: Vec<AutoLine> = Vec::new();
+    let cache_path = AppPaths::resolve()
+        .map(|p| p.quota_cache_file())
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/subswap_quota_cache.json"));
     fill_quotas_progressively(
         &ctx.providers,
         &ctx.audit,
@@ -41,6 +45,7 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
         } else {
             None
         },
+        &cache_path,
     )
     .await?;
 
@@ -161,11 +166,13 @@ async fn fill_quotas_progressively(
     cfg: &PolicyConfig,
     auto_lines: &mut Vec<AutoLine>,
     mut renderer: Option<&mut InlineRenderer>,
+    cache_path: &std::path::Path,
 ) -> Result<()> {
     let total: usize = snapshots.iter().map(|snap| snap.accounts.len()).sum();
     if total == 0 {
         return Ok(());
     }
+    let mut cache = QuotaCache::load(cache_path);
 
     let mut jobs = Vec::new();
     for snap in snapshots.iter_mut() {
@@ -204,7 +211,7 @@ async fn fill_quotas_progressively(
 
     while let Some(update) = rx.recv().await {
         let provider = update.provider.clone();
-        apply_quota_update(snapshots, update);
+        apply_quota_update(snapshots, update, &mut cache);
         try_auto_swap_ready_provider(
             registry,
             audit,
@@ -219,6 +226,7 @@ async fn fill_quotas_progressively(
             renderer.render(snapshots, auto_lines)?;
         }
     }
+    cache.save(cache_path);
     Ok(())
 }
 
@@ -290,7 +298,11 @@ async fn try_auto_swap_ready_provider(
     Ok(())
 }
 
-fn apply_quota_update(snapshots: &mut [ProviderSnapshot], update: QuotaUpdate) {
+fn apply_quota_update(
+    snapshots: &mut [ProviderSnapshot],
+    update: QuotaUpdate,
+    cache: &mut QuotaCache,
+) {
     let Some(snap) = snapshots
         .iter_mut()
         .find(|snap| snap.provider == update.provider)
@@ -306,12 +318,21 @@ fn apply_quota_update(snapshots: &mut [ProviderSnapshot], update: QuotaUpdate) {
     };
     match update.result {
         Ok(quotas) => {
+            cache.set(&update.provider, &update.account_id.0, quotas.clone());
             awq.quotas = quotas;
             awq.fetch_state = QuotaFetchState::Ready;
         }
         Err(err) => {
-            awq.quotas.clear();
-            awq.fetch_state = QuotaFetchState::Failed(err);
+            if let Some(entry) = cache.get(&update.provider, &update.account_id.0) {
+                awq.quotas = entry.quotas.clone();
+                awq.fetch_state = QuotaFetchState::Stale {
+                    cached_at: entry.cached_at,
+                    error: err,
+                };
+            } else {
+                awq.quotas.clear();
+                awq.fetch_state = QuotaFetchState::Failed(err);
+            }
         }
     }
 }
@@ -505,6 +526,7 @@ mod tests {
         let mut auto_lines = Vec::new();
 
         let handle = tokio::spawn(async move {
+            let cache_path = tmp.path().join("quota_cache.json");
             let _tmp = tmp;
             fill_quotas_progressively(
                 &registry,
@@ -513,6 +535,7 @@ mod tests {
                 &cfg,
                 &mut auto_lines,
                 None,
+                &cache_path,
             )
             .await
             .unwrap();
@@ -583,6 +606,7 @@ mod tests {
         let mut auto_lines = Vec::new();
 
         let handle = tokio::spawn(async move {
+            let cache_path = tmp.path().join("quota_cache.json");
             let _tmp = tmp;
             fill_quotas_progressively(
                 &registry,
@@ -591,6 +615,7 @@ mod tests {
                 &cfg,
                 &mut auto_lines,
                 None,
+                &cache_path,
             )
             .await
             .unwrap();

@@ -49,10 +49,17 @@ pub enum QuotaFetchState {
     Ready,
     /// 拉取失败，附带错误描述。
     Failed(String),
+    /// 实时查询失败，但存在未过期的缓存数据（由 `QuotaCache` 回填）。
+    /// 对应账号的 `AccountWithQuotas.quotas` 存放缓存快照。
+    /// 自动切换策略将其等同于 `Ready` 处理。
+    Stale {
+        cached_at: chrono::DateTime<chrono::Utc>,
+        error: String,
+    },
 }
 
 impl QuotaFetchState {
-    /// 拉取失败时返回错误文本；其他状态返回 `None`。
+    /// 拉取失败（且无可用缓存）时返回错误文本；其他状态返回 `None`。
     pub fn failed(&self) -> Option<&str> {
         match self {
             Self::Failed(e) => Some(e.as_str()),

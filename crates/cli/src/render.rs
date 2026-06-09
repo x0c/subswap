@@ -138,21 +138,15 @@ fn render_row(awq: &AccountWithQuotas, index: usize, name_width: usize, color: b
             // 失败状态本身就是高 signal，不需要再细分。
             style(color, "31", &text)
         }
-        QuotaFetchState::Ready => {
-            let parts: Vec<String> = awq
-                .quotas
-                .iter()
-                .filter(|q| quota_has_display_value(q))
-                .map(|q| format_quota_compact(q, color))
-                .collect();
+        QuotaFetchState::Ready => render_quota_parts(&awq.quotas, color),
+        QuotaFetchState::Stale { cached_at, .. } => {
+            let parts = render_quota_parts(&awq.quotas, color);
+            let age = format_age(*cached_at);
+            let tag = style(color, "2", &format!("(~{age})"));
             if parts.is_empty() {
-                if awq.quotas.is_empty() {
-                    String::new()
-                } else {
-                    style(color, "2", "quota unknown")
-                }
+                tag
             } else {
-                parts.join("  ")
+                format!("{parts}  {tag}")
             }
         }
     };
@@ -301,6 +295,35 @@ fn status_sgr(status: QuotaStatus) -> &'static str {
 
 pub fn quota_has_display_value(q: &Quota) -> bool {
     q.limit > 0 || q.reset_at.is_some() || !matches!(q.status, QuotaStatus::Unknown)
+}
+
+fn render_quota_parts(quotas: &[Quota], color: bool) -> String {
+    let parts: Vec<String> = quotas
+        .iter()
+        .filter(|q| quota_has_display_value(q))
+        .map(|q| format_quota_compact(q, color))
+        .collect();
+    if parts.is_empty() {
+        if quotas.is_empty() {
+            String::new()
+        } else {
+            style(color, "2", "quota unknown")
+        }
+    } else {
+        parts.join("  ")
+    }
+}
+
+fn format_age(cached_at: DateTime<Utc>) -> String {
+    let delta = Utc::now().signed_duration_since(cached_at);
+    let seconds = delta.num_seconds().max(0);
+    if seconds < 90 * 60 {
+        format!("{}m ago", (seconds + 59) / 60)
+    } else if seconds < 48 * 60 * 60 {
+        format!("{}h ago", (seconds + 3599) / 3600)
+    } else {
+        format!("{}d ago", (seconds + 86_399) / 86_400)
+    }
 }
 
 pub fn format_reset_at(reset_at: DateTime<Utc>) -> String {
