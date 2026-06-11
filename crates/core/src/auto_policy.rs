@@ -15,6 +15,8 @@ use crate::settings;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PolicyConfig {
+    /// 自动切换总开关。false 时 `decide()` 立即返回 `NoOp`。
+    pub enabled: bool,
     /// 触发阈值，0.0~1.0。默认值来自当前生效的配置（`config.toml > auto_swap.threshold`）。
     pub threshold: f64,
     /// 是否允许把 status=Unknown 的账号作为候选。默认 false（保守）。
@@ -23,8 +25,10 @@ pub struct PolicyConfig {
 
 impl Default for PolicyConfig {
     fn default() -> Self {
+        let s = settings::current();
         Self {
-            threshold: settings::current().auto_swap.threshold,
+            enabled: s.auto_swap.enabled,
+            threshold: s.auto_swap.threshold,
             allow_unknown: false,
         }
     }
@@ -93,6 +97,11 @@ pub enum PolicyDecision {
 }
 
 pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecision {
+    if !config.enabled {
+        return PolicyDecision::NoOp {
+            reason: "auto swap disabled".into(),
+        };
+    }
     if snapshot.accounts.is_empty() {
         return PolicyDecision::Degraded {
             reason: format!("provider {} has no accounts", snapshot.provider),

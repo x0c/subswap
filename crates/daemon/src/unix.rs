@@ -87,6 +87,7 @@ pub async fn run() -> Result<()> {
 
         // 2. 跑一轮调度。
         let policy = PolicyConfig {
+            enabled: snapshot_settings.auto_swap.enabled,
             threshold: snapshot_settings.auto_swap.threshold,
             allow_unknown: false,
         };

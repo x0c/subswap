@@ -1,6 +1,7 @@
 //! 各子命令实现。每个子命令独立成模块，便于单文件聚焦阅读。
 
 pub mod add_api;
+pub mod autoswap;
 pub mod default;
 pub mod doctor;
 pub mod login;
