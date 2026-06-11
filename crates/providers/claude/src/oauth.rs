@@ -14,6 +14,15 @@ const REFRESH_URL: &str = "https://platform.claude.com/v1/oauth/token";
 const BETA_HEADER: &str = "oauth-2025-04-20";
 const USER_AGENT: &str = "subswap/0.1";
 
+/// 凭据中无 scope 时的 fallback。取自 Claude Code 的默认 OAuth scope 集。
+const DEFAULT_SCOPES: &[&str] = &[
+    "user:file_upload",
+    "user:inference",
+    "user:mcp_servers",
+    "user:profile",
+    "user:sessions:claude_code",
+];
+
 /// 默认 Anthropic OAuth Public Client ID。
 /// 这是公开值（非 secret），上游若变更可用环境变量覆盖。
 const DEFAULT_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
@@ -88,7 +97,7 @@ pub struct RefreshResponse {
 
 /// 刷新 access_token。client_id 默认走 [`DEFAULT_CLIENT_ID`]，
 /// 可通过 `SUBSWAP_CLAUDE_OAUTH_CLIENT_ID` 环境变量覆写。
-/// `scopes` 为凭据中存储的 scope 列表，空时省略该字段。
+/// 空白 `scopes` 时使用 [`DEFAULT_SCOPES`] 作为 fallback——store 中旧凭据可能没有 scope 记录。
 pub async fn refresh_access_token(
     refresh_token: &str,
     scopes: &[String],
@@ -99,15 +108,17 @@ pub async fn refresh_access_token(
         .build()
         .map_err(|e| Error::QuotaFetch(format!("build http client: {e}")))?;
 
-    let mut body = serde_json::json!({
+    let scope_str = if scopes.is_empty() {
+        DEFAULT_SCOPES.join(" ")
+    } else {
+        scopes.join(" ")
+    };
+    let body = serde_json::json!({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
         "client_id": client_id,
+        "scope": scope_str,
     });
-    if !scopes.is_empty() {
-        body["scope"] = serde_json::Value::String(scopes.join(" "));
-    }
-
     let resp = client
         .post(REFRESH_URL)
         .header("Content-Type", "application/json")

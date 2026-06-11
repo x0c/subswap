@@ -250,7 +250,7 @@ impl ClaudeProvider {
         if !is_expired_or_soon(&creds, settings::current().token.refresh_slack_ms) {
             return Ok(false);
         }
-        if creds.oauth.refresh_token.is_none() {
+        if creds.oauth.refresh_token.as_deref().unwrap_or("").is_empty() {
             return Ok(false);
         }
         apply_refresh_to_creds(&mut creds).await?;
@@ -930,9 +930,9 @@ async fn best_effort_pre_refresh(creds: &mut CredentialsFile) -> bool {
     if !is_expired_or_soon(creds, settings::current().token.refresh_slack_ms) {
         return false;
     }
-    if creds.oauth.refresh_token.is_none() {
+    if creds.oauth.refresh_token.as_deref().unwrap_or("").is_empty() {
         tracing::warn!(
-            "token expired/expiring but no refreshToken in keyring; skipping pre-refresh — log in again if the client returns 401"
+            "token expired/expiring but refreshToken is empty in store; skipping pre-refresh — log in again if the client returns 401"
         );
         return false;
     }
@@ -956,11 +956,16 @@ async fn best_effort_pre_refresh(creds: &mut CredentialsFile) -> bool {
 /// 不读 keyring、不写 keyring、不动磁盘；调用方负责持久化。缺 `refresh_token`
 /// 时返回 [`Error::Provider`]（不能 offline 续期）。
 async fn apply_refresh_to_creds(creds: &mut CredentialsFile) -> Result<()> {
-    let refresh_token = creds.oauth.refresh_token.clone().ok_or_else(|| {
-        Error::Provider(format!(
-            "{PROVIDER_ID} account has no refreshToken; cannot refresh offline, log in and re-add"
-        ))
-    })?;
+    let refresh_token = creds
+        .oauth
+        .refresh_token
+        .clone()
+        .filter(|rt| !rt.is_empty())
+        .ok_or_else(|| {
+            Error::Provider(format!(
+                "{PROVIDER_ID} account has no refreshToken; cannot refresh offline, log in and re-add"
+            ))
+        })?;
     let resp = oauth::refresh_access_token(&refresh_token, &creds.oauth.scopes).await?;
     creds.oauth.access_token = resp.access_token;
     if let Some(secs) = resp.expires_in {
