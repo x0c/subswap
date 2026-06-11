@@ -24,6 +24,10 @@
 - 手动 `subswap swap` 永远不依赖 quota 查询；网络坏、quota API 坏、token 过期时也要能切走。
 - Claude 自定义 API 账号必须标记 `manual_only`：只能手动切入，active 时禁用自动换号，也不能成为自动候选；
   切回 OAuth 时必须恢复进入 API 模式前的 `settings.json.env` 受管字段。
+- macOS 上读写 Claude Code 的 `Claude Code-credentials` keychain item **只能 fork `/usr/bin/security`**，
+  禁止用 `keyring` crate（security-framework 原生 API）：keyring 写会把 item ACL 重置成「仅 subswap」，
+  导致 Claude Code（也用 `security` 读）每次切换后反复弹授权框。详见
+  [docs/troubleshooting/2026-06-11-claude-code-keychain-acl-poisoning.md](docs/troubleshooting/2026-06-11-claude-code-keychain-acl-poisoning.md)。
 - `Provider::activate` 必须先写快照，任一目标写失败要回滚。
 - refresh token 是一次性轮换：subswap 对 active 账号只读不刷，由原生客户端唯一轮换。
   `activate` 覆盖 live 文件前先 capture-on-leave 回灌 live 凭证进 owner 账号 store；
@@ -102,3 +106,4 @@ docs/                     中文项目文档
 | [docs/troubleshooting/2026-05-29-macos-keychain-prompts.md](docs/troubleshooting/2026-05-29-macos-keychain-prompts.md) | 排查 macOS Keychain 弹窗、凭据访问提示或权限体验前阅读 |
 | [docs/troubleshooting/2026-06-06-filestore-credential-backend.md](docs/troubleshooting/2026-06-06-filestore-credential-backend.md) | 排查 filestore 凭据后端、跨平台凭据保存行为前阅读 |
 | [docs/troubleshooting/2026-06-08-codex-refresh-token-already-used.md](docs/troubleshooting/2026-06-08-codex-refresh-token-already-used.md) | 排查 Codex refresh token already used、令牌刷新竞态前阅读 |
+| [docs/troubleshooting/2026-06-11-claude-code-keychain-acl-poisoning.md](docs/troubleshooting/2026-06-11-claude-code-keychain-acl-poisoning.md) | 排查 macOS 反复弹「security wants to access "Claude Code-credentials"」、改 Claude keychain 读写前必读 |
