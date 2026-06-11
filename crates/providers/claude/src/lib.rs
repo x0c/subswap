@@ -961,7 +961,7 @@ async fn apply_refresh_to_creds(creds: &mut CredentialsFile) -> Result<()> {
             "{PROVIDER_ID} account has no refreshToken; cannot refresh offline, log in and re-add"
         ))
     })?;
-    let resp = oauth::refresh_access_token(&refresh_token).await?;
+    let resp = oauth::refresh_access_token(&refresh_token, &creds.oauth.scopes).await?;
     creds.oauth.access_token = resp.access_token;
     if let Some(secs) = resp.expires_in {
         creds.oauth.expires_at = Some(Utc::now().timestamp_millis() + secs * 1000);
