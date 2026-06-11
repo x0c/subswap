@@ -95,15 +95,15 @@ pub async fn refresh_access_token(refresh_token: &str) -> Result<RefreshResponse
         .build()
         .map_err(|e| Error::QuotaFetch(format!("build http client: {e}")))?;
 
-    let body = serde_json::json!({
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-        "client_id": client_id,
-    });
+    let params = [
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_token),
+        ("client_id", client_id.as_str()),
+    ];
 
     let resp = client
         .post(REFRESH_URL)
-        .json(&body)
+        .form(&params)
         .send()
         .await
         .map_err(|e| Error::QuotaFetch(format!("request refresh endpoint: {e}")))?;
