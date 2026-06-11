@@ -45,6 +45,8 @@ pub struct Settings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AutoSwap {
+    /// 自动切换总开关。false 时 daemon 和默认入口均跳过所有自动切换决策。
+    pub enabled: bool,
     /// 自动切换触发阈值，0.0~1.0。任一窗口 used/limit ≥ 此值即触发。
     pub threshold: f64,
     /// 切换后冷却期（毫秒）：刚被切走/切到的账号短期不再选回，避免抖动。
@@ -94,6 +96,7 @@ pub struct Codex {
 impl Default for AutoSwap {
     fn default() -> Self {
         Self {
+            enabled: true,
             threshold: defaults::AUTO_SWAP_THRESHOLD,
             cooldown_ms: defaults::AUTO_SWAP_COOLDOWN_MS,
         }
@@ -185,6 +188,31 @@ pub fn load_from(path: &Path) -> Result<Arc<Settings>> {
 /// 直接替换全局当前值。测试与 CLI doctor 使用。
 pub fn install(settings: Arc<Settings>) {
     *cell().write().expect("settings rwlock poisoned") = settings;
+}
+
+/// 将 `[auto_swap] enabled` 写入 `<config_dir>/config.toml`，其余字段保持不变。
+///
+/// 文件不存在时创建；存在时只修改目标键，不覆盖其他用户配置。
+pub fn set_auto_swap_enabled(enabled: bool) -> Result<()> {
+    let path = AppPaths::resolve()?.config_file();
+    let mut doc: toml_edit::DocumentMut = if path.exists() {
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|e| Error::Config(format!("read {}: {e}", path.display())))?;
+        raw.parse::<toml_edit::DocumentMut>()
+            .map_err(|e| Error::Config(format!("parse {}: {e}", path.display())))?
+    } else {
+        toml_edit::DocumentMut::new()
+    };
+
+    doc["auto_swap"]["enabled"] = toml_edit::value(enabled);
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::Config(format!("create dir {}: {e}", parent.display())))?;
+    }
+    std::fs::write(&path, doc.to_string())
+        .map_err(|e| Error::Config(format!("write {}: {e}", path.display())))?;
+    Ok(())
 }
 
 #[cfg(test)]

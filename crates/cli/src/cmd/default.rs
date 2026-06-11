@@ -518,6 +518,7 @@ mod tests {
 
         let mut snapshots = build_loading_snapshots(&registry).await;
         let cfg = PolicyConfig {
+            enabled: true,
             threshold: 0.98,
             allow_unknown: false,
         };
@@ -598,6 +599,7 @@ mod tests {
 
         let mut snapshots = build_loading_snapshots(&registry).await;
         let cfg = PolicyConfig {
+            enabled: true,
             threshold: 0.98,
             allow_unknown: false,
         };

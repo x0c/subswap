@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.7"
+version = "0.3.8"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
@@ -28,6 +28,7 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+toml_edit = { version = "0.22", features = ["default"] }
 
 # 异步运行时与 HTTP
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "fs", "sync"] }
