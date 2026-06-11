@@ -734,63 +734,141 @@ impl ClaudeProvider {
     }
 }
 
+/// macOS：Claude Code 凭证所在 Keychain generic password 的 service 名。
+#[cfg(target_os = "macos")]
+const CLAUDE_CODE_KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
+
+/// macOS：取当前登录用户名，作为 Keychain item 的 account 维度。
+#[cfg(target_os = "macos")]
+fn keychain_account() -> Result<String> {
+    std::env::var("USER")
+        .ok()
+        .filter(|u| !u.is_empty())
+        .ok_or_else(|| Error::Credential("USER is empty; cannot access Claude Code keychain".into()))
+}
+
+/// macOS：统一通过 `/usr/bin/security` 命令行访问 Keychain。
+///
+/// **为什么必须走 CLI 而不是 `keyring` crate**：Keychain item 的 ACL 只信任「创建它的应用」。
+/// 用 `keyring`(security-framework 原生 API)写,会把 ACL 设成「仅 subswap 本体」;而 Claude Code
+/// 自己是 fork `/usr/bin/security` 来读凭证的,读取方与创建方不一致 → 系统每次读取都弹授权框
+/// （`security wants to access "Claude Code-credentials"`)。改为同样用 `/usr/bin/security` 读写后,
+/// 创建方与 Claude Code 的读取方都是 `security` 本体,ACL 天然一致,从根上消除反复弹窗。
+#[cfg(target_os = "macos")]
+fn run_security(args: &[&str]) -> Result<std::process::Output> {
+    std::process::Command::new("/usr/bin/security")
+        .args(args)
+        .output()
+        .map_err(|e| Error::Credential(format!("run /usr/bin/security failed: {e}")))
+}
+
 /// macOS：读 Claude Code 的系统钥匙串 generic password —— `service = "Claude Code-credentials"`,
 /// `account = <登录用户名>`,内容与 `.credentials.json` 同构(`{"claudeAiOauth": {...}}`)。
 /// 这是 macOS 上 claude 凭证的唯一来源。读不到(不存在 / 用户拒绝授权 / 解析失败)一律返回 `None`。
 #[cfg(target_os = "macos")]
 fn read_claude_code_keychain() -> Option<CredentialsFile> {
-    let entry = claude_code_keychain_entry().ok()?;
-    let raw = entry.get_password().ok()?;
+    let raw = security_find_password().ok().flatten()?;
     serde_json::from_str::<CredentialsFile>(&raw).ok()
 }
 
+/// macOS：读出 Keychain item 的明文（找不到返回 `Ok(None)`,执行失败返回 `Err`）。
 #[cfg(target_os = "macos")]
-fn claude_code_keychain_entry() -> Result<keyring::Entry> {
-    let user = std::env::var("USER")
-        .ok()
-        .filter(|u| !u.is_empty())
-        .ok_or_else(|| {
-            Error::Credential("USER is empty; cannot access Claude Code keychain".into())
-        })?;
-    keyring::Entry::new("Claude Code-credentials", &user)
-        .map_err(|e| Error::Credential(format!("open Claude Code keychain failed: {e}")))
+fn security_find_password() -> Result<Option<String>> {
+    let account = keychain_account()?;
+    let output = run_security(&[
+        "find-generic-password",
+        "-s",
+        CLAUDE_CODE_KEYCHAIN_SERVICE,
+        "-a",
+        &account,
+        "-w",
+    ])?;
+    if !output.status.success() {
+        // 退出码 44 = item 不存在;其余失败(含用户拒绝授权)也按读不到处理。
+        return Ok(None);
+    }
+    let mut raw =
+        String::from_utf8(output.stdout).map_err(|e| Error::Credential(format!("Claude Code keychain non-UTF8: {e}")))?;
+    if raw.ends_with('\n') {
+        raw.pop();
+    }
+    Ok(Some(raw))
 }
 
 /// 在写入目标账号前保存 Claude Code Keychain 原值，供后续事务失败时恢复。
 #[cfg(target_os = "macos")]
 fn snapshot_claude_code_keychain() -> Result<Option<String>> {
-    let entry = claude_code_keychain_entry()?;
-    match entry.get_password() {
-        Ok(raw) => Ok(Some(raw)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(Error::Credential(format!(
-            "read Claude Code keychain before swap failed: {e}"
-        ))),
-    }
+    security_find_password()
 }
 
 /// 把目标账号凭证写入 Claude Code 在 macOS 上真正读取的 Keychain item。
 #[cfg(target_os = "macos")]
 fn write_claude_code_keychain(creds: &CredentialsFile) -> Result<()> {
     let raw = serde_json::to_string(creds)?;
-    claude_code_keychain_entry()?
-        .set_password(&raw)
-        .map_err(|e| Error::Credential(format!("write Claude Code keychain failed: {e}")))
+    security_set_password(&raw)
+}
+
+/// macOS：通过 `/usr/bin/security` 写 Keychain item。
+///
+/// 先 `-U` 原地更新;若失败(item 不存在,或 ACL 被旧 `keyring` 写法污染成「仅 subswap」无法更新),
+/// 则删除后用 `security` 重建,使创建方重新变回 `security` 本体、ACL 复位为与 Claude Code 一致。
+/// 重建路径首次会对被污染的旧 item 弹一次授权框,之后稳态不再弹。
+#[cfg(target_os = "macos")]
+fn security_set_password(value: &str) -> Result<()> {
+    let account = keychain_account()?;
+    let update = run_security(&[
+        "add-generic-password",
+        "-U",
+        "-s",
+        CLAUDE_CODE_KEYCHAIN_SERVICE,
+        "-a",
+        &account,
+        "-w",
+        value,
+    ])?;
+    if update.status.success() {
+        return Ok(());
+    }
+    // 删除旧 item(忽略「不存在」类失败),再以 security 为创建者重建。
+    let _ = run_security(&[
+        "delete-generic-password",
+        "-s",
+        CLAUDE_CODE_KEYCHAIN_SERVICE,
+        "-a",
+        &account,
+    ])?;
+    let add = run_security(&[
+        "add-generic-password",
+        "-s",
+        CLAUDE_CODE_KEYCHAIN_SERVICE,
+        "-a",
+        &account,
+        "-w",
+        value,
+    ])?;
+    if add.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&add.stderr);
+    Err(Error::Credential(format!("write Claude Code keychain failed: {stderr}")))
 }
 
 #[cfg(target_os = "macos")]
 fn restore_claude_code_keychain(backup: Option<String>) -> Result<()> {
-    let entry = claude_code_keychain_entry()?;
     match backup {
-        Some(raw) => entry
-            .set_password(&raw)
-            .map_err(|e| Error::Credential(format!("restore Claude Code keychain failed: {e}"))),
-        None => match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(Error::Credential(format!(
-                "delete Claude Code keychain during rollback failed: {e}"
-            ))),
-        },
+        Some(raw) => security_set_password(&raw),
+        None => {
+            let account = keychain_account()?;
+            // 回滚到「原本无 item」状态:删除即可,忽略「不存在」类失败。
+            let _ = run_security(&[
+                "delete-generic-password",
+                "-s",
+                CLAUDE_CODE_KEYCHAIN_SERVICE,
+                "-a",
+                &account,
+            ])?;
+            Ok(())
+        }
     }
 }
 
