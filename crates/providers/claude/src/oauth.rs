@@ -88,22 +88,30 @@ pub struct RefreshResponse {
 
 /// 刷新 access_token。client_id 默认走 [`DEFAULT_CLIENT_ID`]，
 /// 可通过 `SUBSWAP_CLAUDE_OAUTH_CLIENT_ID` 环境变量覆写。
-pub async fn refresh_access_token(refresh_token: &str) -> Result<RefreshResponse> {
+/// `scopes` 为凭据中存储的 scope 列表，空时省略该字段。
+pub async fn refresh_access_token(
+    refresh_token: &str,
+    scopes: &[String],
+) -> Result<RefreshResponse> {
     let client_id = resolved_client_id();
     let client = reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .build()
         .map_err(|e| Error::QuotaFetch(format!("build http client: {e}")))?;
 
-    let params = [
-        ("grant_type", "refresh_token"),
-        ("refresh_token", refresh_token),
-        ("client_id", client_id.as_str()),
-    ];
+    let mut body = serde_json::json!({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": client_id,
+    });
+    if !scopes.is_empty() {
+        body["scope"] = serde_json::Value::String(scopes.join(" "));
+    }
 
     let resp = client
         .post(REFRESH_URL)
-        .form(&params)
+        .header("Content-Type", "application/json")
+        .json(&body)
         .send()
         .await
         .map_err(|e| Error::QuotaFetch(format!("request refresh endpoint: {e}")))?;
