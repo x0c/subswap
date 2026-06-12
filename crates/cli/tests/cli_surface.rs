@@ -15,8 +15,38 @@ fn isolated_subswap(tmp: &tempfile::TempDir) -> Command {
         .env("XDG_CACHE_HOME", tmp.path().join("cache"))
         .env("CLAUDE_CONFIG_DIR", tmp.path().join("claude"))
         .env("CODEX_HOME", tmp.path().join("codex"))
+        // macOS：把 Claude Code 钥匙串读写重定向到一次性 keychain，绝不碰用户真实登录钥匙串
+        // （否则集成测试会弹授权框并污染本机凭证）。
+        .env("SUBSWAP_CLAUDE_KEYCHAIN_PATH", test_keychain_path(tmp))
         .env("SUBSWAP_NO_DAEMON", "1");
     command
+}
+
+/// 一次性测试钥匙串文件路径（随 tmp 目录一起销毁）。
+fn test_keychain_path(tmp: &tempfile::TempDir) -> std::path::PathBuf {
+    tmp.path().join("test.keychain-db")
+}
+
+/// macOS：创建供测试使用的一次性 keychain。非 macOS 为 no-op（凭证走 FileStore）。
+fn setup_test_keychain(tmp: &tempfile::TempDir) {
+    if cfg!(target_os = "macos") {
+        let path = test_keychain_path(tmp);
+        let _ = Command::new("/usr/bin/security")
+            .args(["create-keychain", "-p", ""])
+            .arg(&path)
+            .status();
+    }
+}
+
+/// macOS：删除测试 keychain。文件本身随 tmp 销毁，这里只是保险清理。
+fn teardown_test_keychain(tmp: &tempfile::TempDir) {
+    if cfg!(target_os = "macos") {
+        let path = test_keychain_path(tmp);
+        let _ = Command::new("/usr/bin/security")
+            .arg("delete-keychain")
+            .arg(&path)
+            .status();
+    }
 }
 
 fn assert_success(output: std::process::Output) -> String {
@@ -118,6 +148,7 @@ fn default_with_empty_home_is_quiet_and_does_not_probe_real_accounts() {
 #[test]
 fn deepseek_api_can_be_added_manually_activated_and_switched_back_to_oauth() {
     let tmp = tempfile::tempdir().unwrap();
+    setup_test_keychain(&tmp);
     let claude = tmp.path().join("claude");
     let registry = app_config_dir(&tmp).join("registry.toml");
     let credentials = app_data_dir(&tmp).join("credentials.json");
@@ -209,4 +240,6 @@ emailAddress = "oauth@example.com"
     assert!(restored["env"].get("ANTHROPIC_AUTH_TOKEN").is_none());
     assert_eq!(restored["permissions"]["allow"][0], "Read");
     assert!(!claude.join(".subswap-api.json").exists());
+
+    teardown_test_keychain(&tmp);
 }

@@ -762,6 +762,31 @@ fn run_security(args: &[&str]) -> Result<std::process::Output> {
         .map_err(|e| Error::Credential(format!("run /usr/bin/security failed: {e}")))
 }
 
+/// 测试隔离用：指定一个显式 keychain 文件路径，让所有 `security` 子命令只作用于它，
+/// 不碰用户真实的登录钥匙串。生产环境不设此变量，沿用 `<default>` 登录钥匙串。
+///
+/// 集成测试若不重定向，会真实弹 macOS 授权框并改写用户登录钥匙串——既污染本机凭证，
+/// 也让 CI / 本地 `cargo test` 卡在交互弹窗上。
+#[cfg(target_os = "macos")]
+fn claude_keychain_override() -> Option<String> {
+    std::env::var("SUBSWAP_CLAUDE_KEYCHAIN_PATH")
+        .ok()
+        .filter(|p| !p.is_empty())
+}
+
+/// 在一组 `security` 基础参数后追加显式 keychain 路径（若设置了重定向）。
+#[cfg(target_os = "macos")]
+fn run_security_on_keychain(base: &[&str]) -> Result<std::process::Output> {
+    match claude_keychain_override() {
+        Some(path) => {
+            let mut args: Vec<&str> = base.to_vec();
+            args.push(path.as_str());
+            run_security(&args)
+        }
+        None => run_security(base),
+    }
+}
+
 /// macOS：读 Claude Code 的系统钥匙串 generic password —— `service = "Claude Code-credentials"`,
 /// `account = <登录用户名>`,内容与 `.credentials.json` 同构(`{"claudeAiOauth": {...}}`)。
 /// 这是 macOS 上 claude 凭证的唯一来源。读不到(不存在 / 用户拒绝授权 / 解析失败)一律返回 `None`。
@@ -775,7 +800,7 @@ fn read_claude_code_keychain() -> Option<CredentialsFile> {
 #[cfg(target_os = "macos")]
 fn security_find_password() -> Result<Option<String>> {
     let account = keychain_account()?;
-    let output = run_security(&[
+    let output = run_security_on_keychain(&[
         "find-generic-password",
         "-s",
         CLAUDE_CODE_KEYCHAIN_SERVICE,
@@ -816,7 +841,7 @@ fn write_claude_code_keychain(creds: &CredentialsFile) -> Result<()> {
 #[cfg(target_os = "macos")]
 fn security_set_password(value: &str) -> Result<()> {
     let account = keychain_account()?;
-    let update = run_security(&[
+    let update = run_security_on_keychain(&[
         "add-generic-password",
         "-U",
         "-s",
@@ -830,14 +855,14 @@ fn security_set_password(value: &str) -> Result<()> {
         return Ok(());
     }
     // 删除旧 item(忽略「不存在」类失败),再以 security 为创建者重建。
-    let _ = run_security(&[
+    let _ = run_security_on_keychain(&[
         "delete-generic-password",
         "-s",
         CLAUDE_CODE_KEYCHAIN_SERVICE,
         "-a",
         &account,
     ])?;
-    let add = run_security(&[
+    let add = run_security_on_keychain(&[
         "add-generic-password",
         "-s",
         CLAUDE_CODE_KEYCHAIN_SERVICE,
@@ -860,7 +885,7 @@ fn restore_claude_code_keychain(backup: Option<String>) -> Result<()> {
         None => {
             let account = keychain_account()?;
             // 回滚到「原本无 item」状态:删除即可,忽略「不存在」类失败。
-            let _ = run_security(&[
+            let _ = run_security_on_keychain(&[
                 "delete-generic-password",
                 "-s",
                 CLAUDE_CODE_KEYCHAIN_SERVICE,

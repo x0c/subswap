@@ -521,6 +521,7 @@ mod tests {
             enabled: true,
             threshold: 0.98,
             allow_unknown: false,
+            settle_grace_ms: 60_000,
         };
         let tmp = tempfile::tempdir().unwrap();
         let audit = AuditLog::new(tmp.path().join("audit.log"));
@@ -602,6 +603,7 @@ mod tests {
             enabled: true,
             threshold: 0.98,
             allow_unknown: false,
+            settle_grace_ms: 60_000,
         };
         let tmp = tempfile::tempdir().unwrap();
         let audit = AuditLog::new(tmp.path().join("audit.log"));
