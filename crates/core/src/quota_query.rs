@@ -64,8 +64,12 @@ fn is_non_retryable_http_error(error: &Error) -> bool {
     let text = error.to_string().to_ascii_lowercase();
     text.contains("401")
         || text.contains("403")
+        || text.contains("429")
         || text.contains("unauthorized")
         || text.contains("forbidden")
+        || text.contains("too many requests")
+        || text.contains("rate_limit")
+        || text.contains("rate limited")
 }
 
 fn error_with_attempts(error: Error, max_attempts: u32) -> Error {
@@ -246,10 +250,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auth_failures_are_not_retried() {
+    async fn non_retryable_http_failures_are_not_retried() {
         for message in [
             "usage returned 401 Unauthorized",
             "usage returned 403 Forbidden",
+            "usage returned 429 Too Many Requests",
+            "usage returned rate_limit_error",
         ] {
             let provider = AlwaysErrorProvider {
                 calls: AtomicUsize::new(0),

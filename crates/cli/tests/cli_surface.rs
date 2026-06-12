@@ -49,6 +49,42 @@ fn teardown_test_keychain(tmp: &tempfile::TempDir) {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn write_test_keychain_credentials(tmp: &tempfile::TempDir, credentials: &str) {
+    let status = Command::new("/usr/bin/security")
+        .args([
+            "add-generic-password",
+            "-U",
+            "-s",
+            "Claude Code-credentials",
+            "-a",
+            std::env::var("USER").unwrap().as_str(),
+            "-w",
+            credentials,
+        ])
+        .arg(test_keychain_path(tmp))
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[cfg(target_os = "macos")]
+fn read_test_keychain_credentials(tmp: &tempfile::TempDir) -> String {
+    let output = Command::new("/usr/bin/security")
+        .args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-a",
+            std::env::var("USER").unwrap().as_str(),
+            "-w",
+        ])
+        .arg(test_keychain_path(tmp))
+        .output()
+        .unwrap();
+    assert_success(output).trim().to_owned()
+}
+
 fn assert_success(output: std::process::Output) -> String {
     assert!(
         output.status.success(),
@@ -240,6 +276,67 @@ emailAddress = "oauth@example.com"
     assert!(restored["env"].get("ANTHROPIC_AUTH_TOKEN").is_none());
     assert_eq!(restored["permissions"]["allow"][0], "Read");
     assert!(!claude.join(".subswap-api.json").exists());
+
+    teardown_test_keychain(&tmp);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn swapping_to_active_claude_account_preserves_live_keychain_credentials() {
+    let tmp = tempfile::tempdir().unwrap();
+    setup_test_keychain(&tmp);
+    let claude = tmp.path().join("claude");
+    let registry = app_config_dir(&tmp).join("registry.toml");
+    let credentials = app_data_dir(&tmp).join("credentials.json");
+    let stale = r#"{"claudeAiOauth":{"accessToken":"stale-access","refreshToken":"stale-refresh","expiresAt":4102444800000}}"#;
+    let live = r#"{"claudeAiOauth":{"accessToken":"live-access","refreshToken":"live-refresh","expiresAt":4102444800000}}"#;
+
+    write(
+        &registry,
+        r#"[[accounts]]
+provider = "claude"
+id = "active@example.com"
+label = "Active"
+active = true
+created_at = "2026-06-12T00:00:00Z"
+priority = 100
+
+[accounts.extra.oauth_account]
+emailAddress = "active@example.com"
+"#,
+    );
+    write(
+        &credentials,
+        &serde_json::json!({
+            "claude:active@example.com:credentials_json": stale
+        })
+        .to_string(),
+    );
+    write(
+        &claude.join(".claude.json"),
+        r#"{"oauthAccount":{"emailAddress":"active@example.com"}}"#,
+    );
+    write(&claude.join(".credentials.json"), stale);
+    write_test_keychain_credentials(&tmp, live);
+
+    assert_success(
+        isolated_subswap(&tmp)
+            .args(["swap", "active@example.com"])
+            .output()
+            .unwrap(),
+    );
+
+    assert_eq!(read_test_keychain_credentials(&tmp), live);
+    let stored: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(credentials).unwrap()).unwrap();
+    assert_eq!(
+        stored["claude:active@example.com:credentials_json"],
+        serde_json::Value::String(live.into())
+    );
+    assert_eq!(
+        fs::read_to_string(claude.join(".credentials.json")).unwrap(),
+        stale
+    );
 
     teardown_test_keychain(&tmp);
 }
