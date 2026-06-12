@@ -211,9 +211,7 @@ async fn main() -> Result<()> {
         }) => cmd::login::run(&ctx, &provider, email, sso, device_auth, args).await,
         Some(Cmd::Swap { id }) => cmd::swap::run(&ctx, id.as_deref()).await,
         Some(Cmd::Rm { id }) => cmd::rm::run(&ctx, &id).await,
-        Some(Cmd::Autoswap { toggle }) => {
-            cmd::autoswap::run(toggle.as_deref()).map_err(Into::into)
-        }
+        Some(Cmd::Autoswap { toggle }) => cmd::autoswap::run(toggle.as_deref()),
         Some(Cmd::Doctor) => cmd::doctor::run(&ctx).await,
         Some(Cmd::MigrateLocal) => cmd::migrate::run(&ctx).await,
         Some(Cmd::InternalDaemon) => unreachable!("handled before CLI context initialization"),

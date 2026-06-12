@@ -130,15 +130,15 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
     // 否则用户手动切到某账号后，仅仅运行一次 `subswap` 或被 daemon 撞上正在 loading，
     // 就会被立刻顶走。已明确耗尽 / 达到 threshold 的**确定性**切换不受此限（见第 2 步）。
     if let Some(a) = active {
-        if recently_activated(&a.account, config.settle_grace_ms) {
-            if a.fetch_state.is_loading() || a.fetch_state.failed().is_some() {
-                return PolicyDecision::NoOp {
-                    reason: format!(
-                        "{} just activated; settling before reacting to uncertain quota",
-                        a.account.id
-                    ),
-                };
-            }
+        if recently_activated(&a.account, config.settle_grace_ms)
+            && (a.fetch_state.is_loading() || a.fetch_state.failed().is_some())
+        {
+            return PolicyDecision::NoOp {
+                reason: format!(
+                    "{} just activated; settling before reacting to uncertain quota",
+                    a.account.id
+                ),
+            };
         }
         if a.fetch_state.is_loading() {
             if let Some(best) = best_known_available_candidate(snapshot, &a.account.id, config) {
@@ -597,7 +597,10 @@ mod tests {
             ..PolicyConfig::default()
         };
         let d = decide(&snap, &cfg);
-        assert!(matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "b"), "got {d:?}");
+        assert!(
+            matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "b"),
+            "got {d:?}"
+        );
     }
 
     /// 宽限期过后，loading / 失败的 active 账号恢复可被切走的逃生行为。
@@ -616,7 +619,10 @@ mod tests {
             ..PolicyConfig::default()
         };
         let d = decide(&snap, &cfg);
-        assert!(matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "b"), "got {d:?}");
+        assert!(
+            matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "b"),
+            "got {d:?}"
+        );
     }
 
     #[test]

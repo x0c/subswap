@@ -285,7 +285,13 @@ impl ClaudeProvider {
         if !is_expired_or_soon(&creds, settings::current().token.refresh_slack_ms) {
             return Ok(false);
         }
-        if creds.oauth.refresh_token.as_deref().unwrap_or("").is_empty() {
+        if creds
+            .oauth
+            .refresh_token
+            .as_deref()
+            .unwrap_or("")
+            .is_empty()
+        {
             return Ok(false);
         }
         apply_refresh_to_creds(&mut creds).await?;
@@ -799,7 +805,9 @@ fn keychain_account() -> Result<String> {
     std::env::var("USER")
         .ok()
         .filter(|u| !u.is_empty())
-        .ok_or_else(|| Error::Credential("USER is empty; cannot access Claude Code keychain".into()))
+        .ok_or_else(|| {
+            Error::Credential("USER is empty; cannot access Claude Code keychain".into())
+        })
 }
 
 /// macOS：统一通过 `/usr/bin/security` 命令行访问 Keychain。
@@ -867,8 +875,8 @@ fn security_find_password() -> Result<Option<String>> {
         // 退出码 44 = item 不存在;其余失败(含用户拒绝授权)也按读不到处理。
         return Ok(None);
     }
-    let mut raw =
-        String::from_utf8(output.stdout).map_err(|e| Error::Credential(format!("Claude Code keychain non-UTF8: {e}")))?;
+    let mut raw = String::from_utf8(output.stdout)
+        .map_err(|e| Error::Credential(format!("Claude Code keychain non-UTF8: {e}")))?;
     if raw.ends_with('\n') {
         raw.pop();
     }
@@ -930,7 +938,9 @@ fn security_set_password(value: &str) -> Result<()> {
         return Ok(());
     }
     let stderr = String::from_utf8_lossy(&add.stderr);
-    Err(Error::Credential(format!("write Claude Code keychain failed: {stderr}")))
+    Err(Error::Credential(format!(
+        "write Claude Code keychain failed: {stderr}"
+    )))
 }
 
 #[cfg(target_os = "macos")]
@@ -1010,7 +1020,13 @@ async fn best_effort_pre_refresh(creds: &mut CredentialsFile) -> bool {
     if !is_expired_or_soon(creds, settings::current().token.refresh_slack_ms) {
         return false;
     }
-    if creds.oauth.refresh_token.as_deref().unwrap_or("").is_empty() {
+    if creds
+        .oauth
+        .refresh_token
+        .as_deref()
+        .unwrap_or("")
+        .is_empty()
+    {
         tracing::warn!(
             "token expired/expiring but refreshToken is empty in store; skipping pre-refresh — log in again if the client returns 401"
         );
@@ -1290,7 +1306,7 @@ mod tests {
 
     /// 准备 reconcile 测试的公共 fixture。
     struct ReconFixture {
-        tmp: tempfile::TempDir,
+        _tmp: tempfile::TempDir,
         home: PathBuf,
         provider: ClaudeProvider,
     }
@@ -1306,7 +1322,11 @@ mod tests {
                 registry: Arc::new(AccountRegistry::new(tmp.path().join("registry.toml"))),
                 claude_home: home.clone(),
             };
-            Self { tmp, home, provider }
+            Self {
+                _tmp: tmp,
+                home,
+                provider,
+            }
         }
 
         fn write_settings(&self, json: &str) {
@@ -1317,7 +1337,11 @@ mod tests {
             std::fs::write(global_config_path(&self.home), json).unwrap();
         }
 
-        fn write_api_state(&self, account_id: &str, restore_env: serde_json::Map<String, serde_json::Value>) {
+        fn write_api_state(
+            &self,
+            account_id: &str,
+            restore_env: serde_json::Map<String, serde_json::Value>,
+        ) {
             write_api_state(
                 &api_state_path(&self.home),
                 &ApiState {
@@ -1334,9 +1358,7 @@ mod tests {
 
         fn settings_contains_key(&self, key: &str) -> bool {
             let v = read_settings(&settings_path(&self.home)).unwrap();
-            v.get("env")
-                .and_then(|e| e.get(key))
-                .is_some()
+            v.get("env").and_then(|e| e.get(key)).is_some()
         }
     }
 
@@ -1384,8 +1406,8 @@ mod tests {
     #[test]
     fn reconcile_restores_and_deletes_on_mismatch() {
         let f = ReconFixture::new();
-        let restore = serde_json::from_value(serde_json::json!({"ANTHROPIC_MODEL":"old-model"}))
-            .unwrap();
+        let restore =
+            serde_json::from_value(serde_json::json!({"ANTHROPIC_MODEL":"old-model"})).unwrap();
         f.write_settings(
             r#"{"env":{"ANTHROPIC_MODEL":"deepseek","ANTHROPIC_BASE_URL":"https://api.deepseek.com","KEEP":"yes"}}"#,
         );
@@ -1410,7 +1432,10 @@ mod tests {
         let f = ReconFixture::new();
         f.write_settings(r#"{"env":{"ANTHROPIC_BASE_URL":"https://api.deepseek.com"}}"#);
         f.write_global(r#"{"oauthAccount":{"emailAddress":"new-user@x.com"}}"#);
-        f.write_api_state("deepseek@x.com", serde_json::from_value(serde_json::json!({})).unwrap());
+        f.write_api_state(
+            "deepseek@x.com",
+            serde_json::from_value(serde_json::json!({})).unwrap(),
+        );
 
         // 第一次 — 执行调和。
         f.provider.reconcile_api_external_login().unwrap();
