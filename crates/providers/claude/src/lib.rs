@@ -156,8 +156,42 @@ impl ClaudeProvider {
         Ok(account)
     }
 
+    /// 若用户在自定义 API 模式下通过 Claude Code `/login` 外部登录了新账号，
+    /// 自动退出 API 模式（恢复 settings.json 并删除 .subswap-api.json 哨兵文件），
+    /// 让后续流程正常导入新登录的 OAuth 账号。
+    ///
+    /// 调和仅在两个用户入口调用（[`Self::import_active`] 和 [`Self::sync_active_metadata`]），
+    /// daemon 保活与 quota 自愈等内部路径不触发，避免意外改动状态。
+    ///
+    /// 操作顺序：先恢复 settings.json，后删除哨兵文件。恢复失败则哨兵保留，下次入口重试。
+    fn reconcile_api_external_login(&self) -> Result<()> {
+        // 不在 API 模式则无需调和。
+        let Some(api_state) = read_api_state(&api_state_path(&self.claude_home))? else {
+            return Ok(());
+        };
+        // 无 live oauthAccount（用户已登出），保持 API 模式不动。
+        let Some(oauth) = read_oauth_account(&global_config_path(&self.claude_home))? else {
+            return Ok(());
+        };
+        // live oauthAccount 与 API 哨兵一致，无外部登录。
+        if oauth.email_address == api_state.account_id {
+            return Ok(());
+        }
+        tracing::info!(
+            api_account = %api_state.account_id,
+            oauth_account = %oauth.email_address,
+            "检测到 API 模式下外部 Claude Code /login，自动退出 API 模式"
+        );
+        // 先恢复 settings.json（失败则哨兵保留，下次重试）。
+        restore_oauth_env_in_settings(&settings_path(&self.claude_home), &api_state.restore_env)?;
+        // 后删除哨兵文件。
+        remove_api_state(&api_state_path(&self.claude_home))?;
+        Ok(())
+    }
+
     /// 把当前 `~/.claude` 下激活的账号导入为 subswap 管理的账号。
     pub fn import_active(&self, label_hint: Option<String>) -> Result<Account> {
+        self.reconcile_api_external_login()?;
         if let Some(account) = self.active_api_account()? {
             return Ok(account);
         }
@@ -172,6 +206,7 @@ impl ClaudeProvider {
 
     /// 仅同步当前 Claude 账号的非敏感元数据,不读写 keyring。
     pub fn sync_active_metadata(&self, label_hint: Option<String>) -> Result<Account> {
+        self.reconcile_api_external_login()?;
         if let Some(account) = self.active_api_account()? {
             return Ok(account);
         }
@@ -1229,5 +1264,141 @@ mod tests {
             provider.active_account_id().unwrap(),
             Some(AccountId("active@x.com".into()))
         );
+    }
+
+    // ── reconcile_api_external_login 测试 ──
+
+    /// 准备 reconcile 测试的公共 fixture。
+    struct ReconFixture {
+        tmp: tempfile::TempDir,
+        home: PathBuf,
+        provider: ClaudeProvider,
+    }
+
+    impl ReconFixture {
+        fn new() -> Self {
+            use subswap_core::FileStore;
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path().join("claude");
+            std::fs::create_dir_all(&home).unwrap();
+            let provider = ClaudeProvider {
+                store: Arc::new(FileStore::new(tmp.path().join("creds.json"))),
+                registry: Arc::new(AccountRegistry::new(tmp.path().join("registry.toml"))),
+                claude_home: home.clone(),
+            };
+            Self { tmp, home, provider }
+        }
+
+        fn write_settings(&self, json: &str) {
+            std::fs::write(settings_path(&self.home), json).unwrap();
+        }
+
+        fn write_global(&self, json: &str) {
+            std::fs::write(global_config_path(&self.home), json).unwrap();
+        }
+
+        fn write_api_state(&self, account_id: &str, restore_env: serde_json::Map<String, serde_json::Value>) {
+            write_api_state(
+                &api_state_path(&self.home),
+                &ApiState {
+                    account_id: account_id.into(),
+                    restore_env,
+                },
+            )
+            .unwrap();
+        }
+
+        fn api_state_exists(&self) -> bool {
+            api_state_path(&self.home).exists()
+        }
+
+        fn settings_contains_key(&self, key: &str) -> bool {
+            let v = read_settings(&settings_path(&self.home)).unwrap();
+            v.get("env")
+                .and_then(|e| e.get(key))
+                .is_some()
+        }
+    }
+
+    #[test]
+    fn reconcile_skips_when_not_in_api_mode() {
+        let f = ReconFixture::new();
+        f.write_settings(r#"{"env":{"ANTHROPIC_MODEL":"old"}}"#);
+        f.write_global(r#"{"oauthAccount":{"emailAddress":"a@x.com"}}"#);
+
+        f.provider.reconcile_api_external_login().unwrap();
+
+        // 没有哨兵文件 → 什么都不动。
+        assert!(!f.api_state_exists());
+        assert!(f.settings_contains_key("ANTHROPIC_MODEL"));
+    }
+
+    #[test]
+    fn reconcile_skips_when_api_matches_oauth() {
+        let f = ReconFixture::new();
+        f.write_settings(r#"{"env":{"ANTHROPIC_BASE_URL":"https://api.deepseek.com","ANTHROPIC_MODEL":"deepseek"}}"#);
+        f.write_global(r#"{"oauthAccount":{"emailAddress":"deepseek@x.com"}}"#);
+        f.write_api_state("deepseek@x.com", serde_json::Map::new());
+
+        f.provider.reconcile_api_external_login().unwrap();
+
+        // account_id 与 oauth email 一致 → 不动。
+        assert!(f.api_state_exists());
+        assert!(f.settings_contains_key("ANTHROPIC_BASE_URL"));
+    }
+
+    #[test]
+    fn reconcile_skips_when_oauth_absent() {
+        let f = ReconFixture::new();
+        f.write_settings(r#"{"env":{"ANTHROPIC_BASE_URL":"https://api.deepseek.com"}}"#);
+        f.write_global(r#"{"projects":[]}"#); // 无 oauthAccount
+        f.write_api_state("deepseek@x.com", serde_json::Map::new());
+
+        f.provider.reconcile_api_external_login().unwrap();
+
+        // 无 live oauthAccount → 保持 API 模式。
+        assert!(f.api_state_exists());
+        assert!(f.settings_contains_key("ANTHROPIC_BASE_URL"));
+    }
+
+    #[test]
+    fn reconcile_restores_and_deletes_on_mismatch() {
+        let f = ReconFixture::new();
+        let restore = serde_json::from_value(serde_json::json!({"ANTHROPIC_MODEL":"old-model"}))
+            .unwrap();
+        f.write_settings(
+            r#"{"env":{"ANTHROPIC_MODEL":"deepseek","ANTHROPIC_BASE_URL":"https://api.deepseek.com","KEEP":"yes"}}"#,
+        );
+        f.write_global(r#"{"oauthAccount":{"emailAddress":"new-user@x.com"}}"#);
+        f.write_api_state("deepseek@x.com", restore);
+
+        f.provider.reconcile_api_external_login().unwrap();
+
+        // 哨兵已删除。
+        assert!(!f.api_state_exists());
+        // 受管字段恢复为切入 API 前的值。
+        let settings = read_settings(&settings_path(&f.home)).unwrap();
+        assert_eq!(settings["env"]["ANTHROPIC_MODEL"], "old-model");
+        // 非受管字段保留。
+        assert_eq!(settings["env"]["KEEP"], "yes");
+        // API 专用字段已移除。
+        assert!(settings["env"].get("ANTHROPIC_BASE_URL").is_none());
+    }
+
+    #[test]
+    fn reconcile_idempotent_on_retry() {
+        let f = ReconFixture::new();
+        f.write_settings(r#"{"env":{"ANTHROPIC_BASE_URL":"https://api.deepseek.com"}}"#);
+        f.write_global(r#"{"oauthAccount":{"emailAddress":"new-user@x.com"}}"#);
+        f.write_api_state("deepseek@x.com", serde_json::from_value(serde_json::json!({})).unwrap());
+
+        // 第一次 — 执行调和。
+        f.provider.reconcile_api_external_login().unwrap();
+        assert!(!f.api_state_exists());
+        assert!(!f.settings_contains_key("ANTHROPIC_BASE_URL"));
+
+        // 第二次 — 无哨兵文件，直接短路返回 Ok。
+        f.provider.reconcile_api_external_login().unwrap();
+        assert!(!f.api_state_exists());
     }
 }
