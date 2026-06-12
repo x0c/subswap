@@ -46,6 +46,12 @@
    可用候选时才降级，禁止从未知状态盲切到另一个未知状态。
 8. **active 查询仍在加载兜底**：CLI 渐进刷新期间，如果 active 仍在 loading，而候选账号已经返回明确可用 quota，
    立即切换；如果尚无明确可用候选，则继续等待后续 quota 更新，不提前定案。
+8.5. **新激活沉淀宽限（settle grace）**：account 刚成为 active（`last_used_at` 距今 < `auto_swap.settle_grace_ms`，
+   默认 60s；手动 swap 与自动切换都刷新 `last_used_at`）时，**不因第 7、8 条这类「loading / 查询失败」的不确定
+   状态把它切走**——直接 `NoOp` 等待 quota 沉淀。动机：否则用户手动 `swap` 到某账号后，仅仅运行一次 `subswap`
+   （默认入口会跑同一套 `decide`）或被 daemon 撞上 quota 冷启动正在 loading，就会被立刻顶回别的账号，违背显式选择。
+   **只挡不确定状态**：账号若已明确达到 threshold / `Exhausted`（第 2 步确定性数据），即使在宽限期内仍按正常逻辑切走。
+   宽限期需覆盖一次冷 quota 查询（含重试退避）的耗时。改默认值只动 `crates/core/src/defaults.rs::AUTO_SWAP_SETTLE_GRACE_MS`。
 9. **`manual_only` 强制边界**：`Account.extra.manual_only == true` 的账号只能由用户手动激活；
    active 命中时立即 `NoOp`，即使 quota 仍在 loading / 查询失败也不自动切走；inactive 时从所有候选路径排除。
    Claude 自定义 API 使用此语义，因为它没有可比较的订阅 quota。
@@ -136,6 +142,7 @@ Codex **不需要**这个机制：所有账号的 access_token 最终都流过 `
 enabled = true                  # 总开关
 # threshold = <0.0~1.0>         # 阈值触发上限，默认见 defaults.rs
 cooldown_seconds = 300          # 切换冷却
+# settle_grace_ms = 60000       # 新激活账号沉淀宽限：此窗口内不因 loading/查询失败被切走
 poll_interval_seconds = 60      # daemon 轮询周期
 allow_unknown = false           # 是否允许选择 status=Unknown 的候选
 max_flap_per_5min = 3           # 抖动上限，超过进入 Degraded

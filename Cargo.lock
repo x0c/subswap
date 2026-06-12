@@ -1417,7 +1417,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "subswap-cli"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1442,7 +1442,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-core"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1462,7 +1462,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-daemon"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1477,7 +1477,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-provider-claude"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1494,7 +1494,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-provider-codex"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "anyhow",
  "async-trait",

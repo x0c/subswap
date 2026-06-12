@@ -90,6 +90,7 @@ pub async fn run() -> Result<()> {
             enabled: snapshot_settings.auto_swap.enabled,
             threshold: snapshot_settings.auto_swap.threshold,
             allow_unknown: false,
+            settle_grace_ms: snapshot_settings.auto_swap.settle_grace_ms,
         };
         if let Err(e) = run_cycle(&providers, &claude, &audit, &mut state, &policy).await {
             tracing::warn!(err = %e, "daemon cycle failed; will retry next interval");

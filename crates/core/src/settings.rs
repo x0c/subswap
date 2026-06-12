@@ -51,6 +51,9 @@ pub struct AutoSwap {
     pub threshold: f64,
     /// 切换后冷却期（毫秒）：刚被切走/切到的账号短期不再选回，避免抖动。
     pub cooldown_ms: i64,
+    /// 新激活账号沉淀宽限期（毫秒）：刚 active 的账号在此窗口内不因 quota
+    /// loading / 拉取失败被自动切走，避免顶掉用户刚做的手动选择。
+    pub settle_grace_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -99,6 +102,7 @@ impl Default for AutoSwap {
             enabled: true,
             threshold: defaults::AUTO_SWAP_THRESHOLD,
             cooldown_ms: defaults::AUTO_SWAP_COOLDOWN_MS,
+            settle_grace_ms: defaults::AUTO_SWAP_SETTLE_GRACE_MS,
         }
     }
 }
@@ -223,6 +227,10 @@ mod tests {
     fn defaults_match_compile_time_constants() {
         let s = Settings::default();
         assert_eq!(s.auto_swap.threshold, defaults::AUTO_SWAP_THRESHOLD);
+        assert_eq!(
+            s.auto_swap.settle_grace_ms,
+            defaults::AUTO_SWAP_SETTLE_GRACE_MS
+        );
         assert_eq!(s.daemon.poll_interval_ms, defaults::DAEMON_POLL_INTERVAL_MS);
         assert_eq!(
             s.daemon.idle_threshold_ms,

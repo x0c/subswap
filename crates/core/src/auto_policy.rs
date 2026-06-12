@@ -21,6 +21,9 @@ pub struct PolicyConfig {
     pub threshold: f64,
     /// 是否允许把 status=Unknown 的账号作为候选。默认 false（保守）。
     pub allow_unknown: bool,
+    /// 新激活账号沉淀宽限期（毫秒）。active 账号 `last_used_at` 距今小于此值时，
+    /// 不因 quota loading / 拉取失败这类不确定状态把它自动切走（避免顶掉手动选择）。
+    pub settle_grace_ms: i64,
 }
 
 impl Default for PolicyConfig {
@@ -30,6 +33,7 @@ impl Default for PolicyConfig {
             enabled: s.auto_swap.enabled,
             threshold: s.auto_swap.threshold,
             allow_unknown: false,
+            settle_grace_ms: s.auto_swap.settle_grace_ms,
         }
     }
 }
@@ -120,7 +124,22 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
 
     // 1. active 账号自身额度尚未可用时，若有额度明确可用的其他账号则切走。
     // 没有明确可用候选时才降级，避免从未知切到未知。
+    //
+    // 沉淀宽限：账号刚 active（手动 swap 或自动切换）时，quota 冷启动还没拉回来属
+    // 正常现象。此窗口内不因「loading / 拉取失败」这类**不确定状态**把它切走，
+    // 否则用户手动切到某账号后，仅仅运行一次 `subswap` 或被 daemon 撞上正在 loading，
+    // 就会被立刻顶走。已明确耗尽 / 达到 threshold 的**确定性**切换不受此限（见第 2 步）。
     if let Some(a) = active {
+        if recently_activated(&a.account, config.settle_grace_ms) {
+            if a.fetch_state.is_loading() || a.fetch_state.failed().is_some() {
+                return PolicyDecision::NoOp {
+                    reason: format!(
+                        "{} just activated; settling before reacting to uncertain quota",
+                        a.account.id
+                    ),
+                };
+            }
+        }
         if a.fetch_state.is_loading() {
             if let Some(best) = best_known_available_candidate(snapshot, &a.account.id, config) {
                 return PolicyDecision::Swap {
@@ -271,6 +290,19 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
         from: active_id,
         to: best.account.id.clone(),
         reason,
+    }
+}
+
+/// 账号是否在沉淀宽限期内刚被激活。`last_used_at` 在 `set_active` 时刷新，
+/// 因此手动 swap 与自动切换都会更新它。`None`（从未记录）视为「非新激活」，
+/// 保持对历史数据与单测的向后兼容。`grace_ms <= 0` 时关闭该保护。
+fn recently_activated(account: &Account, grace_ms: i64) -> bool {
+    if grace_ms <= 0 {
+        return false;
+    }
+    match account.last_used_at {
+        Some(t) => (Utc::now() - t).num_milliseconds() < grace_ms,
+        None => false,
     }
 }
 
@@ -511,6 +543,80 @@ mod tests {
         };
         let d = decide(&snap, &PolicyConfig::default());
         assert!(matches!(d, PolicyDecision::Swap { to, .. } if to.0 == "b"));
+    }
+
+    /// 刚激活的账号 quota 还在 loading 时，沉淀宽限期内不应被自动切走
+    /// （否则手动 swap 会被一次 `subswap` 或 daemon 立刻顶掉）。
+    #[test]
+    fn just_activated_loading_account_is_not_swapped_away() {
+        let mut a = mk_awq("a", true, 0, QuotaStatus::Unknown);
+        a.quotas.clear();
+        a.fetch_state = QuotaFetchState::Loading;
+        a.account.last_used_at = Some(Utc::now());
+        let snap = ProviderSnapshot {
+            provider: "claude".into(),
+            accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
+        };
+        let cfg = PolicyConfig {
+            settle_grace_ms: 60_000,
+            ..PolicyConfig::default()
+        };
+        let d = decide(&snap, &cfg);
+        assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
+    }
+
+    /// 刚激活的账号 quota 拉取失败时，同样在宽限期内不被切走。
+    #[test]
+    fn just_activated_failed_account_is_not_swapped_away() {
+        let mut a = mk_awq("a", true, 0, QuotaStatus::Unknown);
+        a.fetch_state = QuotaFetchState::Failed("timeout".into());
+        a.account.last_used_at = Some(Utc::now());
+        let snap = ProviderSnapshot {
+            provider: "claude".into(),
+            accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
+        };
+        let cfg = PolicyConfig {
+            settle_grace_ms: 60_000,
+            ..PolicyConfig::default()
+        };
+        let d = decide(&snap, &cfg);
+        assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
+    }
+
+    /// 宽限期只保护「不确定状态」；账号已明确达到 threshold 时仍按确定性数据切走。
+    #[test]
+    fn just_activated_but_exhausted_account_still_swaps() {
+        let mut a = mk_awq("a", true, 99, QuotaStatus::Warn);
+        a.account.last_used_at = Some(Utc::now());
+        let snap = ProviderSnapshot {
+            provider: "claude".into(),
+            accounts: vec![a, mk_awq("b", false, 10, QuotaStatus::Ok)],
+        };
+        let cfg = PolicyConfig {
+            settle_grace_ms: 60_000,
+            ..PolicyConfig::default()
+        };
+        let d = decide(&snap, &cfg);
+        assert!(matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "b"), "got {d:?}");
+    }
+
+    /// 宽限期过后，loading / 失败的 active 账号恢复可被切走的逃生行为。
+    #[test]
+    fn loading_account_swaps_after_grace_window_elapses() {
+        let mut a = mk_awq("a", true, 0, QuotaStatus::Unknown);
+        a.quotas.clear();
+        a.fetch_state = QuotaFetchState::Loading;
+        a.account.last_used_at = Some(Utc::now() - chrono::Duration::seconds(120));
+        let snap = ProviderSnapshot {
+            provider: "claude".into(),
+            accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
+        };
+        let cfg = PolicyConfig {
+            settle_grace_ms: 60_000,
+            ..PolicyConfig::default()
+        };
+        let d = decide(&snap, &cfg);
+        assert!(matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "b"), "got {d:?}");
     }
 
     #[test]
