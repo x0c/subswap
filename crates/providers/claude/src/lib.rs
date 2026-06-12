@@ -306,13 +306,16 @@ impl ClaudeProvider {
         Ok(())
     }
 
-    /// 读取当前激活账号的实时凭证：实体文件优先，macOS 上回落 Claude Code 钥匙串 item。
-    /// 动机：macOS 上 Claude Code 把凭证写进钥匙串、不写 `~/.claude/.credentials.json`。
+    /// 读取当前激活账号的实时凭证。
+    ///
+    /// macOS 上 Claude Code 的真实 live 凭证在钥匙串，`.credentials.json` 可能只是 subswap
+    /// 上次切换留下的陈旧副本，因此必须优先读钥匙串。
     fn read_live_credentials(&self) -> Result<CredentialsFile> {
-        match read_credentials(&credentials_path(&self.claude_home)) {
-            Ok(creds) => Ok(creds),
-            Err(file_err) => read_claude_code_keychain().ok_or(file_err),
+        #[cfg(target_os = "macos")]
+        if let Some(creds) = read_claude_code_keychain() {
+            return Ok(creds);
         }
+        read_credentials(&credentials_path(&self.claude_home))
     }
 
     /// 当前 Claude Code 激活账号的 id(取自 `~/.claude.json` 的 `oauthAccount`)。不读 keyring。
@@ -556,6 +559,27 @@ impl Provider for ClaudeProvider {
         if is_api_account(&account) {
             return self.activate_api(account).await;
         }
+        // 重复切换当前账号时绝不能从 store 把陈旧 token 写回 live。Claude Code 的 /login 或
+        // 自动轮换可能已经更新钥匙串；此时只回灌最新 live 凭证并保持现状。
+        if self.active_account_id()?.as_ref() == Some(id) {
+            let claude_home = self.claude_home.clone();
+            let registry = self.registry.clone();
+            let store = self.store.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = capture_live_into_store(
+                    store.as_ref(),
+                    &registry,
+                    &claude_home,
+                    prefer_keychain_for_live_capture(),
+                ) {
+                    tracing::warn!(err = %e, "claude active-account capture failed; leaving live credentials unchanged");
+                }
+            })
+            .await
+            .map_err(|e| Error::Provider(format!("spawn_blocking join failed: {e}")))?;
+            tracing::info!(account = %id, "Claude account already active; live credentials preserved");
+            return Ok(());
+        }
         let mut target_creds = self.load_credentials(id)?;
         let target_oauth_account: OauthAccount = serde_json::from_value(
             account.extra.get("oauth_account").cloned().ok_or_else(|| {
@@ -754,16 +778,12 @@ impl ClaudeProvider {
         &self,
         id: &AccountId,
     ) -> Result<Option<CredentialsFile>> {
-        let creds = match read_credentials(&credentials_path(&self.claude_home)) {
-            Ok(creds) => creds,
-            Err(_) => return Ok(None),
-        };
         let Some(oauth_account) = read_oauth_account(&global_config_path(&self.claude_home))?
         else {
             return Ok(None);
         };
         if oauth_account.email_address == id.0 {
-            return Ok(Some(creds));
+            return self.read_live_credentials().map(Some);
         }
         Ok(None)
     }

@@ -223,11 +223,17 @@ Claude 那边的保活由 subswap daemon (M4) 自己做，因为非活跃 Claude
    owner 账号、回写其 store（`capture_live_into_store`，Codex/Claude 各一份）。否则切走的账号
    store 副本会停在旧 token，下次切回写回旧 token → 作废。所有 swap（手动 + daemon 自动）唯一
    经过 `activate`，一处生效覆盖两条路径；找不到 owner 直接跳过（best-effort，不阻塞 swap）。
+   Claude 重复切换当前账号时只执行回灌并直接返回，禁止先读 store 再把陈旧 token 覆盖回 live。
 2. **绝不轮换 active 账号 token（仅 Claude，Codex 本就不刷）**：
    - `refresh_if_near_expiry` 开头加 active 守卫（`active_account_id()` 命中即返回 `Ok(false)`），
      daemon 后台保活只对 parked 账号生效。
    - `query_quota` 401 自愈仅当凭证来自 store（parked）才刷新；来自 live（active）直接返回错误，
      交还 Claude Code 自刷。
+   - macOS 的 active 凭证读取必须优先 Claude Code Keychain；`.credentials.json` 只是兼容副本，
+     不能用它覆盖或查询当前账号。
+
+Quota 查询遇到 `401` / `403` / `429` 时不重试；尤其 `429` 连续重试会延长 `quota loading`
+并加重服务端限流。
 
 > 改动 `activate` / keepalive / `query_quota` 自愈逻辑时务必维持本约束，别让 subswap 在
 > 后台刷 active 账号、或把陈旧 token 写回 live。
