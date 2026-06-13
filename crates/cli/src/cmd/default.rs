@@ -3,7 +3,7 @@
 //! 流程：sync_local_active → 先渲染骨架 → 并发拉 quota 渐进刷新 → per-provider AutoSwapPolicy → 最终渲染。
 //! 详见 docs/design/ARCHITECTURE.md §3.1。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, IsTerminal};
 
 use anyhow::Result;
@@ -159,6 +159,15 @@ struct QuotaUpdate {
     result: std::result::Result<Vec<Quota>, String>,
 }
 
+/// 渐进式自动切换的运行内状态:额度是边查边回的,不能查到第一份就把决策锁死。
+#[derive(Default)]
+struct AutoSwapProgress {
+    /// 本次运行内每个 provider 已切到的目标,避免重复 activate(重写凭证)。
+    activated_targets: HashMap<String, AccountId>,
+    /// 本次运行内主动离开过的账号,「只升级、不回头」防止 A→B→A 抖动。
+    abandoned: HashMap<String, HashSet<AccountId>>,
+}
+
 async fn fill_quotas_progressively(
     registry: &ProviderRegistry,
     audit: &AuditLog,
@@ -189,7 +198,7 @@ async fn fill_quotas_progressively(
         return Ok(());
     }
 
-    let mut decided_providers = HashSet::new();
+    let mut progress = AutoSwapProgress::default();
     let (tx, mut rx) = tokio::sync::mpsc::channel(jobs.len());
     for (provider, account_id) in jobs {
         let p = registry.get(&provider)?;
@@ -219,7 +228,7 @@ async fn fill_quotas_progressively(
             &provider,
             cfg,
             auto_lines,
-            &mut decided_providers,
+            &mut progress,
         )
         .await?;
         if let Some(renderer) = renderer.as_deref_mut() {
@@ -230,6 +239,15 @@ async fn fill_quotas_progressively(
     Ok(())
 }
 
+/// 每收到一份额度就对该 provider 重判一次,而不是查到第一份就锁死决策。
+///
+/// 这样做是为了修掉一个时序竞态:渐进式拉额度时,更优的候选可能还没查回来,
+/// 此时只能先切到一个「逃生候选」(查询失败/loading 时的兜底);等更优候选的额度
+/// 落地后,本函数会再判一次并升级过去——一次 `subswap` 内自我纠正,无需用户再跑一遍。
+///
+/// 防抖动:`auto_decide` 只在当前 active 确实不行(耗尽/超阈值/loading/失败)时才返回
+/// Swap,所以切到一个真正可用的号后会自然 NoOp;再叠加 `abandoned`「不切回已离开的号」,
+/// 保证决策随额度补全单调收敛,不会 A→B→A 来回顶。
 async fn try_auto_swap_ready_provider(
     registry: &ProviderRegistry,
     audit: &AuditLog,
@@ -237,11 +255,8 @@ async fn try_auto_swap_ready_provider(
     provider: &str,
     cfg: &PolicyConfig,
     auto_lines: &mut Vec<AutoLine>,
-    decided_providers: &mut HashSet<String>,
+    progress: &mut AutoSwapProgress,
 ) -> Result<()> {
-    if decided_providers.contains(provider) {
-        return Ok(());
-    }
     let Some(index) = snapshots.iter().position(|snap| snap.provider == provider) else {
         return Ok(());
     };
@@ -249,53 +264,82 @@ async fn try_auto_swap_ready_provider(
     if snap.accounts.is_empty() {
         return Ok(());
     }
-    let has_loading = snap.accounts.iter().any(|a| a.fetch_state.is_loading());
-    let decision = auto_decide(snap, cfg);
-    if has_loading && !matches!(decision, PolicyDecision::Swap { .. }) {
-        return Ok(());
-    }
-    decided_providers.insert(provider.to_string());
 
-    match decision {
-        PolicyDecision::Swap { to, .. } => {
-            let p = registry.get(provider)?;
-            let success_text = auto_swap_success_text(snap, &to);
-            match p.activate(&to).await {
-                Ok(()) => {
-                    auto_lines.push(AutoLine {
-                        provider: provider.to_string(),
-                        text: success_text,
-                        kind: AutoLineKind::Info,
-                    });
-                    audit.append(AuditEvent::ok("auto_swap", provider, Some(to.0.as_str())));
-                    mark_active(snapshots, provider, &to);
-                }
-                Err(e) => {
-                    auto_lines.push(AutoLine {
-                        provider: provider.to_string(),
-                        text: format!("auto: failed ({})", compact_error(&e.to_string())),
-                        kind: AutoLineKind::Error,
-                    });
-                    audit.append(AuditEvent::err(
-                        "auto_swap",
-                        provider,
-                        Some(to.0.as_str()),
-                        &e.to_string(),
-                    ));
-                }
-            }
-        }
+    let (from, to) = match auto_decide(snap, cfg) {
+        PolicyDecision::Swap { from, to, .. } => (from, to),
         PolicyDecision::Degraded { reason } => {
             tracing::debug!(
                 provider=%provider,
                 reason=%compact_policy_reason(&reason),
                 "auto swap degraded"
             );
+            return Ok(());
         }
-        PolicyDecision::NoOp { .. } => {} // 沉默是金
+        // 沉默是金。额度可能还在补,下一份回来时会重判,不在此处锁死。
+        PolicyDecision::NoOp { .. } => return Ok(()),
+    };
+
+    // 已经切到过这个目标:无需重复 activate(重写凭证)。
+    if progress.activated_targets.get(provider) == Some(&to) {
+        return Ok(());
+    }
+    // 只升级、不回头:本次运行内主动离开过的账号不再切回,避免抖动。
+    if progress
+        .abandoned
+        .get(provider)
+        .is_some_and(|left| left.contains(&to))
+    {
+        return Ok(());
+    }
+
+    let p = registry.get(provider)?;
+    let success_text = auto_swap_success_text(snap, &to);
+    match p.activate(&to).await {
+        Ok(()) => {
+            set_auto_line(auto_lines, provider, success_text, AutoLineKind::Info);
+            audit.append(AuditEvent::ok("auto_swap", provider, Some(to.0.as_str())));
+            mark_active(snapshots, provider, &to);
+            if let Some(from) = from {
+                progress
+                    .abandoned
+                    .entry(provider.to_string())
+                    .or_default()
+                    .insert(from);
+            }
+            progress.activated_targets.insert(provider.to_string(), to);
+        }
+        Err(e) => {
+            set_auto_line(
+                auto_lines,
+                provider,
+                format!("auto: failed ({})", compact_error(&e.to_string())),
+                AutoLineKind::Error,
+            );
+            audit.append(AuditEvent::err(
+                "auto_swap",
+                provider,
+                Some(to.0.as_str()),
+                &e.to_string(),
+            ));
+        }
     }
 
     Ok(())
+}
+
+/// 同一 provider 的自动切换提示原地替换,保证最终只展示一行最新结果
+/// (例如先切逃生号、再升级到更优号时,只显示升级后的那条)。
+fn set_auto_line(auto_lines: &mut Vec<AutoLine>, provider: &str, text: String, kind: AutoLineKind) {
+    if let Some(line) = auto_lines.iter_mut().find(|l| l.provider == provider) {
+        line.text = text;
+        line.kind = kind;
+    } else {
+        auto_lines.push(AutoLine {
+            provider: provider.to_string(),
+            text,
+            kind,
+        });
+    }
 }
 
 fn apply_quota_update(
@@ -418,6 +462,8 @@ mod tests {
         quotas: HashMap<String, Vec<Quota>>,
         wait_for_quota: Option<Arc<Notify>>,
         wait_by_account: HashMap<String, Arc<Notify>>,
+        // 这些账号的 quota 查询返回 Err,模拟拉取失败 → fetch_state=Failed。
+        fail_accounts: HashSet<String>,
         activated: mpsc::UnboundedSender<(String, String)>,
     }
 
@@ -449,6 +495,13 @@ mod tests {
                 wait_for_quota.notified().await;
             } else if let Some(wait_for_quota) = &self.wait_for_quota {
                 wait_for_quota.notified().await;
+            }
+            if self.fail_accounts.contains(&id.0) {
+                // 用非重试错误(429),让失败快速落地为 Failed,不被 query_quota_with_retry
+                // 的指数退避拖慢——否则测试里 escape 的失败状态会迟迟不到。
+                return Err(subswap_core::Error::QuotaFetch(
+                    "usage returned 429 too many requests".into(),
+                ));
             }
             Ok(self.quotas.get(&id.0).cloned().unwrap_or_default())
         }
@@ -502,6 +555,7 @@ mod tests {
             quotas: HashMap::new(),
             wait_for_quota: Some(slow_claude.clone()),
             wait_by_account: HashMap::new(),
+            fail_accounts: HashSet::new(),
             activated: activated_tx.clone(),
         }));
         registry.register(Arc::new(MockProvider {
@@ -513,6 +567,7 @@ mod tests {
             quotas: codex_quotas,
             wait_for_quota: None,
             wait_by_account: HashMap::new(),
+            fail_accounts: HashSet::new(),
             activated: activated_tx,
         }));
 
@@ -595,6 +650,7 @@ mod tests {
             quotas,
             wait_for_quota: None,
             wait_by_account,
+            fail_accounts: HashSet::new(),
             activated: activated_tx,
         }));
 
@@ -642,6 +698,111 @@ mod tests {
             .accounts
             .iter()
             .any(|account| account.account.id.0 == "candidate" && account.account.active));
+        assert_eq!(auto_lines.len(), 1);
+        assert_eq!(auto_lines[0].provider, "claude");
+    }
+
+    /// 复现并验证修复:active 已耗尽时,先到的「逃生候选」(escape,额度查询失败)
+    /// 被抢先切上;待真正可用的更优候选额度落地后,应在同一次运行内自动升级过去,
+    /// 且最终只保留一条提示行。修复前会锁死在 escape,需用户再跑一次 `subswap` 才纠正。
+    #[tokio::test]
+    async fn upgrades_from_escape_candidate_when_better_quota_arrives() {
+        let (activated_tx, mut activated_rx) = mpsc::unbounded_channel();
+        // better 候选额度拉取放慢,确保 active 先耗尽、escape 先被选中。
+        let slow_better = Arc::new(Notify::new());
+
+        let mut quotas = HashMap::new();
+        // active 已耗尽 → 必须切走。
+        quotas.insert(
+            "active".into(),
+            vec![quota("claude", "active", 100, QuotaStatus::Exhausted)],
+        );
+        // better 真正可用,但额度回得慢。
+        quotas.insert(
+            "better".into(),
+            vec![quota("claude", "better", 0, QuotaStatus::Ok)],
+        );
+        // escape 的 quota 查询失败 → fetch_state=Failed。allow_unknown=false 下它不是常规
+        // viable 候选,只能走 auto_decide 的「失败候选逃生」兜底被先切上,随后被 better 顶替。
+        let mut wait_by_account = HashMap::new();
+        wait_by_account.insert("better".into(), slow_better.clone());
+        let mut fail_accounts = HashSet::new();
+        fail_accounts.insert("escape".to_string());
+
+        let mut registry = ProviderRegistry::new();
+        registry.register(Arc::new(MockProvider {
+            id: "claude",
+            accounts: vec![
+                account("claude", "active", true),
+                account("claude", "escape", false),
+                account("claude", "better", false),
+            ],
+            quotas,
+            wait_for_quota: None,
+            wait_by_account,
+            fail_accounts,
+            activated: activated_tx,
+        }));
+
+        let mut snapshots = build_loading_snapshots(&registry).await;
+        let cfg = PolicyConfig {
+            enabled: true,
+            threshold: 0.98,
+            allow_unknown: false,
+            // 关闭沉淀宽限:否则切到 escape(Failed)后会被 settle-grace 拦住升级。
+            settle_grace_ms: 0,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let audit = AuditLog::new(tmp.path().join("audit.log"));
+        let mut auto_lines = Vec::new();
+
+        let handle = tokio::spawn(async move {
+            let cache_path = tmp.path().join("quota_cache.json");
+            let _tmp = tmp;
+            fill_quotas_progressively(
+                &registry,
+                &audit,
+                &mut snapshots,
+                &cfg,
+                &mut auto_lines,
+                None,
+                &cache_path,
+            )
+            .await
+            .unwrap();
+            (snapshots, auto_lines)
+        });
+
+        // 第一跳:better 还在 loading,先切到 escape。
+        let first = tokio::time::timeout(Duration::from_millis(300), activated_rx.recv())
+            .await
+            .expect("escape candidate should activate first")
+            .expect("activation channel open");
+        assert_eq!(first, ("claude".to_string(), "escape".to_string()));
+
+        // better 额度落地 → 应升级到 better。
+        slow_better.notify_waiters();
+        let second = tokio::time::timeout(Duration::from_millis(300), activated_rx.recv())
+            .await
+            .expect("should upgrade to better candidate once its quota arrives")
+            .expect("activation channel open");
+        assert_eq!(second, ("claude".to_string(), "better".to_string()));
+
+        let (snapshots, auto_lines) = handle.await.unwrap();
+        let claude = snapshots
+            .iter()
+            .find(|snap| snap.provider == "claude")
+            .unwrap();
+        assert!(claude
+            .accounts
+            .iter()
+            .any(|a| a.account.id.0 == "better" && a.account.active));
+        // 升级后不再切回已离开的 escape / active。
+        assert!(claude
+            .accounts
+            .iter()
+            .all(|a| a.account.id.0 == "better" || !a.account.active));
+        // 多次切换只保留一条最新提示行。
         assert_eq!(auto_lines.len(), 1);
         assert_eq!(auto_lines[0].provider, "claude");
     }
