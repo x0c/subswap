@@ -152,7 +152,12 @@ fn render_row(awq: &AccountWithQuotas, index: usize, name_width: usize, color: b
     };
 
     if body.is_empty() {
-        format!("  {star} {num} {name}")
+        if awq.account.manual_only() {
+            let tag = style(color, "2", "custom");
+            format!("  {star} {num} {name}  {tag}")
+        } else {
+            format!("  {star} {num} {name}")
+        }
     } else {
         format!("  {star} {num} {name}  {body}")
     }
