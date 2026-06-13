@@ -169,12 +169,17 @@ impl ClaudeProvider {
         let Some(api_state) = read_api_state(&api_state_path(&self.claude_home))? else {
             return Ok(());
         };
+        // 旧版哨兵文件没有记录 oauth_email（account_id 是自定义 API ID 而非 OAuth 邮箱），
+        // 无可比较信息，跳过 reconcile 避免误判。
+        let Some(saved_email) = &api_state.oauth_email else {
+            return Ok(());
+        };
         // 无 live oauthAccount（用户已登出），保持 API 模式不动。
         let Some(oauth) = read_oauth_account(&global_config_path(&self.claude_home))? else {
             return Ok(());
         };
-        // live oauthAccount 与 API 哨兵一致，无外部登录。
-        if oauth.email_address == api_state.account_id {
+        // live oauthAccount 与切入 API 时记录的邮箱一致，无外部登录。
+        if &oauth.email_address == saved_email {
             return Ok(());
         }
         tracing::info!(
@@ -412,12 +417,23 @@ impl ClaudeProvider {
         let api_env = config.env(&api_key)?;
         let settings_path = settings_path(&self.claude_home);
         let state_path = api_state_path(&self.claude_home);
-        let restore_env = match read_api_state(&state_path)? {
-            Some(state) => state.restore_env,
+        let existing_state = read_api_state(&state_path)?;
+        let restore_env = match &existing_state {
+            Some(state) => state.restore_env.clone(),
             None => capture_managed_env(&read_settings(&settings_path)?),
         };
+        // 保留已知的 oauth_email（重复切入同一 API 账号时不丢失），首次切入则捕获当前值。
+        let oauth_email = existing_state
+            .and_then(|s| s.oauth_email)
+            .or_else(|| {
+                read_oauth_account(&global_config_path(&self.claude_home))
+                    .ok()
+                    .flatten()
+                    .map(|a| a.email_address)
+            });
         let state = ApiState {
             account_id: id.0.clone(),
+            oauth_email,
             restore_env,
         };
         let registry = self.registry.clone();
@@ -1342,10 +1358,20 @@ mod tests {
             account_id: &str,
             restore_env: serde_json::Map<String, serde_json::Value>,
         ) {
+            self.write_api_state_with_email(account_id, None, restore_env);
+        }
+
+        fn write_api_state_with_email(
+            &self,
+            account_id: &str,
+            oauth_email: Option<&str>,
+            restore_env: serde_json::Map<String, serde_json::Value>,
+        ) {
             write_api_state(
                 &api_state_path(&self.home),
                 &ApiState {
                     account_id: account_id.into(),
+                    oauth_email: oauth_email.map(str::to_string),
                     restore_env,
                 },
             )
@@ -1379,12 +1405,30 @@ mod tests {
     fn reconcile_skips_when_api_matches_oauth() {
         let f = ReconFixture::new();
         f.write_settings(r#"{"env":{"ANTHROPIC_BASE_URL":"https://api.deepseek.com","ANTHROPIC_MODEL":"deepseek"}}"#);
-        f.write_global(r#"{"oauthAccount":{"emailAddress":"deepseek@x.com"}}"#);
-        f.write_api_state("deepseek@x.com", serde_json::Map::new());
+        f.write_global(r#"{"oauthAccount":{"emailAddress":"alice@x.com"}}"#);
+        // oauth_email 与 live oauthAccount 一致 → 不动。
+        f.write_api_state_with_email("deepseek", Some("alice@x.com"), serde_json::Map::new());
 
         f.provider.reconcile_api_external_login().unwrap();
 
-        // account_id 与 oauth email 一致 → 不动。
+        assert!(f.api_state_exists());
+        assert!(f.settings_contains_key("ANTHROPIC_BASE_URL"));
+    }
+
+    /// 旧版哨兵文件没有 oauth_email 字段时，无法判断是否有外部登录，保守跳过。
+    /// 典型场景：用户有 DeepSeek 等自定义 API 账号（account_id = "deepseek"），
+    /// 同时 Claude Code OAuth 账号在 global.json 里，两者邮箱永远不等，不能用 account_id 比较。
+    #[test]
+    fn reconcile_skips_when_no_oauth_email_in_state() {
+        let f = ReconFixture::new();
+        f.write_settings(r#"{"env":{"ANTHROPIC_BASE_URL":"https://api.deepseek.com"}}"#);
+        f.write_global(r#"{"oauthAccount":{"emailAddress":"scottethanjfgg@gmail.com"}}"#);
+        // 旧格式：account_id 是自定义 ID，没有 oauth_email。
+        f.write_api_state("deepseek", serde_json::Map::new());
+
+        f.provider.reconcile_api_external_login().unwrap();
+
+        // 无 oauth_email → 跳过 reconcile，API 模式不动。
         assert!(f.api_state_exists());
         assert!(f.settings_contains_key("ANTHROPIC_BASE_URL"));
     }
@@ -1411,8 +1455,9 @@ mod tests {
         f.write_settings(
             r#"{"env":{"ANTHROPIC_MODEL":"deepseek","ANTHROPIC_BASE_URL":"https://api.deepseek.com","KEEP":"yes"}}"#,
         );
+        // live oauthAccount 变成了 new-user，与切入 API 时记录的 alice 不符 → 触发 reconcile。
         f.write_global(r#"{"oauthAccount":{"emailAddress":"new-user@x.com"}}"#);
-        f.write_api_state("deepseek@x.com", restore);
+        f.write_api_state_with_email("deepseek", Some("alice@x.com"), restore);
 
         f.provider.reconcile_api_external_login().unwrap();
 
@@ -1432,8 +1477,9 @@ mod tests {
         let f = ReconFixture::new();
         f.write_settings(r#"{"env":{"ANTHROPIC_BASE_URL":"https://api.deepseek.com"}}"#);
         f.write_global(r#"{"oauthAccount":{"emailAddress":"new-user@x.com"}}"#);
-        f.write_api_state(
-            "deepseek@x.com",
+        f.write_api_state_with_email(
+            "deepseek",
+            Some("alice@x.com"),
             serde_json::from_value(serde_json::json!({})).unwrap(),
         );
 

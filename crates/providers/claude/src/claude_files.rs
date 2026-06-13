@@ -70,6 +70,11 @@ pub struct OauthAccount {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiState {
     pub account_id: String,
+    /// 切入 API 模式时 `~/.claude/global.json` 里的 oauthAccount.emailAddress。
+    /// 用于检测是否有外部 /login 发生（与 account_id 无关，account_id 是自定义 ID 不是邮箱）。
+    /// `None` 表示旧版哨兵文件，无可用对比信息，跳过 reconcile。
+    #[serde(default)]
+    pub oauth_email: Option<String>,
     #[serde(default)]
     pub restore_env: serde_json::Map<String, serde_json::Value>,
 }
