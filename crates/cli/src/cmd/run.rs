@@ -52,6 +52,16 @@ pub async fn env(ctx: &AppContext, id_input: &str) -> Result<()> {
     let acc = resolve_account(ctx, id_input)?;
     warn_if_global_active(&acc);
 
+    // API 账号：直接打印 env vars，无需物化目录与 checkout 锁。
+    if acc.provider == "claude" {
+        if let Some(api_vars) = ctx.claude.api_run_env_vars(&acc.id)? {
+            for (k, v) in &api_vars {
+                println!("export {k}={}", shell_quote(v));
+            }
+            return Ok(());
+        }
+    }
+
     let paths = AppPaths::resolve()?;
     // 仍走一次 checkout 校验「当前没有其他隔离会话占用」；函数返回即释放锁。
     let checkout = Checkout::acquire(&paths.data_dir, &acc.provider, acc.id.0.as_str())?;
@@ -86,6 +96,16 @@ async fn launch_program(
     args: Vec<String>,
 ) -> Result<()> {
     warn_if_global_active(acc);
+
+    // API 账号：无 refresh token 轮换，直接注入 env vars，跳过 checkout 锁、物化与 absorb。
+    if acc.provider == "claude" {
+        if let Some(api_vars) = ctx.claude.api_run_env_vars(&acc.id)? {
+            println!("run → {}/{} (api-key isolated)", acc.provider, acc.id);
+            let status = spawn_isolated(program, args, api_vars).await?;
+            propagate_exit(status);
+            return Ok(());
+        }
+    }
 
     let paths = AppPaths::resolve()?;
     let checkout = Checkout::acquire(&paths.data_dir, &acc.provider, acc.id.0.as_str())?;
@@ -153,16 +173,16 @@ fn absorb(ctx: &AppContext, acc: &Account, env_dir: &Path) -> Result<()> {
 }
 
 /// 该 provider 隔离会话需要导出的环境变量。
-fn env_vars(provider: &str, env_dir: &Path) -> Vec<(&'static str, String)> {
+fn env_vars(provider: &str, env_dir: &Path) -> Vec<(String, String)> {
     let dir = env_dir.to_string_lossy().into_owned();
     match provider {
-        "codex" => vec![("CODEX_HOME", dir)],
+        "codex" => vec![("CODEX_HOME".into(), dir)],
         "claude" => {
-            let mut v = vec![("CLAUDE_CONFIG_DIR", dir.clone())];
+            let mut v = vec![("CLAUDE_CONFIG_DIR".into(), dir.clone())];
             // macOS：显式设 SECURESTORAGE 目录，使钥匙串 service 名哈希源为我们已知的确切字符串，
             // 与 ClaudeProvider::materialize_isolated 端计算一致。
             if cfg!(target_os = "macos") {
-                v.push(("CLAUDE_SECURESTORAGE_CONFIG_DIR", dir));
+                v.push(("CLAUDE_SECURESTORAGE_CONFIG_DIR".into(), dir));
             }
             v
         }
@@ -211,9 +231,8 @@ fn warn_if_global_active(acc: &Account) {
 async fn spawn_isolated(
     program: String,
     args: Vec<String>,
-    envs: Vec<(&'static str, String)>,
+    envs: Vec<(String, String)>,
 ) -> Result<std::process::ExitStatus> {
-    let envs: Vec<(String, String)> = envs.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
     tokio::task::spawn_blocking(move || {
         let mut cmd = Command::new(&program);
         cmd.args(&args);

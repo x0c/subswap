@@ -773,6 +773,36 @@ pub fn isolated_keychain_service(securestorage_dir: &str) -> String {
 }
 
 impl ClaudeProvider {
+    /// API 账号专用：返回进程级隔离所需的 env vars（直接注入子进程，无需物化目录）。
+    /// OAuth 账号返回 None，调用方走常规 materialize 路径。
+    pub fn api_run_env_vars(&self, id: &AccountId) -> Result<Option<Vec<(String, String)>>> {
+        let account = self
+            .registry
+            .find(PROVIDER_ID, id)?
+            .ok_or_else(|| Error::AccountNotFound {
+                provider: PROVIDER_ID.into(),
+                id: id.to_string(),
+            })?;
+        if !is_api_account(&account) {
+            return Ok(None);
+        }
+        let api_key = self
+            .store
+            .get(PROVIDER_ID, &id.0, API_KEY_FIELD)?
+            .ok_or_else(|| {
+                Error::Credential(format!(
+                    "no API key for {PROVIDER_ID}:{id}; re-add it with `subswap add-api`"
+                ))
+            })?;
+        let config = api_config(&account)?;
+        let map = config.env(&api_key)?;
+        let vars = map
+            .into_iter()
+            .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
+            .collect();
+        Ok(Some(vars))
+    }
+
     /// 取账号用于隔离环境的 OAuth 凭证 + oauthAccount 元数据。
     /// active 账号读 live（macOS 钥匙串 / 文件），parked 账号读凭证仓库。自定义 API 账号不支持隔离。
     pub fn export_isolated_credentials(
