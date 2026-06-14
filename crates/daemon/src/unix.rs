@@ -26,7 +26,7 @@ use fs2::FileExt;
 use subswap_core::{
     auto_decide, paths::AppPaths, query_quota_with_retry, settings, AccountRegistry,
     AccountWithQuotas, AuditEvent, AuditLog, FileStore, KeyringStore, PolicyConfig, PolicyDecision,
-    Provider, ProviderRegistry, ProviderSnapshot, QuotaFetchState,
+    Provider, ProviderRegistry, ProviderSnapshot, QuotaCache, QuotaFetchState,
 };
 use subswap_provider_claude::ClaudeProvider;
 use subswap_provider_codex::CodexProvider;
@@ -139,6 +139,13 @@ async fn run_cycle(
     policy: &PolicyConfig,
     data_dir: &std::path::Path,
 ) -> Result<()> {
+    // (0) 持续回灌:把 active 账号的 live 凭证抓回 store(只读 live、只写 store、不刷新)。
+    // 填补「在 Claude Code 内直接切走、未经 subswap swap」的捕获缺口,使该账号日后变 parked 时
+    // store 里仍是活 token,parked 自刷不依赖再开 Claude Code。best-effort,失败仅 debug。
+    if let Err(e) = claude.reconcile_active_from_live().await {
+        tracing::debug!(err = %e, "claude live-credential reconcile skipped");
+    }
+
     // (a) 收集每个 Provider 的快照。query_quota 失败的账号 fetch_error 带原因。
     let snapshots = build_snapshots(providers).await;
 
@@ -270,6 +277,16 @@ fn auto_swap_still_allowed(
 }
 
 async fn build_snapshots(providers: &ProviderRegistry) -> Vec<ProviderSnapshot> {
+    // 缓存节流:与 CLI 共用 quota_cache.json。缓存够新就复用、不打 usage 端点,把每账号请求频率
+    // 压到 ~min_refresh 一次,避免 daemon+CLI 并发查爆端点触发 429。
+    let cache_path = AppPaths::resolve().ok().map(|p| p.quota_cache_file());
+    let mut cache = cache_path
+        .as_ref()
+        .map(|p| QuotaCache::load(p))
+        .unwrap_or_default();
+    let min_refresh =
+        std::time::Duration::from_millis(settings::current().quota.min_refresh_interval_ms);
+
     let mut out = Vec::new();
     for p in providers.all() {
         let provider_id = p.id().to_string();
@@ -283,8 +300,20 @@ async fn build_snapshots(providers: &ProviderRegistry) -> Vec<ProviderSnapshot> 
         let mut awqs = Vec::with_capacity(accounts.len());
         for account in accounts {
             let id = account.id.clone();
+            // 够新就复用缓存,跳过真实查询。
+            if let Some(entry) = cache.fresh(&provider_id, &id.0, min_refresh) {
+                awqs.push(AccountWithQuotas {
+                    account,
+                    quotas: entry.quotas,
+                    fetch_state: QuotaFetchState::Ready,
+                });
+                continue;
+            }
             let (quotas, fetch_state) = match query_quota_with_retry(p.as_ref(), &id).await {
-                Ok(q) => (q, QuotaFetchState::Ready),
+                Ok(q) => {
+                    cache.set(&provider_id, &id.0, q.clone());
+                    (q, QuotaFetchState::Ready)
+                }
                 Err(e) => (Vec::new(), QuotaFetchState::Failed(e.to_string())),
             };
             awqs.push(AccountWithQuotas {
@@ -297,6 +326,9 @@ async fn build_snapshots(providers: &ProviderRegistry) -> Vec<ProviderSnapshot> 
             provider: provider_id,
             accounts: awqs,
         });
+    }
+    if let Some(path) = cache_path {
+        cache.save(&path);
     }
     out
 }

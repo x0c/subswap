@@ -1,9 +1,8 @@
 # Provider 知识库
 
-记录各 Provider 实际使用的上游接口、本地文件、认证字段等「代码不能表达」的事实。
-代码本身能表达的内容（函数签名、struct 字段、import 关系）不在此重复。
+记录各 Provider 的上游接口、本地文件、认证字段等代码不能表达的事实。
 
-> 新加 Provider 时请按本文档结构补一节。
+> 新加 Provider 时按本文档结构补一节。
 
 ---
 
@@ -66,22 +65,31 @@ Token 刷新请求体：
 `utilization` 固定按 0~100 的已用百分比解析。小于 1 的值仍表示不到 1% 已用，不能当成 0~1 比例放大，
 否则会把 `0.97%` 错误解析为 `97%`。
 
-### Usage 接口异常状态码的真实含义
+### Usage 接口异常状态码的真实含义（429 ≠ token 失效，别再误判）
 
-`/api/oauth/usage` 在 token 出问题时不会老老实实回 401，会**把鉴权失败伪装成 429**。
-实测：access_token 过期且本地没有可用 refresh_token（或刷新失败）时，接口返回
-HTTP 429 + body 含 rate-limit 字样的话术，而不是 401。
+> 2026-06-14 修正：旧版本这里写「429 是鉴权失败的伪装」，是**误判**。实测拿一个**确认有效**的
+> token（Claude Code 维护的 active 账号）打 `/api/oauth/usage`，**间隔 4 秒**仍是 `200 → 429 → 429`，
+> 且带 `retry-after`。所以 **429 是这个端点真实的、极严的限流**，不是 token 问题。token 失效的真实
+> 信号在别处（见下）。完整排查见
+> [troubleshooting/2026-06-14](troubleshooting/2026-06-14-claude-quota-unqueryable-429-vs-invalid-grant.md)。
 
-排查含义：
+**三种「查不出余量」要分清，处理路径完全不同：**
 
-- subswap 表面看是 quota 拉不下来 / AutoSwap 把账号判成 `Exhausted`，根因可能是 token 失效。
-- 真实限流不会持续超过一个 5h 窗口；如果某账号连续多次只在 usage 接口报 429、其他 Claude
-  Code 调用也立刻 401 → 按 token 过期处理。
-- 处理路径：对该账号重新 `subswap login claude`（或直接 `claude auth login --claudeai`
-  覆盖凭证），让 subswap 重新 import 一遍刷新过的 token。
-- subswap 本身不主动把 429 翻译成 401：`oauth.rs::fetch_usage` 故意保留原始状态码进
-  `Error::QuotaFetch`，避免对一类异常做错误归因；CLI 渲染时统一压成 `429 rate limited`
-  这种短文案，所以排查时要靠 `--log debug` 看原始 message 或参考本节。
+| 信号 | 端点/状态 | 含义 | 处理 |
+|---|---|---|---|
+| `429 rate_limit_error` | usage `/api/oauth/usage` 429 + `retry-after` | usage 端点限流极严，约**每账号每分钟才放 1 次** | 缓存节流(见下)，**不是**重登 |
+| `invalid_grant` | refresh `/v1/oauth/token` 400 | parked 账号存的 refresh token 已死 | 死 token 守卫 + 重登(见「Refresh token 轮换」) |
+| `401` | usage 401 | active 账号 live token 过期、Claude Code 未刷 | 开一次 Claude Code 让它刷；subswap 不刷 active |
+
+**缓存节流（治 429，`crates/cli/src/cmd/default.rs` + `crates/daemon/src/unix.rs::build_snapshots`）**：
+subswap 每次 CLI 运行 + daemon 每轮都把所有账号一起查，极易并发打爆 usage 端点 → 全员 429。
+对策：daemon 与 CLI **共用** `quota_cache.json`，查询前先看缓存——`QuotaCache::fresh()` 判定缓存
+比 `settings.quota.min_refresh_interval_ms`(默认 90s，> daemon 60s 轮询) 新就**直接复用、不打端点**。
+谁先查到谁刷新 `cached_at`，另一方据此跳过，把每账号请求频率稳定压到 ~90s 一次。
+
+- **排查雷区**：别手动 `curl` usage 端点连发几次去"复现"——会自己把限流桶打空、污染判断（我就踩了）。
+- subswap 不把 429 翻译成 401：`oauth.rs::fetch_usage` 保留原始状态码；CLI 压成 `429 rate limited`
+  短文案，stale 行会显示 `(cached ~Xm · 429 rate limited)`，排查看 `--log debug` 原始 message。
 
 ### 本地激活文件
 
@@ -235,8 +243,25 @@ Claude 那边的保活由 subswap daemon (M4) 自己做，因为非活跃 Claude
 Quota 查询遇到 `401` / `403` / `429` 时不重试；尤其 `429` 连续重试会延长 `quota loading`
 并加重服务端限流。
 
+**capture-on-leave 的残留缺口 + 两道补救（2026-06-14）**：capture-on-leave 只在**经 `subswap swap`
+切走**时触发。若用户**直接在 Claude Code 里登录/切换**某账号（绕过 subswap），Claude Code 在钥匙串里
+把该账号 token 轮换掉，而 subswap store 里那份变陈旧；等它变 parked、daemon 去保活刷新 → 服务端回
+`invalid_grant`（refresh token not found or invalid），daemon 每轮拿同一死 token 反复刷成请求风暴。两道补救：
+
+1. **死 token 守卫**（`ClaudeProvider.dead_refresh`，进程内）：refresh 返回 `invalid_grant` 时把该
+   refresh token 指纹记为死，`refresh_if_near_expiry` / `query_quota` 401 自愈命中即**跳过、不再发刷新**，
+   止住风暴；token 一旦轮换（指纹变化）自动恢复。quota 查询则返回含 `re-login` 的错误 → CLI 压成
+   `needs re-login`（`render.rs::compact_error`），不再默默挂旧缓存。**只在 `invalid_grant` 判死，
+   网络/超时不判**。
+2. **持续回灌（capture-on-arrival）**：daemon 每轮先调 `ClaudeProvider::reconcile_active_from_live()`
+   （= `capture_live_into_store`，**只读 live、只写 store、不刷新、不写 live**，对 active 也安全），
+   把当前 active 账号的 live token 持续抓回 store。缩小「绕过 swap 离开」的缺口——该账号日后变 parked
+   时手里仍是较新 token。注意：Claude Code 异步轮换，回灌只能缩小窗口、**无法 100% 消除**死 token；
+   彻底恢复仍需该账号重登一次。
+
 > 改动 `activate` / keepalive / `query_quota` 自愈逻辑时务必维持本约束，别让 subswap 在
-> 后台刷 active 账号、或把陈旧 token 写回 live。
+> 后台刷 active 账号、或把陈旧 token 写回 live。新增的死 token 守卫与持续回灌都遵守此约束
+> （回灌只 live→store，守卫只是少刷）。
 
 ### auth.json schema 不稳定（透传策略）
 

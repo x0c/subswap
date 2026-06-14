@@ -5,25 +5,27 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, IsTerminal};
+use std::time::Duration;
 
 use anyhow::Result;
 use futures::future::join_all;
 use subswap_core::{
-    auto_decide, checkout, paths::AppPaths, query_quota_with_retry, AccountId, AccountWithQuotas,
-    AuditEvent, AuditLog, PolicyConfig, PolicyDecision, ProviderRegistry, ProviderSnapshot, Quota,
-    QuotaCache, QuotaFetchState,
+    auto_decide, checkout, paths::AppPaths, query_quota_with_retry, settings, AccountId,
+    AccountWithQuotas, AuditEvent, AuditLog, PolicyConfig, PolicyDecision, ProviderRegistry,
+    ProviderSnapshot, Quota, QuotaCache, QuotaFetchState,
 };
 
 use crate::app::AppContext;
 use crate::daemon_spawn::ensure_daemon_running;
 use crate::render::{compact_error, compact_policy_reason, AutoLine, AutoLineKind, InlineRenderer};
 
-pub async fn run(ctx: &AppContext) -> Result<()> {
+pub async fn run(ctx: &AppContext, json: bool) -> Result<()> {
     // 1. 自动 import 本地激活账号（如果没记录过）。
     sync_local_active(ctx);
 
     // 2. 先输出账号骨架，再随 quota 请求完成原地刷新。
-    let interactive = io::stdout().is_terminal();
+    // JSON 模式强制走非交互路径（不渲染 ANSI 骨架），最后统一以 JSON 输出。
+    let interactive = !json && io::stdout().is_terminal();
     let mut snapshots = build_loading_snapshots(&ctx.providers).await;
     let mut renderer = InlineRenderer::new(interactive);
     if interactive {
@@ -49,14 +51,59 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
     )
     .await?;
 
-    // 3. 最终渲染。交互场景刷新原输出块；非交互场景只输出最终版。
-    renderer.render(&snapshots, &auto_lines)?;
+    // 3. 最终输出。JSON 模式吐结构化快照供程序消费；否则人类渲染（交互刷新原块 / 非交互出最终版）。
+    if json {
+        print_quota_json(&snapshots)?;
+    } else {
+        renderer.render(&snapshots, &auto_lines)?;
+    }
 
     // 4. 后台保活:用户无感地拉起 daemon(已经在跑则什么都不做)。
     //    失败仅 debug 日志,不影响默认命令的退出码。
     if let Err(e) = ensure_daemon_running() {
         tracing::debug!(err = %e, "ensure_daemon_running failed; continuing");
     }
+    Ok(())
+}
+
+/// JSON 输出用 DTO：每个账号一条，含额度窗口与各自 reset_at，供程序（如 OpenConductor）消费。
+#[derive(serde::Serialize)]
+struct AccountQuotaJson {
+    id: String,
+    provider: String,
+    label: String,
+    active: bool,
+    /// quota 拉取状态：ready | loading | failed | stale。
+    fetch_state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    /// 各窗口快照（Quota 自身可序列化，含 window / used / limit / reset_at / status）。
+    quotas: Vec<Quota>,
+}
+
+/// 把账号 + 额度快照以 JSON 数组打到 stdout。
+fn print_quota_json(snapshots: &[ProviderSnapshot]) -> Result<()> {
+    let mut accounts = Vec::new();
+    for snap in snapshots {
+        for awq in &snap.accounts {
+            let (fetch_state, error) = match &awq.fetch_state {
+                QuotaFetchState::Loading => ("loading", None),
+                QuotaFetchState::Ready => ("ready", None),
+                QuotaFetchState::Failed(e) => ("failed", Some(e.clone())),
+                QuotaFetchState::Stale { error, .. } => ("stale", Some(error.clone())),
+            };
+            accounts.push(AccountQuotaJson {
+                id: awq.account.id.0.clone(),
+                provider: awq.account.provider.clone(),
+                label: awq.account.label.clone(),
+                active: awq.account.active,
+                fetch_state,
+                error,
+                quotas: awq.quotas.clone(),
+            });
+        }
+    }
+    println!("{}", serde_json::to_string_pretty(&accounts)?);
     Ok(())
 }
 
@@ -182,11 +229,19 @@ async fn fill_quotas_progressively(
         return Ok(());
     }
     let mut cache = QuotaCache::load(cache_path);
+    let min_refresh = Duration::from_millis(settings::current().quota.min_refresh_interval_ms);
 
     let mut jobs = Vec::new();
     for snap in snapshots.iter_mut() {
         let provider = snap.provider.clone();
         for awq in &mut snap.accounts {
+            // 缓存节流：缓存够新(< min_refresh)就直接复用、不打 usage 端点，避免高频触发 429。
+            // daemon 与 CLI 共用 quota_cache.json，谁先查到谁刷新 cached_at，另一方据此跳过。
+            if let Some(entry) = cache.fresh(&provider, &awq.account.id.0, min_refresh) {
+                awq.quotas = entry.quotas;
+                awq.fetch_state = QuotaFetchState::Ready;
+                continue;
+            }
             // 凭证已走明文 FileStore，查任何账号都不再弹钥匙串，激活/非激活一律查额度。
             jobs.push((provider.clone(), awq.account.id.clone()));
         }

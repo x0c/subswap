@@ -69,6 +69,10 @@ pub struct Quota {
     pub fetch_retries: u32,
     /// 首次重试前等待多久（毫秒）；后续指数退避。
     pub fetch_retry_delay_ms: u64,
+    /// 同一账号两次真实 quota 查询的最小间隔（毫秒）。缓存比这更新就不打 usage 端点，
+    /// 直接复用缓存值。daemon 与 CLI 共用同一缓存文件，借此把每账号请求频率压到
+    /// 「每 `min_refresh_interval_ms` 最多 1 次」，避免并发查爆 usage 端点触发 429。
+    pub min_refresh_interval_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -115,6 +119,7 @@ impl Default for Quota {
             fetch_timeout_ms: defaults::QUOTA_FETCH_TIMEOUT_MS,
             fetch_retries: defaults::QUOTA_FETCH_RETRIES,
             fetch_retry_delay_ms: defaults::QUOTA_FETCH_RETRY_DELAY_MS,
+            min_refresh_interval_ms: defaults::QUOTA_MIN_REFRESH_INTERVAL_MS,
         }
     }
 }

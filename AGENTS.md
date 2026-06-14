@@ -34,7 +34,9 @@
 - `Provider::activate` 必须先写快照，任一目标写失败要回滚。
 - refresh token 是一次性轮换：subswap 对 active 账号只读不刷，由原生客户端唯一轮换。
   `activate` 覆盖 live 文件前先 capture-on-leave 回灌 live 凭证进 owner 账号 store；
-  daemon keepalive / `query_quota` 401 自愈只对 parked 账号刷新。细节见
+  daemon keepalive / `query_quota` 401 自愈只对 parked 账号刷新。daemon 每轮还做 capture-on-arrival
+  (`reconcile_active_from_live`，只 live→store) 补「绕过 swap 离开」的缺口；refresh 回 `invalid_grant`
+  时死 token 守卫止住反复刷的风暴并显示 `needs re-login`。细节见
   [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) 的「Refresh token 轮换」。
 - 新 Provider 只能放在 `crates/providers/<id>`，再到 `AppContext::build()` 注册，并在默认入口同步本地 active。
 - AutoSwap 默认阈值只改 `crates/core/src/defaults.rs::AUTO_SWAP_THRESHOLD`，并同步
@@ -46,6 +48,10 @@
 - `swap` / `rm` 的数字编号必须与默认入口显示顺序一致，统一走 `AppContext::list_ordered()`。
 - 跨模块调优参数走 `crates/core/src/settings.rs::current()`，不要在 provider / cli 里硬编码阈值、窗口、百分比。
 - 不得用高频 quota / usage 请求模拟限流触发；必须保守退避，避免请求风暴和风控风险。
+  Anthropic usage 端点限流极严（~每账号每分钟 1 次），**禁止手动 `curl` 连发去"复现"**——会打爆桶、
+  污染判断。查询前先走缓存节流：缓存比 `settings.quota.min_refresh_interval_ms`(默认 90s) 新就复用、
+  不打端点；daemon 与 CLI 共用 `quota_cache.json`，两条路径都要尊重。**429 ≠ token 失效**，三种「查不出」
+  的区分与处理见 [docs/troubleshooting/2026-06-14-claude-quota-unqueryable-429-vs-invalid-grant.md](docs/troubleshooting/2026-06-14-claude-quota-unqueryable-429-vs-invalid-grant.md)。
 
 ## 代码风格
 
@@ -98,9 +104,9 @@ docs/                     中文项目文档
 |---|---|
 | [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) | 改 Provider 切换、认证、额度或自定义 API 逻辑前必读 |
 | [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) | 架构、模块边界、数据流 |
-| [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md) | 改自动切换候选筛选、阈值、manual_only 行为，或排查「默认入口渐进式重判 / 一次 subswap 多次切换 / 连跑结果不同 / 卡在耗尽号」前必读 |
+| [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md) | 改自动切换候选筛选、阈值、manual_only、防抖/振荡刹车，或排查「默认入口渐进式重判 / 一次 subswap 多次切换 / 连跑结果不同 / 卡在耗尽号 / 账号间无限横跳(A→B→A 振荡)」前必读 |
 | [docs/design/PREWARM_DESIGN.md](docs/design/PREWARM_DESIGN.md) | 窗口预热提案 |
-| [docs/design/ACCOUNT_ISOLATION_DESIGN.md](docs/design/ACCOUNT_ISOLATION_DESIGN.md) | 做 `subswap run`/`shell` 账号环境隔离、改 checkout 锁 / daemon 避让 / macOS 钥匙串命名空间前必读 |
+| [docs/design/ACCOUNT_ISOLATION_DESIGN.md](docs/design/ACCOUNT_ISOLATION_DESIGN.md) | 做 `subswap run`/`shell` 账号环境隔离、改 checkout 锁 / daemon 避让 / macOS 钥匙串命名空间，或排查 Claude resume 看不到会话 / 隔离目录不共享 projects、settings、plugins 前必读 |
 | [docs/CONFIG.md](docs/CONFIG.md) | `config.toml` 字段与热加载 |
 | [docs/CLI.md](docs/CLI.md) | 改 CLI 命令面、交互向导或 `subswapd` 辅助进程前必读 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 里程碑进度 |
@@ -111,11 +117,12 @@ docs/                     中文项目文档
 | [docs/troubleshooting/2026-06-06-filestore-credential-backend.md](docs/troubleshooting/2026-06-06-filestore-credential-backend.md) | 排查 filestore 凭据后端、跨平台凭据保存行为前阅读 |
 | [docs/troubleshooting/2026-06-08-codex-refresh-token-already-used.md](docs/troubleshooting/2026-06-08-codex-refresh-token-already-used.md) | 排查 Codex refresh token already used、令牌刷新竞态前阅读 |
 | [docs/troubleshooting/2026-06-11-claude-code-keychain-acl-poisoning.md](docs/troubleshooting/2026-06-11-claude-code-keychain-acl-poisoning.md) | 排查 macOS 反复弹「security wants to access "Claude Code-credentials"」、改 Claude keychain 读写前必读 |
+| [docs/troubleshooting/2026-06-14-claude-quota-unqueryable-429-vs-invalid-grant.md](docs/troubleshooting/2026-06-14-claude-quota-unqueryable-429-vs-invalid-grant.md) | 排查 Claude 用量查不出来 / 忽好忽坏 / 全员 cached、429 与 invalid_grant 混淆、改缓存节流或死 token 守卫前必读 |
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **subswap** (1389 symbols, 3536 relationships, 120 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **subswap** (1484 symbols, 3819 relationships, 128 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
