@@ -23,8 +23,27 @@
 
 ### 1.3 采样入口
 
-- `subswap` 无参默认入口：调用即采样一次，查询所有已登记账号额度并按策略自动切换。
+- `subswap` 无参默认入口：调用即采样一次，查询所有已登记账号额度并按策略自动切换（渐进式重判见 1.4）。
 - `subswapd` daemon（M4）：默认 60 秒采样一次。
+
+### 1.4 默认入口的渐进式重判（每收到一份额度重判一次，单调升级）
+
+默认入口的额度是**边查边回**（每账号一个 `tokio::spawn` + mpsc，按返回顺序逐份回填）。
+关键约束：**不能查到第一份额度就把决策锁死**。否则更优候选还在 loading 时，会先切到一个
+「逃生/兜底候选」（第 2 节第 6~8 条的 loading/失败兜底），等更优候选额度落地却已错过，
+表现为：连跑两次 `subswap` 结果不同、甚至停在一个已耗尽的号上不动。
+
+正确行为（`crates/cli/src/cmd/default.rs::fill_quotas_progressively` →
+`try_auto_swap_ready_provider`）：**每收到一份 quota 更新就对该 provider 重跑一次 `decide`**，
+有更优目标就升级过去——一次 `subswap` 内自我纠正，无需用户再跑一遍。
+
+单调收敛靠三点，缺一会抖动：
+1. `decide` 只在当前 active 确实不行（耗尽/超阈值/loading/失败）时才返回 `Swap`；切到真正可用号后自然 `NoOp`。
+2. `AutoSwapProgress.activated_targets`：本次运行已切到的目标不重复 `activate`（避免重写凭证）。
+3. `AutoSwapProgress.abandoned`：本次运行主动离开过的账号不再切回，「只升级、不回头」，杜绝 A→B→A。
+
+注意与 settle-grace（2 节 8.5）的配合：刚激活号只挡 loading/失败这类**不确定**状态；
+**已耗尽是确定状态**，照样会被升级走，所以不会把用户卡在耗尽号上。
 
 ## 2. 候选账号筛选
 
