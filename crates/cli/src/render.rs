@@ -139,10 +139,12 @@ fn render_row(awq: &AccountWithQuotas, index: usize, name_width: usize, color: b
             style(color, "31", &text)
         }
         QuotaFetchState::Ready => render_quota_parts(&awq.quotas, color),
-        QuotaFetchState::Stale { cached_at, .. } => {
+        QuotaFetchState::Stale { cached_at, error } => {
+            // 缓存数据 + 「为什么在用缓存」：年龄 + 压缩后的失败原因,让用户一眼看出是限流/网络等。
             let parts = render_quota_parts(&awq.quotas, color);
             let age = format_age(*cached_at);
-            let tag = style(color, "2", &format!("(~{age})"));
+            let reason = compact_error(error);
+            let tag = style(color, "2", &format!("(cached ~{age} · {reason})"));
             if parts.is_empty() {
                 tag
             } else {
@@ -219,6 +221,11 @@ pub fn compact_error(err: &str) -> String {
     }
     if lower.contains("credential store") {
         return "keyring error".into();
+    }
+    // refresh token 作废 → 必须在原生客户端重新登录(parked 自刷无法救回)。
+    // 排在 401 之前:它本质也是鉴权失效,但提示更具体。
+    if lower.contains("re-login") || lower.contains("invalid_grant") {
+        return "needs re-login".into();
     }
     if lower.contains("401")
         || lower.contains("unauthorized")
@@ -443,6 +450,19 @@ mod tests {
     fn compact_error_names_platform_missing_credentials() {
         let text = compact_error("credential store: No matching entry found in secure storage");
         assert_eq!(text, "missing credentials; re-login");
+    }
+
+    #[test]
+    fn compact_error_names_dead_refresh_token() {
+        // parked 账号 refresh token 作废:展示具体的 re-login 提示,而非泛化的 401。
+        assert_eq!(
+            compact_error("quota fetch: re-login required for claude:a@x.com; refresh token invalid"),
+            "needs re-login"
+        );
+        assert_eq!(
+            compact_error("refresh returned 400 Bad Request: {\"error\":\"invalid_grant\"}"),
+            "needs re-login"
+        );
     }
 
     fn make_awq(id: &str, active: bool, fetch: QuotaFetchState) -> AccountWithQuotas {

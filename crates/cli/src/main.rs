@@ -37,6 +37,11 @@ struct Cli {
     #[arg(long, global = true, default_value = "warn")]
     log: String,
 
+    /// On the default entry (no subcommand), emit accounts + quota snapshot as JSON
+    /// (including each window's reset_at) for programmatic consumers.
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -194,7 +199,7 @@ async fn main() -> Result<()> {
     let ctx = AppContext::build()?;
 
     match cli.cmd {
-        None => cmd::default::run(&ctx).await,
+        None => cmd::default::run(&ctx, cli.json).await,
         Some(Cmd::AddApi {
             preset,
             id,

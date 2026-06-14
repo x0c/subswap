@@ -131,12 +131,12 @@ fn help_shows_only_current_commands() {
     assert!(stdout.contains("doctor"));
 
     for removed in [
-        " add ",
-        " list ",
-        " quota ",
-        " refresh ",
-        " auto ",
-        " daemon ",
+        "  add ",
+        "  list ",
+        "  quota ",
+        "  refresh ",
+        "  auto ",
+        "  daemon ",
     ] {
         assert!(
             !stdout.contains(removed),

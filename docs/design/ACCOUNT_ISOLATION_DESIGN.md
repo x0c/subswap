@@ -12,8 +12,9 @@
 > - `crates/cli/src/cmd/run.rs`：`subswap run <provider> <id>` / `shell <id>` / `env <id>`。
 > - `crates/daemon/src/unix.rs`：`keep_claude_tokens_alive` 跳过 checked-out 账号。
 >
-> 验证：全工作区测试通过；Codex `run` 用桩 CLI 端到端跑通（materialize/absorb/锁）；Claude `env`
-> 在一次性 keychain 上验证命名空间 item 写入与读回、文件权限、oauthAccount。**未实机实测真实
+> 验证：全工作区测试通过；Codex `run` 用桩 CLI 端到端跑通（materialize/absorb/锁）；Claude `run`
+> 用桩 `claude` 端到端验证账号文件独立、`projects` / `plugins` 共享链接、`settings.json` 剥离受管 API env；
+> Claude `env` 在一次性 keychain 上验证命名空间 item 写入与读回、文件权限、oauthAccount。**未实机实测真实
 > `claude` 是否读该命名空间 item**（需备用登录账号，避免轮换污染主账号）；失败为安全降级（提示登录）。
 
 ## 1. 目标与动机
@@ -38,8 +39,8 @@
 | 目标 | 机制 | 结论 |
 |---|---|---|
 | Codex（全平台） | `CODEX_HOME=<私有目录>`，auth.json 落该目录，Codex CLI 自刷新 | ✅ |
-| Claude / Linux | `CLAUDE_CONFIG_DIR=<私有目录>` + 写 `.credentials.json` | ✅ |
-| Claude / macOS OAuth | `CLAUDE_CONFIG_DIR` → 钥匙串 item 按目录哈希命名空间隔离 | ✅ |
+| Claude / Linux | `CLAUDE_CONFIG_DIR=<私有目录>` + 写 `.credentials.json`；非账号内容链接回全局 `~/.claude` | ✅ |
+| Claude / macOS OAuth | `CLAUDE_CONFIG_DIR` → 钥匙串 item 按目录哈希命名空间隔离；非账号内容链接回全局 `~/.claude` | ✅ |
 
 ### 2.1 macOS 钥匙串命名空间（关键，反编译 claude 2.1.177 确认）
 
@@ -88,6 +89,16 @@ account = $USER（按上面正则清洗，非法 → "claude-code-user"）
   **代价**：二进制原话「short-lived and not auto-refreshed when passed via env var」——
   注入的是不自刷新的短期 token，只适合短任务，或由 subswap 每次启动注入新鲜 token。
 
+### 2.3 共享 Claude 工作环境（关键，OpenConductor resume 依赖）
+
+`subswap run claude <id>` 的目标不是给每个账号创建一套全新的 Claude 工作环境，而是**只隔离账号身份**：
+
+- 隔离目录独立持有：`.credentials.json`、`.claude.json` / `.config.json`、`.subswap-api.json` 等账号相关文件。
+- 链接回全局 `~/.claude`：`projects` / `plugins` / `skills` / `commands` / `hooks` / `file-history` / `todos`，以及全局已存在的 `sessions` / `transcripts` / 其它非账号条目。
+- `settings.json` / `settings.local.json`：从全局复制并剥掉 subswap 管理的 API 账号 env（`ANTHROPIC_*`、`CLAUDE_CODE_*`），保留 permissions、hooks、其它用户设置。不能直接 symlink，否则全局 custom-API active 时会污染 OAuth 隔离账号。
+
+这个不变量用于支持 OpenConductor 这类调度器：不同账号通过 `subswap run` 跑同一项目时，必须能共享 Claude Code 的 `projects` 会话历史，从而 `--resume <session>` 不因账号隔离而失效。
+
 ## 3. 核心约束：refresh token 一次性轮换（必须先解决）
 
 > 沿用 [PROVIDER_KNOWLEDGE_BASE.md](../PROVIDER_KNOWLEDGE_BASE.md)「Refresh token 轮换」不变量：
@@ -118,6 +129,7 @@ subswap run codex <id> [-- ...]   # ✅ 已实现：设 CODEX_HOME=<私有目录
    └─ 退出：absorb_auth_blob 把轮换后的 auth.json 吸收回 FileStore，release
 subswap run claude <id> [-- ...]  # ✅ 已实现：在 <data_dir>/envs/claude/<id>/ 物化私有目录
    ├─ macOS：按 §2.1 公式写命名空间钥匙串 item；Linux：写 .credentials.json
+   ├─ 隔离目录内账号文件独立，非账号内容按 §2.3 链接 / 复制回全局 Claude 工作环境
    ├─ 设 CLAUDE_CONFIG_DIR=<私有目录>，exec claude，退出吸收
 subswap shell <id>                # ✅ 已实现：导出好环境变量的子 shell，交互连跑多条命令
 subswap env <id>                  # ✅ 已实现：打印 export 行，供 eval "$(subswap env ...)"

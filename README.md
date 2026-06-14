@@ -14,13 +14,19 @@ configurable threshold.
 Use it as a Claude account switcher, Codex account manager, ChatGPT quota
 tracker, or a unified multi-provider subscription swapper.
 
+**Platform support**: tested and working on macOS and Linux. Windows is not tested.
+
 ## Features
 
 - **Multi-account swap for Claude Code and Codex CLI**: flip the active account without re-logging-in.
 - **Claude Code custom API endpoints**: add DeepSeek or another Anthropic-compatible endpoint through an interactive terminal wizard, then swap to and from it like any Claude account.
+- **Account-isolated parallel environments**: run different accounts simultaneously in different terminals without touching the global active account — `subswap run`, `shell`, and `env` project credentials into a private directory and set the right env vars for the native CLI.
 - **Quota-aware status**: view provider quota windows such as Claude 5h / 7d usage and Codex / ChatGPT usage data when available.
-- **Automatic account swap**: a background daemon can move away from an account once usage crosses the configured threshold.
+- **Automatic account swap**: a background daemon moves away from an account once usage crosses the configured threshold, and re-evaluates on every quota update to always pick the best available account.
+- **Auto-swap toggle**: `subswap autoswap on/off` enables or disables automatic switching without touching the config file.
+- **Settle-grace after manual swap**: after you manually pick an account, the daemon holds off for a grace period before auto-swapping away, so your intent isn't immediately overridden.
 - **Network-independent manual swap**: `subswap swap` still works when quota APIs fail, tokens expire, or the network is down.
+- **Quota result cache with stale fallback**: cached quota results are served while a fresh fetch is in flight, so the status screen is always responsive.
 - **File-backed credential storage**: tokens are kept in an owner-only (`0600`) file under the app data directory, so reading quota never triggers OS keychain prompts. Credentials from older keyring-based installs are migrated automatically on first run.
 - **Provider-based architecture**: Claude / Anthropic and Codex / ChatGPT are separate crates, so new AI providers can be added without changing core policy.
 
@@ -35,6 +41,7 @@ tracker, or a unified multi-provider subscription swapper.
 
 - Switch between multiple Claude Pro, Claude Max, ChatGPT Plus, or ChatGPT Team seats.
 - Keep a backup AI subscription ready when the current account reaches its usage limit.
+- Run two accounts in separate terminals at the same time without interfering with each other.
 - Check usage across accounts before starting a long coding session.
 - Consolidate Claude and ChatGPT account switching into one CLI.
 
@@ -46,6 +53,7 @@ tracker, or a unified multi-provider subscription swapper.
 | M2 | Claude provider: keyring-backed swap, 5h/7d quota, best-effort token refresh | done |
 | M3 | Codex provider: opaque auth.json passthrough, atomic write, tolerant wham/usage parsing | done |
 | M4 | `subswapd` daemon: periodic poll + auto-swap + Claude token keepalive + zero-config auto-spawn | done |
+| M5 | account-isolated run environments, auto-swap toggle, quota cache, settle-grace | done |
 
 ## Why
 
@@ -53,6 +61,7 @@ If you pay for more than one AI subscription, you probably hit one of:
 
 - you ran out on Claude Pro and want to fall back to ChatGPT without re-logging-in;
 - you keep two ChatGPT seats and want a one-liner to flip the active one;
+- you want two accounts running in parallel in different terminals without conflict;
 - you want to see how much of each window (5h / 7d) is left across accounts.
 
 subswap stores each account's credentials in an owner-only file under its data directory (migrating any existing OS-keyring entries on first run), swaps the active one atomically across all clients that read the same on-disk credential file, and never blocks swap on the network — quota lookups are advisory.
@@ -104,6 +113,15 @@ subswap add-api
 # custom API endpoints are manual-only and never participate in auto-swap
 subswap swap deepseek
 
+# run an account in an isolated environment without touching the global active account
+subswap run codex bob@example.com -- --version   # launch codex with bob's account
+subswap shell alice@example.com                  # open an isolated sub-shell
+eval "$(subswap env codex/bob@example.com)"      # export env vars into the current shell
+
+# enable or disable automatic account switching
+subswap autoswap on
+subswap autoswap off
+
 # remove an account from the registry and the keyring
 subswap rm alice@example.com
 
@@ -114,6 +132,20 @@ subswap doctor
 Accounts are picked up automatically from `~/.claude` and `~/.codex` the first time you run `subswap`, as long as you have logged into Claude Code / Codex CLI at least once.
 
 The first `subswap` invocation also spawns a detached background daemon on Unix platforms except macOS. The daemon polls quotas, auto-swaps in the background, and keeps Claude OAuth tokens fresh so a long-idle account doesn't 401 the moment you swap to it. macOS requires explicit opt-in because detached Keychain access can trigger extra authorization prompts: export `SUBSWAP_AUTO_DAEMON=1` to enable auto-start there. The daemon is single-instance (file-locked) and harmless to kill: `pkill -f 'subswap __daemon'` or `pkill subswapd`. To opt out entirely, export `SUBSWAP_NO_DAEMON=1`.
+
+## Account-isolated environments
+
+`subswap run / shell / env` let you use different accounts in parallel across terminals without changing the global active account. Credentials are projected into a private directory and the native CLI is pointed there via environment variables (`CODEX_HOME` for Codex; `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` on macOS for Claude).
+
+```bash
+subswap run codex 6 -- --version       # run codex as account #6 in isolation
+subswap run claude alice@x.com         # run claude as alice in isolation
+subswap shell 3                         # open a sub-shell isolated to account #3
+eval "$(subswap env codex/bob@x.com)"  # temporarily point current shell at a codex account
+```
+
+- **Exclusive lock**: only one isolated session per account at a time — concurrent sessions would race on refresh token rotation.
+- **Global active warning**: starting an isolated session for the current global active account prints a warning, since a non-isolated client may be using it simultaneously and could invalidate the refresh token.
 
 ## Design invariants
 
@@ -152,6 +184,10 @@ Tokens and refresh tokens live in owner-only credential files under the app data
 ### Is this only for Claude?
 
 No. The first supported providers are Claude / Anthropic and Codex / ChatGPT. The core crate exposes a Provider trait so future AI subscription providers can be added as separate crates.
+
+### Does it work on Windows?
+
+It has not been tested on Windows. macOS and Linux are the primary supported platforms.
 
 ## GitHub topics
 

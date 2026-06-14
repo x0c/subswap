@@ -1,6 +1,6 @@
 # Contributing to subswap
 
-Thanks for considering a contribution. subswap is a small Rust workspace, and the project tries to stay small. Read this before opening a PR — most rejections are about scope.
+subswap is a small Rust workspace. Read this before opening a PR — most rejections are about scope.
 
 ## Project model
 
@@ -13,13 +13,13 @@ Thanks for considering a contribution. subswap is a small Rust workspace, and th
 
 ## Before you start
 
-1. Read [`AGENTS.md`](AGENTS.md) — it codifies the load-bearing invariants. The ones most likely to bite you:
-   - Manual `swap` must never depend on the network or quota lookups.
-   - Secrets only live in the OS keyring; `registry.toml`, the audit log, and snapshots must never contain plaintext tokens or refresh tokens.
-   - `async fn` must not do blocking IO directly — wrap `fs2`, `std::fs`, `keyring` calls in `tokio::task::spawn_blocking`.
-   - Don't poll high-frequency to "probe" rate limits.
-2. Skim [`AGENTS.md`](AGENTS.md) — index for the rest of the docs.
-3. If you're adding a new provider, read [`docs/PROVIDER_KNOWLEDGE_BASE.md`](docs/PROVIDER_KNOWLEDGE_BASE.md) and [`docs/design/ARCHITECTURE.md`](docs/design/ARCHITECTURE.md) first.
+Read [`AGENTS.md`](AGENTS.md) — it codifies the load-bearing invariants. The ones most likely to bite you:
+- Manual `swap` must never depend on the network or quota lookups.
+- Secrets only live in the OS keyring; `registry.toml`, the audit log, and snapshots must never contain plaintext tokens or refresh tokens.
+- `async fn` must not do blocking IO directly — wrap `fs2`, `std::fs`, `keyring` calls in `tokio::task::spawn_blocking`.
+- Don't poll high-frequency to "probe" rate limits.
+
+If you're adding a new provider, read [`docs/PROVIDER_KNOWLEDGE_BASE.md`](docs/PROVIDER_KNOWLEDGE_BASE.md) and [`docs/design/ARCHITECTURE.md`](docs/design/ARCHITECTURE.md) first.
 
 ## Local checks
 

@@ -19,6 +19,11 @@
 使钥匙串 item 命名空间隔离）。完整设计、约束、风险见
 [docs/design/ACCOUNT_ISOLATION_DESIGN.md](design/ACCOUNT_ISOLATION_DESIGN.md)。
 
+Claude 隔离只隔离账号身份，不隔离工作环境：`projects` / `sessions` / `plugins` / `skills` /
+`commands` 等非账号内容共享全局 `~/.claude`。因此用 `subswap run claude <账号>` 跑出来的进程
+仍应能 `--resume` 其它账号先前留下的 Claude Code 会话；如果 resume 看不到会话，优先检查隔离目录
+是否把这些非账号目录误做成了私有副本。
+
 ```bash
 subswap run codex 6 -- --version        # 用 6 号账号在隔离环境跑 codex
 subswap run claude alice@x.com          # 隔离启动 claude（按 id 引用）
@@ -29,8 +34,6 @@ eval "$(subswap env codex/bob@x.com)"   # 临时把当前 shell 指向某 codex 
 - **独占锁**：同一账号同时只能被一个隔离会话借走（防 refresh token 轮换冲突）；被借走时手动 `swap`
   会拒绝切入该账号，默认入口 / daemon auto-swap 会跳过同 provider 本轮自动切换，daemon 也会跳过其保活。
 - **全局活账号告警**：对当前全局 active 账号起隔离会话会告警——若同时被非隔离客户端使用，可能作废其 refresh token。
-
-被砍的子命令：`add` / `list` / `quota` / `refresh` / `auto` / `daemon`（统一收进无参默认行为）。
 
 隐藏的一次性命令：`subswap migrate-local` —— 从旧版本地账号目录把账号搬到 subswap。`--help` 里看不到，只给迁移旧数据的人用一次。
 

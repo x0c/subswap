@@ -11,8 +11,9 @@ mod claude_files;
 mod oauth;
 mod paths;
 
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -28,6 +29,7 @@ use crate::claude_files::{
     capture_managed_env, read_api_state, read_credentials, read_oauth_account, read_settings,
     remove_api_state, restore_oauth_env_in_settings, write_api_env_into_settings, write_api_state,
     write_credentials, write_oauth_account_into_global, ApiState, CredentialsFile, OauthAccount,
+    MANAGED_API_ENV_KEYS,
 };
 use crate::paths::{
     api_state_path, claude_home, credentials_path, global_config_path, settings_path,
@@ -96,6 +98,11 @@ pub struct ClaudeProvider {
     store: Arc<dyn CredentialStore>,
     registry: Arc<AccountRegistry>,
     claude_home: PathBuf,
+    /// 已被服务端作废(`invalid_grant`)的 refresh token 指纹集合。命中即跳过刷新，
+    /// 避免 daemon 对死 token 反复刷新打风暴(参见 troubleshooting/2026-06-08)。
+    /// 指纹随 token 轮换自动失效——新 token 指纹不同，不在集合内即恢复刷新。
+    /// 进程内共享一份即可止住 daemon 长驻保活的风暴；CLI 一次性查询不成风暴，无需持久化。
+    dead_refresh: Arc<Mutex<HashSet<String>>>,
 }
 
 impl ClaudeProvider {
@@ -104,7 +111,53 @@ impl ClaudeProvider {
             store,
             registry,
             claude_home: claude_home(),
+            dead_refresh: Arc::new(Mutex::new(HashSet::new())),
         }
+    }
+
+    /// 指定 refresh token 是否已知作废(指纹命中死集合)。空 token 视为未知(false)。
+    fn is_refresh_dead(&self, refresh_token: &str) -> bool {
+        if refresh_token.is_empty() {
+            return false;
+        }
+        let fp = refresh_fingerprint(refresh_token);
+        self.dead_refresh
+            .lock()
+            .map(|set| set.contains(&fp))
+            .unwrap_or(false)
+    }
+
+    /// 把 refresh token 标记为作废。下次刷新前命中即跳过网络请求。
+    fn mark_refresh_dead(&self, refresh_token: &str) {
+        if refresh_token.is_empty() {
+            return;
+        }
+        let fp = refresh_fingerprint(refresh_token);
+        if let Ok(mut set) = self.dead_refresh.lock() {
+            set.insert(fp);
+        }
+    }
+
+    /// 持续回灌:把当前 live(Claude Code 钥匙串/`~/.claude` 文件)凭证抓回它所属账号的 store。
+    ///
+    /// **只读 live、只写 store、绝不刷新、绝不写 live**，因此对 active 账号也安全——不触碰
+    /// 「subswap 不得刷 active / 不得把陈旧 token 写回 live」的红线(troubleshooting/2026-06-08)。
+    /// 让当前 active 账号的 store 副本一直贴近 live，等它日后变 parked 时手里仍是活 token，
+    /// parked 自刷不再依赖重新打开 Claude Code。daemon 每轮调用一次填补「离开未经 swap」的捕获缺口。
+    pub async fn reconcile_active_from_live(&self) -> Result<()> {
+        let store = self.store.clone();
+        let registry = self.registry.clone();
+        let claude_home = self.claude_home.clone();
+        tokio::task::spawn_blocking(move || {
+            capture_live_into_store(
+                store.as_ref(),
+                &registry,
+                &claude_home,
+                prefer_keychain_for_live_capture(),
+            )
+        })
+        .await
+        .map_err(|e| Error::Provider(format!("spawn_blocking join failed: {e}")))?
     }
 
     /// 登记一个 Claude Code 自定义 API 配置。只保存，不自动激活。
@@ -290,18 +343,28 @@ impl ClaudeProvider {
         if !is_expired_or_soon(&creds, settings::current().token.refresh_slack_ms) {
             return Ok(false);
         }
-        if creds
-            .oauth
-            .refresh_token
-            .as_deref()
-            .unwrap_or("")
-            .is_empty()
-        {
+        let refresh_token = creds.oauth.refresh_token.as_deref().unwrap_or("").to_string();
+        if refresh_token.is_empty() {
             return Ok(false);
         }
-        apply_refresh_to_creds(&mut creds).await?;
-        self.save_credentials(id, &creds)?;
-        Ok(true)
+        // 死 token 守卫：已知作废的 refresh token 不再发刷新请求，静默跳过(止住保活风暴)。
+        // token 一旦轮换(指纹变化)自动恢复刷新。re-login 的提示由 quota 查询路径透出给用户。
+        if self.is_refresh_dead(&refresh_token) {
+            return Ok(false);
+        }
+        match apply_refresh_to_creds(&mut creds).await {
+            Ok(()) => {
+                self.save_credentials(id, &creds)?;
+                Ok(true)
+            }
+            Err(e) => {
+                // 仅 invalid_grant 才判死;网络/超时等瞬时错误下轮照常重试。
+                if is_invalid_grant(&e) {
+                    self.mark_refresh_dead(&refresh_token);
+                }
+                Err(e)
+            }
+        }
     }
 
     /// 显式刷新指定账号的 access_token，并写回 keyring。
@@ -718,9 +781,22 @@ impl Provider for ClaudeProvider {
         let usage = match oauth::fetch_usage(&creds.oauth.access_token).await {
             Ok(u) => u,
             Err(e) if is_auth_error(&e) && !from_live && creds.oauth.refresh_token.is_some() => {
-                apply_refresh_to_creds(&mut creds).await?;
-                // 刷新后的 token 写回凭证仓库,避免下次查询重复刷新(FileStore 写入不弹钥匙串)。
-                self.save_credentials(id, &creds)?;
+                let refresh_token = creds.oauth.refresh_token.clone().unwrap_or_default();
+                // 死 token 守卫：refresh token 已知作废时不再尝试刷新，直接透出 re-login。
+                if self.is_refresh_dead(&refresh_token) {
+                    return Err(relogin_required_error(id));
+                }
+                match apply_refresh_to_creds(&mut creds).await {
+                    Ok(()) => {
+                        // 刷新后的 token 写回凭证仓库,避免下次查询重复刷新(FileStore 写入不弹钥匙串)。
+                        self.save_credentials(id, &creds)?;
+                    }
+                    Err(re) if is_invalid_grant(&re) => {
+                        self.mark_refresh_dead(&refresh_token);
+                        return Err(relogin_required_error(id));
+                    }
+                    Err(re) => return Err(re),
+                }
                 oauth::fetch_usage(&creds.oauth.access_token).await?
             }
             Err(e) => return Err(e),
@@ -776,13 +852,13 @@ impl ClaudeProvider {
     /// API 账号专用：返回进程级隔离所需的 env vars（直接注入子进程，无需物化目录）。
     /// OAuth 账号返回 None，调用方走常规 materialize 路径。
     pub fn api_run_env_vars(&self, id: &AccountId) -> Result<Option<Vec<(String, String)>>> {
-        let account = self
-            .registry
-            .find(PROVIDER_ID, id)?
-            .ok_or_else(|| Error::AccountNotFound {
-                provider: PROVIDER_ID.into(),
-                id: id.to_string(),
-            })?;
+        let account =
+            self.registry
+                .find(PROVIDER_ID, id)?
+                .ok_or_else(|| Error::AccountNotFound {
+                    provider: PROVIDER_ID.into(),
+                    id: id.to_string(),
+                })?;
         if !is_api_account(&account) {
             return Ok(None);
         }
@@ -839,9 +915,12 @@ impl ClaudeProvider {
 
     /// 把账号凭证物化进隔离 config 目录：写 `.credentials.json` + `.claude.json`(oauthAccount)；
     /// macOS 额外写命名空间钥匙串 item —— Claude Code 在 macOS 实际从钥匙串读凭证。
+    /// 除账号文件外，其余 Claude home 内容链接回全局目录，让 `subswap run` 只改变账号身份，
+    /// 不改变 settings / skills / plugins / projects / session 历史等工作环境。
     pub fn materialize_isolated(&self, id: &AccountId, config_dir: &Path) -> Result<()> {
         let (creds, oauth_account) = self.export_isolated_credentials(id)?;
         std::fs::create_dir_all(config_dir)?;
+        link_shared_claude_home(&self.claude_home, config_dir)?;
         write_credentials(&credentials_path(config_dir), &creds)?;
         write_oauth_account_into_global(&global_config_path(config_dir), &oauth_account)?;
         #[cfg(target_os = "macos")]
@@ -884,6 +963,168 @@ impl ClaudeProvider {
     fn read_isolated_credentials(&self, config_dir: &Path) -> Option<CredentialsFile> {
         read_credentials(&credentials_path(config_dir)).ok()
     }
+}
+
+/// 让隔离 Claude config 目录共享全局 Claude home 中除账号文件外的所有内容。
+///
+/// Claude Code 把账号凭据和 oauthAccount 也放在 config dir 内，所以这些账号相关文件必须
+/// 留在隔离目录；其它配置、skills、plugins、projects 等都应共享全局，避免隔离账号跑出
+/// 另一套工作环境。
+fn link_shared_claude_home(global_home: &Path, isolated_home: &Path) -> Result<()> {
+    std::fs::create_dir_all(global_home)?;
+    std::fs::create_dir_all(isolated_home)?;
+
+    let mut names = BTreeSet::new();
+    for entry in std::fs::read_dir(global_home)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if should_share_claude_entry(&name) {
+            names.insert(name);
+        }
+    }
+    for name in essential_shared_claude_dirs() {
+        names.insert((*name).to_string());
+    }
+
+    for name in names {
+        let target = global_home.join(&name);
+        if !target.exists() {
+            if is_essential_shared_dir(name.as_str()) {
+                std::fs::create_dir_all(&target)?;
+            } else {
+                continue;
+            }
+        }
+        let link_path = isolated_home.join(&name);
+        replace_with_shared_path(&link_path, &target)?;
+    }
+
+    copy_shared_settings_without_account_env(global_home, isolated_home, "settings.json")?;
+    copy_shared_settings_without_account_env(global_home, isolated_home, "settings.local.json")?;
+    Ok(())
+}
+
+fn essential_shared_claude_dirs() -> &'static [&'static str] {
+    &[
+        "agents",
+        "commands",
+        "file-history",
+        "hooks",
+        "ide",
+        "memory",
+        "plugins",
+        "projects",
+        "skills",
+        "statsig",
+        "todos",
+    ]
+}
+
+fn is_essential_shared_dir(name: &str) -> bool {
+    essential_shared_claude_dirs().contains(&name)
+}
+
+fn should_share_claude_entry(name: &str) -> bool {
+    !matches!(
+        name,
+        ".credentials.json" | ".claude.json" | ".config.json" | ".subswap-api.json"
+    ) && !matches!(name, "settings.json" | "settings.local.json")
+        && !name.starts_with(".subswap.")
+}
+
+fn copy_shared_settings_without_account_env(
+    global_home: &Path,
+    isolated_home: &Path,
+    file_name: &str,
+) -> Result<()> {
+    let src = global_home.join(file_name);
+    if !src.exists() {
+        return Ok(());
+    }
+    let mut settings = read_settings(&src)?;
+    strip_managed_account_env(&mut settings)?;
+    let dst = isolated_home.join(file_name);
+    if let Ok(meta) = std::fs::symlink_metadata(&dst) {
+        if meta.file_type().is_symlink() || meta.is_file() {
+            std::fs::remove_file(&dst)?;
+        } else if meta.is_dir() {
+            std::fs::remove_dir_all(&dst)?;
+        }
+    }
+    std::fs::write(&dst, serde_json::to_string_pretty(&settings)?)?;
+    Ok(())
+}
+
+fn strip_managed_account_env(settings: &mut serde_json::Value) -> Result<()> {
+    let obj = settings
+        .as_object_mut()
+        .ok_or_else(|| Error::Provider("Claude settings root is not a JSON object".into()))?;
+    let remove_env = if let Some(env) = obj.get_mut("env") {
+        let env = env
+            .as_object_mut()
+            .ok_or_else(|| Error::Provider("Claude settings env is not a JSON object".into()))?;
+        for key in MANAGED_API_ENV_KEYS {
+            env.remove(*key);
+        }
+        env.is_empty()
+    } else {
+        false
+    };
+    if remove_env {
+        obj.remove("env");
+    }
+    Ok(())
+}
+
+fn replace_with_shared_path(link_path: &Path, target: &Path) -> Result<()> {
+    if let Ok(meta) = std::fs::symlink_metadata(link_path) {
+        if meta.file_type().is_symlink() {
+            std::fs::remove_file(link_path)?;
+        } else if meta.is_dir() {
+            if target.is_dir() {
+                merge_dir_contents(link_path, target)?;
+            }
+            std::fs::remove_dir_all(link_path)?;
+        } else {
+            std::fs::remove_file(link_path)?;
+        }
+    }
+    create_link(target, link_path)
+}
+
+fn merge_dir_contents(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        let meta = entry.metadata()?;
+        if meta.is_dir() {
+            merge_dir_contents(&src_path, &dst_path)?;
+        } else if !dst_path.exists() {
+            if let Some(parent) = dst_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn create_link(target: &Path, link_path: &Path) -> Result<()> {
+    std::os::unix::fs::symlink(target, link_path)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn create_link(target: &Path, link_path: &Path) -> Result<()> {
+    if target.is_dir() {
+        std::os::windows::fs::symlink_dir(target, link_path)?;
+    } else {
+        std::os::windows::fs::symlink_file(target, link_path)?;
+    }
+    Ok(())
 }
 
 fn is_api_account(account: &Account) -> bool {
@@ -1225,6 +1466,28 @@ fn is_auth_error(err: &Error) -> bool {
     s.contains("401") || s.contains("unauthorized")
 }
 
+/// refresh endpoint 是否回 `invalid_grant`(refresh token 被服务端作废)。
+/// 与网络/超时等瞬时错误区分：只有它才把 token 标记为「死」并停止重试。
+fn is_invalid_grant(err: &Error) -> bool {
+    err.to_string().to_ascii_lowercase().contains("invalid_grant")
+}
+
+/// refresh token 的短指纹(sha256 前 8 字节 hex)。只用于内存去重，不落盘、不外泄原 token。
+fn refresh_fingerprint(refresh_token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(refresh_token.as_bytes());
+    hasher.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// parked 账号 refresh token 已死时返回的统一错误。文本含 "re-login"，供 CLI 压成
+/// `needs re-login` 展示，而不是默默挂旧缓存。
+fn relogin_required_error(id: &AccountId) -> Error {
+    Error::QuotaFetch(format!(
+        "re-login required for {PROVIDER_ID}:{id}; refresh token invalid, log in again in Claude Code"
+    ))
+}
+
 fn is_expired_or_soon(creds: &CredentialsFile, slack_ms: i64) -> bool {
     let Some(expires_at_ms) = creds.oauth.expires_at else {
         return false;
@@ -1353,6 +1616,98 @@ mod tests {
     }
 
     #[test]
+    fn dead_refresh_guard_tracks_by_token_and_recovers_on_rotation() {
+        use subswap_core::FileStore;
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = ClaudeProvider {
+            store: Arc::new(FileStore::new(tmp.path().join("creds.json"))),
+            registry: Arc::new(AccountRegistry::new(tmp.path().join("registry.toml"))),
+            claude_home: tmp.path().join("claude"),
+            dead_refresh: Arc::new(Mutex::new(HashSet::new())),
+        };
+        // 空 token 永不判死;未标记前不算死。
+        assert!(!provider.is_refresh_dead(""));
+        assert!(!provider.is_refresh_dead("rt-old"));
+        provider.mark_refresh_dead("rt-old");
+        assert!(provider.is_refresh_dead("rt-old"));
+        // 轮换出的新 token 指纹不同 → 自动恢复刷新。
+        assert!(!provider.is_refresh_dead("rt-new"));
+    }
+
+    #[test]
+    fn invalid_grant_classification_and_relogin_error_text() {
+        assert!(is_invalid_grant(&Error::QuotaFetch(
+            "refresh returned 400: {\"error\":\"invalid_grant\"}".into()
+        )));
+        assert!(!is_invalid_grant(&Error::QuotaFetch("request timeout".into())));
+        // 透出给 CLI 的错误文本含 "re-login",供 compact_error 归一成 needs re-login。
+        let msg = relogin_required_error(&AccountId("a@x.com".into())).to_string();
+        assert!(msg.contains("re-login"), "{msg}");
+    }
+
+    #[test]
+    fn isolated_home_shares_everything_except_account_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("global");
+        let isolated = tmp.path().join("isolated");
+        std::fs::create_dir_all(global.join("projects")).unwrap();
+        std::fs::create_dir_all(global.join("plugins")).unwrap();
+        std::fs::write(global.join("projects/session.jsonl"), "session").unwrap();
+        std::fs::write(global.join("plugins/plugin.json"), "{}").unwrap();
+        std::fs::write(global.join("CLAUDE.md"), "@AGENTS.md").unwrap();
+        std::fs::write(global.join(".credentials.json"), "global-credentials").unwrap();
+        std::fs::write(
+            global.join("settings.json"),
+            r#"{"env":{"ANTHROPIC_AUTH_TOKEN":"api-token","KEEP":"yes"},"permissions":{"allow":["Read"]}}"#,
+        )
+        .unwrap();
+
+        link_shared_claude_home(&global, &isolated).unwrap();
+
+        assert!(std::fs::symlink_metadata(isolated.join("projects"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(std::fs::symlink_metadata(isolated.join("plugins"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(std::fs::symlink_metadata(isolated.join("CLAUDE.md"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(!isolated.join(".credentials.json").exists());
+
+        let settings: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(isolated.join("settings.json")).unwrap())
+                .unwrap();
+        assert!(settings["env"].get("ANTHROPIC_AUTH_TOKEN").is_none());
+        assert_eq!(settings["env"]["KEEP"], "yes");
+        assert_eq!(settings["permissions"]["allow"][0], "Read");
+    }
+
+    #[test]
+    fn isolated_home_merges_old_projects_before_linking() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("global");
+        let isolated = tmp.path().join("isolated");
+        std::fs::create_dir_all(global.join("projects")).unwrap();
+        std::fs::create_dir_all(isolated.join("projects")).unwrap();
+        std::fs::write(isolated.join("projects/old.jsonl"), "old").unwrap();
+
+        link_shared_claude_home(&global, &isolated).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(global.join("projects/old.jsonl")).unwrap(),
+            "old"
+        );
+        assert!(std::fs::symlink_metadata(isolated.join("projects"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
     fn capture_on_leave_updates_store_for_owner() {
         use subswap_core::FileStore;
 
@@ -1452,6 +1807,7 @@ mod tests {
             store: Arc::new(FileStore::new(tmp.path().join("creds.json"))),
             registry: Arc::new(AccountRegistry::new(tmp.path().join("registry.toml"))),
             claude_home: home,
+            dead_refresh: Arc::new(Mutex::new(HashSet::new())),
         };
         assert_eq!(
             provider.active_account_id().unwrap(),
@@ -1478,6 +1834,7 @@ mod tests {
                 store: Arc::new(FileStore::new(tmp.path().join("creds.json"))),
                 registry: Arc::new(AccountRegistry::new(tmp.path().join("registry.toml"))),
                 claude_home: home.clone(),
+                dead_refresh: Arc::new(Mutex::new(HashSet::new())),
             };
             Self {
                 _tmp: tmp,

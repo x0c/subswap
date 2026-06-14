@@ -170,7 +170,7 @@ field 例： credentials_json（Claude 整段）/ auth_json（Codex 整段）
 与 [troubleshooting/2026-06-06-filestore-credential-backend.md](../troubleshooting/2026-06-06-filestore-credential-backend.md)）。
 明文文件后端彻底规避此问题，代价是 token 明文落盘（`0600`，与 Codex 的 `~/.codex/auth.json` 同级）。
 
-**`KeyringStore` 多端后端差异（迁移回退源；也影响早期 daemon 保活正确性）**：
+**`KeyringStore` 多端后端差异（迁移回退源）**：
 
 | 平台 | keyring 后端 | 进程间可见 | 重启后持久 |
 |---|---|---|---|
@@ -253,15 +253,13 @@ provider / cli / daemon 都禁止硬编码阈值、时间窗口、百分比。
 daemon（M4）按 `DAEMON_POLL_INTERVAL_MS` 低频轮询，并在失败后退避。未来 429 立即切换只能来自
 真实客户端 hook / 本地 IPC 上报，不能靠更密集的 usage 请求实现。
 
-默认 CLI 不用持久 quota cache 来掩盖实时查询失败。原因：缓存会降低请求频率，但容易让用户误以为当前额度仍有效；
-限流/认证失败应明确显示短状态（如 `rate limited` / `auth failed`），请求频率问题应通过低频采样、渐进渲染、
-daemon 退避或真实客户端 hook 解决。
+默认 CLI 不做持久 quota cache。缓存降低请求频率，但让用户误以为额度仍有效；失败应明确显示短状态，频率问题通过低频采样、渐进渲染、daemon 退避或客户端 hook 解决。
 
 ## 6. 错误处理
 
-- `core::error::Error` 是统一错误枚举。Provider 内部用 `anyhow::Error` 处理细节，通过 `Error::Other` 或 `Error::Provider(String)` 暴露。
+- `core::error::Error` 是统一错误枚举。Provider 内部用 `anyhow::Error`，通过 `Error::Other` / `Error::Provider(String)` 暴露。
 - CLI 层用 `anyhow::Result` + `with_context` 给用户加上下文。
-- 错误绝不静默吞掉；`query_quota` 失败时返回 `Err`，CLI 自行决定是否降级。
+- `query_quota` 失败返回 `Err`，不静默吞错误；CLI 自行决定是否降级。
 
 ## 7. 关键代码路径地图
 
