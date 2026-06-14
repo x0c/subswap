@@ -92,7 +92,16 @@ pub async fn run() -> Result<()> {
             allow_unknown: false,
             settle_grace_ms: snapshot_settings.auto_swap.settle_grace_ms,
         };
-        if let Err(e) = run_cycle(&providers, &claude, &audit, &mut state, &policy).await {
+        if let Err(e) = run_cycle(
+            &providers,
+            &claude,
+            &audit,
+            &mut state,
+            &policy,
+            &paths.data_dir,
+        )
+        .await
+        {
             tracing::warn!(err = %e, "daemon cycle failed; will retry next interval");
         }
 
@@ -128,6 +137,7 @@ async fn run_cycle(
     audit: &AuditLog,
     state: &mut DaemonState,
     policy: &PolicyConfig,
+    data_dir: &std::path::Path,
 ) -> Result<()> {
     // (a) 收集每个 Provider 的快照。query_quota 失败的账号 fetch_error 带原因。
     let snapshots = build_snapshots(providers).await;
@@ -141,6 +151,15 @@ async fn run_cycle(
         // Degraded 期内跳过该 Provider 的 swap(但 token 保活仍要做)。
         if state.is_degraded(&snap.provider) {
             tracing::debug!(provider = %snap.provider, "provider in degraded window; skip");
+            continue;
+        }
+        if provider_has_checked_out_account(data_dir.to_path_buf(), &snap.provider, &snap.accounts)
+            .await?
+        {
+            tracing::debug!(
+                provider = %snap.provider,
+                "skip auto swap: isolated session active"
+            );
             continue;
         }
 
@@ -234,7 +253,7 @@ async fn run_cycle(
     }
 
     // (c) Claude token 后台保活:对所有 Claude 账号检查 expires_at。
-    keep_claude_tokens_alive(claude).await;
+    keep_claude_tokens_alive(claude, data_dir).await;
     Ok(())
 }
 
@@ -283,7 +302,11 @@ async fn build_snapshots(providers: &ProviderRegistry) -> Vec<ProviderSnapshot> 
 }
 
 /// 扫 Claude 账号,临近过期的触发 refresh。任一账号失败仅 warn。
-async fn keep_claude_tokens_alive(claude: &Arc<ClaudeProvider>) {
+///
+/// **跳过被隔离会话借走的账号**：该账号的 token 此刻由隔离环境里的 Claude Code 唯一轮换，
+/// daemon 再去刷会与之冲突导致 refresh token 被作废（同 active 账号守卫的道理，见
+/// docs/design/ACCOUNT_ISOLATION_DESIGN.md §5）。
+async fn keep_claude_tokens_alive(claude: &Arc<ClaudeProvider>, data_dir: &std::path::Path) {
     let accounts = match claude.list_accounts().await {
         Ok(a) => a,
         Err(e) => {
@@ -292,6 +315,16 @@ async fn keep_claude_tokens_alive(claude: &Arc<ClaudeProvider>) {
         }
     };
     for account in accounts {
+        if account_checked_out(
+            data_dir.to_path_buf(),
+            "claude".to_string(),
+            account.id.0.clone(),
+        )
+        .await
+        {
+            tracing::debug!(account = %account.id, "skip keepalive: checked out by isolated session");
+            continue;
+        }
         match claude.refresh_if_near_expiry(&account.id).await {
             Ok(true) => {
                 tracing::info!(account = %account.id, "claude token refreshed");
@@ -306,6 +339,32 @@ async fn keep_claude_tokens_alive(claude: &Arc<ClaudeProvider>) {
             }
         }
     }
+}
+
+async fn provider_has_checked_out_account(
+    data_dir: PathBuf,
+    provider: &str,
+    accounts: &[AccountWithQuotas],
+) -> Result<bool> {
+    let provider = provider.to_string();
+    let ids: Vec<String> = accounts
+        .iter()
+        .map(|awq| awq.account.id.0.clone())
+        .collect();
+    tokio::task::spawn_blocking(move || {
+        Ok(ids
+            .iter()
+            .any(|id| subswap_core::checkout::is_checked_out(&data_dir, &provider, id)))
+    })
+    .await?
+}
+
+async fn account_checked_out(data_dir: PathBuf, provider: String, id: String) -> bool {
+    tokio::task::spawn_blocking(move || {
+        subswap_core::checkout::is_checked_out(&data_dir, &provider, &id)
+    })
+    .await
+    .unwrap_or(false)
 }
 
 fn open_pid_lock(path: &PathBuf) -> Result<std::fs::File> {

@@ -22,6 +22,7 @@ tracing.workspace = true
 directories.workspace = true
 chrono.workspace = true
 tokio = { workspace = true }
+sha2.workspace = true
 
 # macOS 凭证读写改为 fork `/usr/bin/security`，不再依赖 keyring crate：
 # keyring 写入会把 Keychain item 的 ACL 设为「仅 subswap」，导致 Claude Code 反复弹授权框。

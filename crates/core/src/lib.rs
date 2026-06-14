@@ -3,6 +3,7 @@
 pub mod account_registry;
 pub mod audit;
 pub mod auto_policy;
+pub mod checkout;
 pub mod defaults;
 pub mod error;
 pub mod model;

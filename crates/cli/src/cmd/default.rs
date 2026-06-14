@@ -9,9 +9,9 @@ use std::io::{self, IsTerminal};
 use anyhow::Result;
 use futures::future::join_all;
 use subswap_core::{
-    auto_decide, paths::AppPaths, query_quota_with_retry, AccountId, AccountWithQuotas, AuditEvent,
-    AuditLog, PolicyConfig, PolicyDecision, ProviderRegistry, ProviderSnapshot, Quota, QuotaCache,
-    QuotaFetchState,
+    auto_decide, checkout, paths::AppPaths, query_quota_with_retry, AccountId, AccountWithQuotas,
+    AuditEvent, AuditLog, PolicyConfig, PolicyDecision, ProviderRegistry, ProviderSnapshot, Quota,
+    QuotaCache, QuotaFetchState,
 };
 
 use crate::app::AppContext;
@@ -264,6 +264,15 @@ async fn try_auto_swap_ready_provider(
     if snap.accounts.is_empty() {
         return Ok(());
     }
+    if provider_has_checked_out_account(provider, &snap.accounts).await? {
+        set_auto_line(
+            auto_lines,
+            provider,
+            "auto: skipped (isolated session active)".to_string(),
+            AutoLineKind::Info,
+        );
+        return Ok(());
+    }
 
     let (from, to) = match auto_decide(snap, cfg) {
         PolicyDecision::Swap { from, to, .. } => (from, to),
@@ -325,6 +334,24 @@ async fn try_auto_swap_ready_provider(
     }
 
     Ok(())
+}
+
+async fn provider_has_checked_out_account(
+    provider: &str,
+    accounts: &[AccountWithQuotas],
+) -> Result<bool> {
+    let provider = provider.to_string();
+    let ids: Vec<String> = accounts
+        .iter()
+        .map(|awq| awq.account.id.0.clone())
+        .collect();
+    tokio::task::spawn_blocking(move || {
+        let paths = AppPaths::resolve()?;
+        Ok(ids
+            .iter()
+            .any(|id| checkout::is_checked_out(&paths.data_dir, &provider, id)))
+    })
+    .await?
 }
 
 /// 同一 provider 的自动切换提示原地替换,保证最终只展示一行最新结果

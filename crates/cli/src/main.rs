@@ -128,6 +128,31 @@ enum Cmd {
         id: Option<String>,
     },
 
+    /// Launch a provider CLI in an account-isolated environment without changing the global active account.
+    Run {
+        /// Provider to launch: codex or claude.
+        provider: String,
+
+        /// Account index (e.g. `3`), id, label, or `<provider>/<id>`.
+        id: String,
+
+        /// Arguments passed to the native CLI after `--`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Open a subshell with an account's isolated environment exported. Provider is inferred from the account.
+    Shell {
+        /// Account index (e.g. `3`), id, label, or `<provider>/<id>`.
+        id: String,
+    },
+
+    /// Print `export` lines for an account's isolated environment (for `eval`). No lock / no absorb.
+    Env {
+        /// Account index (e.g. `3`), id, label, or `<provider>/<id>`.
+        id: String,
+    },
+
     /// Remove <id|N> from registry and keyring. Use `<provider>/<id>` if ambiguous.
     Rm { id: String },
 
@@ -210,6 +235,9 @@ async fn main() -> Result<()> {
             args,
         }) => cmd::login::run(&ctx, &provider, email, sso, device_auth, args).await,
         Some(Cmd::Swap { id }) => cmd::swap::run(&ctx, id.as_deref()).await,
+        Some(Cmd::Run { provider, id, args }) => cmd::run::run(&ctx, &provider, &id, args).await,
+        Some(Cmd::Shell { id }) => cmd::run::shell(&ctx, &id).await,
+        Some(Cmd::Env { id }) => cmd::run::env(&ctx, &id).await,
         Some(Cmd::Rm { id }) => cmd::rm::run(&ctx, &id).await,
         Some(Cmd::Autoswap { toggle }) => cmd::autoswap::run(toggle.as_deref()),
         Some(Cmd::Doctor) => cmd::doctor::run(&ctx).await,
