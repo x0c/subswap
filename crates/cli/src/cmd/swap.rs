@@ -7,8 +7,8 @@
 
 use std::io::{self, IsTerminal};
 
-use anyhow::Result;
-use subswap_core::AuditEvent;
+use anyhow::{bail, Result};
+use subswap_core::{checkout, paths::AppPaths, AccountId, AuditEvent};
 
 use crate::app::AppContext;
 use crate::cmd::resolve_account;
@@ -20,6 +20,13 @@ pub async fn run(ctx: &AppContext, id_input: Option<&str>) -> Result<()> {
     };
 
     let acc = resolve_account(ctx, input)?;
+    if account_checked_out(acc.provider.clone(), acc.id.clone()).await? {
+        bail!(
+            "{}/{} is currently checked out by an isolated session; close it before swapping",
+            acc.provider,
+            acc.id
+        );
+    }
     let p = ctx.providers.get(&acc.provider)?;
     let res = p.activate(&acc.id).await;
     match res {
@@ -42,6 +49,18 @@ pub async fn run(ctx: &AppContext, id_input: Option<&str>) -> Result<()> {
             Err(anyhow::Error::from(e).context(format!("swap {}/{} failed", acc.provider, acc.id)))
         }
     }
+}
+
+async fn account_checked_out(provider: String, id: AccountId) -> Result<bool> {
+    tokio::task::spawn_blocking(move || {
+        let paths = AppPaths::resolve()?;
+        Ok(checkout::is_checked_out(
+            &paths.data_dir,
+            &provider,
+            id.0.as_str(),
+        ))
+    })
+    .await?
 }
 
 /// 无参 `subswap swap`：列出编号 + 用法。**故意不查 quota**，保持「manual swap 不依赖网络」的不变量。

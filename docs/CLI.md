@@ -7,7 +7,28 @@
 | `subswap login <claude\|codex>` | 调用官方 CLI 登录流程，完成后导入/覆盖当前登录账号并标记为 active |
 | `subswap swap [<id\|N>]` | 手动切换；`<id>` 用 id/label/`<provider>/<id>`，`<N>` 用默认入口列出的全局序号。无参打印编号清单 |
 | `subswap rm <id\|N>` | 删除账号（registry + keyring），引用形式同 `swap` |
+| `subswap run <provider> <id> [-- args]` | 账号隔离启动：把该账号凭证投影到私有目录，设隔离环境变量后启动原生 CLI（codex/claude），**不动全局活账号**；退出时吸收轮换后的凭证 |
+| `subswap shell <id>` | 起一个导出好隔离环境变量的子 shell，交互里连跑多条命令；provider 从账号推断；退出时吸收凭证 |
+| `subswap env <id>` | 打印 `export` 行供 `eval`。**注意**：eval 模式不持锁、退出后不吸收凭证，仅供临时短用 |
 | `subswap doctor` | 环境自检 |
+
+### 账号环境隔离（`run` / `shell` / `env`）
+
+与 `swap`（全局原地切换）并存的另一种用法：在不同终端用不同账号**并行**，互不干扰、不改全局活账号。
+机制：Codex 设 `CODEX_HOME`；Claude 设 `CLAUDE_CONFIG_DIR`（macOS 另设 `CLAUDE_SECURESTORAGE_CONFIG_DIR`
+使钥匙串 item 命名空间隔离）。完整设计、约束、风险见
+[docs/design/ACCOUNT_ISOLATION_DESIGN.md](design/ACCOUNT_ISOLATION_DESIGN.md)。
+
+```bash
+subswap run codex 6 -- --version        # 用 6 号账号在隔离环境跑 codex
+subswap run claude alice@x.com          # 隔离启动 claude（按 id 引用）
+subswap shell 3                          # 进子 shell，环境已隔离到 3 号账号
+eval "$(subswap env codex/bob@x.com)"   # 临时把当前 shell 指向某 codex 账号
+```
+
+- **独占锁**：同一账号同时只能被一个隔离会话借走（防 refresh token 轮换冲突）；被借走时手动 `swap`
+  会拒绝切入该账号，默认入口 / daemon auto-swap 会跳过同 provider 本轮自动切换，daemon 也会跳过其保活。
+- **全局活账号告警**：对当前全局 active 账号起隔离会话会告警——若同时被非隔离客户端使用，可能作废其 refresh token。
 
 被砍的子命令：`add` / `list` / `quota` / `refresh` / `auto` / `daemon`（统一收进无参默认行为）。
 

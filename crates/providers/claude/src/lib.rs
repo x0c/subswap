@@ -423,14 +423,12 @@ impl ClaudeProvider {
             None => capture_managed_env(&read_settings(&settings_path)?),
         };
         // 保留已知的 oauth_email（重复切入同一 API 账号时不丢失），首次切入则捕获当前值。
-        let oauth_email = existing_state
-            .and_then(|s| s.oauth_email)
-            .or_else(|| {
-                read_oauth_account(&global_config_path(&self.claude_home))
-                    .ok()
-                    .flatten()
-                    .map(|a| a.email_address)
-            });
+        let oauth_email = existing_state.and_then(|s| s.oauth_email).or_else(|| {
+            read_oauth_account(&global_config_path(&self.claude_home))
+                .ok()
+                .flatten()
+                .map(|a| a.email_address)
+        });
         let state = ApiState {
             account_id: id.0.clone(),
             oauth_email,
@@ -757,6 +755,107 @@ impl Provider for ClaudeProvider {
     }
 }
 
+/// macOS：隔离环境下 Claude Code 凭证钥匙串 item 的 service 名。
+///
+/// 公式见 docs/design/ACCOUNT_ISOLATION_DESIGN.md §2.1：
+/// `Claude Code-credentials-<sha256(NFC(securestorage_dir)).hex[:8]>`。
+/// subswap 启动隔离子进程时显式设 `CLAUDE_SECURESTORAGE_CONFIG_DIR=<dir>`，使哈希源为我们已知的
+/// 确切字符串，不依赖 claude 内部对 `CLAUDE_CONFIG_DIR` 的解析（规避 service 名推导漂移）。
+/// 路径通常为 ASCII，NFC 规范化对其恒等；非 ASCII 路径暂按原始 UTF-8 字节处理。
+#[cfg(target_os = "macos")]
+pub fn isolated_keychain_service(securestorage_dir: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(securestorage_dir.as_bytes());
+    let digest = hasher.finalize();
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{CLAUDE_CODE_KEYCHAIN_SERVICE}-{}", &hex[..8])
+}
+
+impl ClaudeProvider {
+    /// 取账号用于隔离环境的 OAuth 凭证 + oauthAccount 元数据。
+    /// active 账号读 live（macOS 钥匙串 / 文件），parked 账号读凭证仓库。自定义 API 账号不支持隔离。
+    pub fn export_isolated_credentials(
+        &self,
+        id: &AccountId,
+    ) -> Result<(CredentialsFile, OauthAccount)> {
+        let account =
+            self.registry
+                .find(PROVIDER_ID, id)?
+                .ok_or_else(|| Error::AccountNotFound {
+                    provider: PROVIDER_ID.into(),
+                    id: id.to_string(),
+                })?;
+        if is_api_account(&account) {
+            return Err(Error::Provider(
+                "Claude custom-API accounts cannot be isolated via `run`; they use settings.json env"
+                    .into(),
+            ));
+        }
+        let creds = if self.active_account_id()?.as_ref() == Some(id) {
+            self.read_live_credentials()?
+        } else {
+            self.load_credentials(id)?
+        };
+        let oauth_account: OauthAccount = serde_json::from_value(
+            account.extra.get("oauth_account").cloned().ok_or_else(|| {
+                Error::Provider(format!(
+                    "registry entry {PROVIDER_ID}:{id} missing oauth_account field"
+                ))
+            })?,
+        )?;
+        Ok((creds, oauth_account))
+    }
+
+    /// 把账号凭证物化进隔离 config 目录：写 `.credentials.json` + `.claude.json`(oauthAccount)；
+    /// macOS 额外写命名空间钥匙串 item —— Claude Code 在 macOS 实际从钥匙串读凭证。
+    pub fn materialize_isolated(&self, id: &AccountId, config_dir: &Path) -> Result<()> {
+        let (creds, oauth_account) = self.export_isolated_credentials(id)?;
+        std::fs::create_dir_all(config_dir)?;
+        write_credentials(&credentials_path(config_dir), &creds)?;
+        write_oauth_account_into_global(&global_config_path(config_dir), &oauth_account)?;
+        #[cfg(target_os = "macos")]
+        {
+            let service = isolated_keychain_service(&config_dir.to_string_lossy());
+            security_set_password_for(&service, &serde_json::to_string(&creds)?)?;
+        }
+        Ok(())
+    }
+
+    /// 隔离会话结束后把（可能被 Claude Code 轮换过的）凭证吸收回凭证仓库，不动全局 active。
+    pub fn absorb_isolated(&self, id: &AccountId, config_dir: &Path) -> Result<()> {
+        match self.read_isolated_credentials(config_dir) {
+            Some(creds) => {
+                self.save_credentials(id, &creds)?;
+                tracing::info!(account = %id, "absorbed claude credentials from isolated session");
+                Ok(())
+            }
+            None => Err(Error::Provider(format!(
+                "no credentials found in isolated env {}",
+                config_dir.display()
+            ))),
+        }
+    }
+
+    /// macOS：优先读命名空间钥匙串，回落 `.credentials.json`。
+    #[cfg(target_os = "macos")]
+    fn read_isolated_credentials(&self, config_dir: &Path) -> Option<CredentialsFile> {
+        let service = isolated_keychain_service(&config_dir.to_string_lossy());
+        if let Ok(Some(raw)) = security_find_password_for(&service) {
+            if let Ok(creds) = serde_json::from_str::<CredentialsFile>(&raw) {
+                return Some(creds);
+            }
+        }
+        read_credentials(&credentials_path(config_dir)).ok()
+    }
+
+    /// 非 macOS：凭证只在 `.credentials.json`。
+    #[cfg(not(target_os = "macos"))]
+    fn read_isolated_credentials(&self, config_dir: &Path) -> Option<CredentialsFile> {
+        read_credentials(&credentials_path(config_dir)).ok()
+    }
+}
+
 fn is_api_account(account: &Account) -> bool {
     account
         .extra
@@ -878,15 +977,16 @@ fn read_claude_code_keychain() -> Option<CredentialsFile> {
 /// macOS：读出 Keychain item 的明文（找不到返回 `Ok(None)`,执行失败返回 `Err`）。
 #[cfg(target_os = "macos")]
 fn security_find_password() -> Result<Option<String>> {
+    security_find_password_for(CLAUDE_CODE_KEYCHAIN_SERVICE)
+}
+
+/// macOS：按指定 service 读 Keychain item 明文。隔离环境用命名空间 service（见
+/// [`isolated_keychain_service`]）；全局账号用 [`CLAUDE_CODE_KEYCHAIN_SERVICE`]。
+#[cfg(target_os = "macos")]
+fn security_find_password_for(service: &str) -> Result<Option<String>> {
     let account = keychain_account()?;
-    let output = run_security_on_keychain(&[
-        "find-generic-password",
-        "-s",
-        CLAUDE_CODE_KEYCHAIN_SERVICE,
-        "-a",
-        &account,
-        "-w",
-    ])?;
+    let output =
+        run_security_on_keychain(&["find-generic-password", "-s", service, "-a", &account, "-w"])?;
     if !output.status.success() {
         // 退出码 44 = item 不存在;其余失败(含用户拒绝授权)也按读不到处理。
         return Ok(None);
@@ -919,12 +1019,18 @@ fn write_claude_code_keychain(creds: &CredentialsFile) -> Result<()> {
 /// 重建路径首次会对被污染的旧 item 弹一次授权框,之后稳态不再弹。
 #[cfg(target_os = "macos")]
 fn security_set_password(value: &str) -> Result<()> {
+    security_set_password_for(CLAUDE_CODE_KEYCHAIN_SERVICE, value)
+}
+
+/// macOS：按指定 service 写 Keychain item，沿用 `-U` 更新 → 删除重建的 ACL 复位策略。
+#[cfg(target_os = "macos")]
+fn security_set_password_for(service: &str, value: &str) -> Result<()> {
     let account = keychain_account()?;
     let update = run_security_on_keychain(&[
         "add-generic-password",
         "-U",
         "-s",
-        CLAUDE_CODE_KEYCHAIN_SERVICE,
+        service,
         "-a",
         &account,
         "-w",
@@ -934,17 +1040,11 @@ fn security_set_password(value: &str) -> Result<()> {
         return Ok(());
     }
     // 删除旧 item(忽略「不存在」类失败),再以 security 为创建者重建。
-    let _ = run_security_on_keychain(&[
-        "delete-generic-password",
-        "-s",
-        CLAUDE_CODE_KEYCHAIN_SERVICE,
-        "-a",
-        &account,
-    ])?;
+    let _ = run_security_on_keychain(&["delete-generic-password", "-s", service, "-a", &account])?;
     let add = run_security_on_keychain(&[
         "add-generic-password",
         "-s",
-        CLAUDE_CODE_KEYCHAIN_SERVICE,
+        service,
         "-a",
         &account,
         "-w",
@@ -1134,6 +1234,17 @@ fn make_quota(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 锁死隔离钥匙串 service 名公式：`Claude Code-credentials-<sha256(dir).hex[:8]>`。
+    /// 已知向量：sha256("abc") = ba7816bf...，前 8 位 = "ba7816bf"。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn isolated_keychain_service_matches_formula() {
+        assert_eq!(
+            isolated_keychain_service("abc"),
+            "Claude Code-credentials-ba7816bf"
+        );
+    }
 
     fn mk_creds(expires_at: Option<i64>, refresh: Option<&str>) -> CredentialsFile {
         CredentialsFile {

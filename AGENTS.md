@@ -28,6 +28,9 @@
   禁止用 `keyring` crate（security-framework 原生 API）：keyring 写会把 item ACL 重置成「仅 subswap」，
   导致 Claude Code（也用 `security` 读）每次切换后反复弹授权框。详见
   [docs/troubleshooting/2026-06-11-claude-code-keychain-acl-poisoning.md](docs/troubleshooting/2026-06-11-claude-code-keychain-acl-poisoning.md)。
+  - 测试隔离：集成测试**禁止触碰真实登录钥匙串**（否则 `cargo test` 在 macOS 弹授权框并改写本机凭证）。
+    所有 `security` 读写认 `SUBSWAP_CLAUDE_KEYCHAIN_PATH` 环境变量重定向到一次性 keychain；
+    `cli_surface.rs::isolated_subswap` 已统一设置它，新写的会激活 Claude OAuth 的集成测试也必须经它隔离。
 - `Provider::activate` 必须先写快照，任一目标写失败要回滚。
 - refresh token 是一次性轮换：subswap 对 active 账号只读不刷，由原生客户端唯一轮换。
   `activate` 覆盖 live 文件前先 capture-on-leave 回灌 live 凭证进 owner 账号 store；
@@ -97,6 +100,7 @@ docs/                     中文项目文档
 | [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) | 架构、模块边界、数据流 |
 | [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md) | 改自动切换候选筛选、阈值、manual_only 行为前必读 |
 | [docs/design/PREWARM_DESIGN.md](docs/design/PREWARM_DESIGN.md) | 窗口预热提案 |
+| [docs/design/ACCOUNT_ISOLATION_DESIGN.md](docs/design/ACCOUNT_ISOLATION_DESIGN.md) | 做 `subswap run`/`shell` 账号环境隔离、改 checkout 锁 / daemon 避让 / macOS 钥匙串命名空间前必读 |
 | [docs/CONFIG.md](docs/CONFIG.md) | `config.toml` 字段与热加载 |
 | [docs/CLI.md](docs/CLI.md) | 改 CLI 命令面、交互向导或 `subswapd` 辅助进程前必读 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 里程碑进度 |

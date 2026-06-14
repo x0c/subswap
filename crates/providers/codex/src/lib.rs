@@ -386,6 +386,32 @@ impl Provider for CodexProvider {
 }
 
 impl CodexProvider {
+    /// 取指定账号的 auth.json 原文，供 `subswap run` 写入隔离环境（`CODEX_HOME`）。
+    /// 复用 [`Self::raw_auth_for_account`]：active 账号优先实时 live，其余读凭证仓库副本。
+    pub fn export_auth_blob(&self, id: &AccountId) -> Result<String> {
+        let account =
+            self.registry
+                .find(PROVIDER_ID, id)?
+                .ok_or_else(|| Error::AccountNotFound {
+                    provider: PROVIDER_ID.into(),
+                    id: id.to_string(),
+                })?;
+        self.raw_auth_for_account(&account)
+    }
+
+    /// 隔离会话结束后，把可能已被 Codex CLI 轮换过的 auth.json 吸收回凭证仓库。
+    ///
+    /// 只更新该账号的 store 副本，**不碰全局 `~/.codex/auth.json` 与 active 标记**——隔离会话
+    /// 不影响全局活账号。校验是合法 JSON 后写入，避免把损坏内容覆盖进仓库。
+    pub fn absorb_auth_blob(&self, id: &AccountId, raw_auth_json: &str) -> Result<()> {
+        serde_json::from_str::<serde_json::Value>(raw_auth_json)
+            .map_err(|e| Error::Provider(format!("isolated auth.json is not valid JSON: {e}")))?;
+        self.store
+            .set(PROVIDER_ID, id.0.as_str(), AUTH_FIELD, raw_auth_json)?;
+        tracing::info!(account = %id, "absorbed codex auth.json from isolated session");
+        Ok(())
+    }
+
     fn raw_auth_for_account(&self, account: &Account) -> Result<String> {
         if let Some(raw) = self.read_active_auth_if_matches(account)? {
             // 用激活账号的实时 auth.json 刷新凭证仓库副本(FileStore 明文写入,不弹钥匙串)。
