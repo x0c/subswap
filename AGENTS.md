@@ -31,6 +31,10 @@
   - 测试隔离：集成测试**禁止触碰真实登录钥匙串**（否则 `cargo test` 在 macOS 弹授权框并改写本机凭证）。
     所有 `security` 读写认 `SUBSWAP_CLAUDE_KEYCHAIN_PATH` 环境变量重定向到一次性 keychain；
     `cli_surface.rs::isolated_subswap` 已统一设置它，新写的会激活 Claude OAuth 的集成测试也必须经它隔离。
+- `subswap run claude` 的隔离 `.claude.json` 必须包含 `hasCompletedOnboarding: true`，
+  否则 claude 无论钥匙串里有无有效凭证都会弹「Select login method」首次引导——
+  由 `materialize_isolated` 调 `mark_onboarding_complete` 写入；改隔离物化流程时不得删除该调用。
+  详见 [docs/design/ACCOUNT_ISOLATION_DESIGN.md](docs/design/ACCOUNT_ISOLATION_DESIGN.md) §2.3。
 - `Provider::activate` 必须先写快照，任一目标写失败要回滚。
 - refresh token 是一次性轮换：subswap 对 active 账号只读不刷，由原生客户端唯一轮换。
   `activate` 覆盖 live 文件前先 capture-on-leave 回灌 live 凭证进 owner 账号 store；
