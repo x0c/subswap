@@ -26,10 +26,10 @@ use subswap_core::{
 };
 
 use crate::claude_files::{
-    capture_managed_env, read_api_state, read_credentials, read_oauth_account, read_settings,
-    remove_api_state, restore_oauth_env_in_settings, write_api_env_into_settings, write_api_state,
-    write_credentials, write_oauth_account_into_global, ApiState, CredentialsFile, OauthAccount,
-    MANAGED_API_ENV_KEYS,
+    capture_managed_env, mark_onboarding_complete, read_api_state, read_credentials,
+    read_oauth_account, read_settings, remove_api_state, restore_oauth_env_in_settings,
+    write_api_env_into_settings, write_api_state, write_credentials,
+    write_oauth_account_into_global, ApiState, CredentialsFile, OauthAccount, MANAGED_API_ENV_KEYS,
 };
 use crate::paths::{
     api_state_path, claude_home, credentials_path, global_config_path, settings_path,
@@ -923,6 +923,10 @@ impl ClaudeProvider {
         link_shared_claude_home(&self.claude_home, config_dir)?;
         write_credentials(&credentials_path(config_dir), &creds)?;
         write_oauth_account_into_global(&global_config_path(config_dir), &oauth_account)?;
+        // 预置引导完成标记，使 claude 跳过「Select login method」首次引导流程。
+        // claude 在 hasCompletedOnboarding 缺失时强制跑引导，即使钥匙串已有有效凭证也一样。
+        // 详见 docs/design/ACCOUNT_ISOLATION_DESIGN.md §2.3。
+        mark_onboarding_complete(&global_config_path(config_dir))?;
         #[cfg(target_os = "macos")]
         {
             let service = isolated_keychain_service(&config_dir.to_string_lossy());
@@ -1705,6 +1709,38 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    /// 物化隔离目录后 `.claude.json` 必须含 `hasCompletedOnboarding = true`。
+    /// 否则 claude 会对每个隔离会话跑「Select login method」首次引导流程，
+    /// 即使钥匙串里已有有效凭证也一样（根因见 ACCOUNT_ISOLATION_DESIGN.md §2.3）。
+    #[test]
+    fn materialize_isolated_sets_has_completed_onboarding() {
+        use crate::claude_files::mark_onboarding_complete;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path().join("isolated");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let config_path = global_config_path(&config_dir);
+
+        // 模拟 write_oauth_account_into_global 的初始状态：只有 oauthAccount。
+        std::fs::write(
+            &config_path,
+            r#"{"oauthAccount":{"emailAddress":"test@x.com"}}"#,
+        )
+        .unwrap();
+
+        mark_onboarding_complete(&config_path).unwrap();
+
+        let val: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(
+            val["hasCompletedOnboarding"],
+            serde_json::Value::Bool(true),
+            "隔离目录 .claude.json 缺 hasCompletedOnboarding，claude 会弹首次引导登录框"
+        );
+        // 确保原有字段没被覆掉。
+        assert_eq!(val["oauthAccount"]["emailAddress"], "test@x.com");
     }
 
     #[test]

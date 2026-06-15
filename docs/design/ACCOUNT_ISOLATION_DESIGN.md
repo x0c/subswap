@@ -14,8 +14,10 @@
 >
 > 验证：全工作区测试通过；Codex `run` 用桩 CLI 端到端跑通（materialize/absorb/锁）；Claude `run`
 > 用桩 `claude` 端到端验证账号文件独立、`projects` / `plugins` 共享链接、`settings.json` 剥离受管 API env；
-> Claude `env` 在一次性 keychain 上验证命名空间 item 写入与读回、文件权限、oauthAccount。**未实机实测真实
-> `claude` 是否读该命名空间 item**（需备用登录账号，避免轮换污染主账号）；失败为安全降级（提示登录）。
+> Claude `env` 在一次性 keychain 上验证命名空间 item 写入与读回、文件权限、oauthAccount。
+>
+> **实机实测 2026-06-15 结论**：钥匙串植入公式（§2.1）完全正确，claude 2.1.177 可正常读到命名空间 item。
+> 真正的阻断点是 `hasCompletedOnboarding` 门禁（见 §2.3）——已在 `materialize_isolated` 中修复。
 
 ## 1. 目标与动机
 
@@ -94,6 +96,9 @@ account = $USER（按上面正则清洗，非法 → "claude-code-user"）
 `subswap run claude <id>` 的目标不是给每个账号创建一套全新的 Claude 工作环境，而是**只隔离账号身份**：
 
 - 隔离目录独立持有：`.credentials.json`、`.claude.json` / `.config.json`、`.subswap-api.json` 等账号相关文件。
+  `.claude.json` 除 `oauthAccount` 外还须预置 `hasCompletedOnboarding: true`——
+  claude 在该字段缺失时无论钥匙串里有无有效凭证都会运行首次引导（含「Select login method」）；
+  该字段由 `materialize_isolated` → `mark_onboarding_complete` 写入。
 - 链接回全局 `~/.claude`：`projects` / `plugins` / `skills` / `commands` / `hooks` / `file-history` / `todos`，以及全局已存在的 `sessions` / `transcripts` / 其它非账号条目。
 - `settings.json` / `settings.local.json`：从全局复制并剥掉 subswap 管理的 API 账号 env（`ANTHROPIC_*`、`CLAUDE_CODE_*`），保留 permissions、hooks、其它用户设置。不能直接 symlink，否则全局 custom-API active 时会污染 OAuth 隔离账号。
 

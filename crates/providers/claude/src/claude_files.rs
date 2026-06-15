@@ -224,6 +224,33 @@ pub fn write_oauth_account_into_global(path: &Path, oauth_account: &OauthAccount
     Ok(())
 }
 
+/// 隔离环境专用：在隔离目录的 `.claude.json` 里标记 Claude Code 首次引导已完成。
+///
+/// **为什么必须做**：`claude` 启动时检查全局配置的 `hasCompletedOnboarding` 字段；
+/// 若不存在（或为 false），会先运行首次引导流程，首步即「选择登录方式」，
+/// 导致**即使钥匙串里已有有效凭证**也弹出登录框——与注入凭证的隔离模式天然冲突。
+/// `claude` 只在交互式引导完成后才写该字段，subswap 带外植入凭证永远走不到那段流程，
+/// 因此必须在物化阶段手动预置该字段，让 claude 跳过引导直接进入会话。
+///
+/// **调用约束**：仅在隔离物化路径（`materialize_isolated`）中调用；
+/// 全局 swap 路径不调用——全局配置在正式首次登录后已由 claude 自己写入，无需干预。
+pub fn mark_onboarding_complete(path: &Path) -> Result<()> {
+    let mut root = read_global_config(path)?;
+    let obj = root.as_object_mut().ok_or_else(|| {
+        Error::Provider(format!(
+            "global config {} root is not a JSON object",
+            path.display()
+        ))
+    })?;
+    obj.insert(
+        "hasCompletedOnboarding".into(),
+        serde_json::Value::Bool(true),
+    );
+    let serialized = serde_json::to_string_pretty(&root)?;
+    atomic_write(path, &serialized, false)?;
+    Ok(())
+}
+
 /// 取出全局配置里的 oauthAccount（用于导入当前激活账号）。
 pub fn read_oauth_account(path: &Path) -> Result<Option<OauthAccount>> {
     let root = read_global_config(path)?;
