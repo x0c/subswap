@@ -232,6 +232,12 @@ Claude 那边的保活由 subswap daemon (M4) 自己做，因为非活跃 Claude
    store 副本会停在旧 token，下次切回写回旧 token → 作废。所有 swap（手动 + daemon 自动）唯一
    经过 `activate`，一处生效覆盖两条路径；找不到 owner 直接跳过（best-effort，不阻塞 swap）。
    Claude 重复切换当前账号时只执行回灌并直接返回，禁止先读 store 再把陈旧 token 覆盖回 live。
+   - **覆盖前必须比较新旧 refresh token，绝不能用「缺 refresh」的快照覆盖「有 refresh」的快照**。
+     原生客户端轮换 token 期间 live 源可能短暂处于不完整状态；这一刻被回灌捕获到会把 store 里
+     可续期的副本永久写死，active 账号只读不刷又补不回来（排查见
+     [troubleshooting/2026-06-18](troubleshooting/2026-06-18-live-capture-clobbers-refresh-token.md)）。
+     Claude 命中时合并保留旧 refresh、只跟进新 access token；Codex 命中时整段跳过本次回灌
+     （遵循下方「opaque blob」处理原则，不做字段级合并）。
 2. **绝不轮换 active 账号 token（仅 Claude，Codex 本就不刷）**：
    - `refresh_if_near_expiry` 开头加 active 守卫（`active_account_id()` 命中即返回 `Ok(false)`），
      daemon 后台保活只对 parked 账号生效。

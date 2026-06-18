@@ -42,6 +42,9 @@
   (`reconcile_active_from_live`，只 live→store) 补「绕过 swap 离开」的缺口；refresh 回 `invalid_grant`
   时死 token 守卫止住反复刷的风暴并显示 `needs re-login`。细节见
   [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) 的「Refresh token 轮换」。
+  **`capture_live_into_store` 绝不能用缺 refresh 的 live 快照覆盖 store 里有 refresh 的副本**（会把账号静默写死），
+  两个 provider 各有守卫，改此逻辑前见
+  [docs/troubleshooting/2026-06-18-live-capture-clobbers-refresh-token.md](docs/troubleshooting/2026-06-18-live-capture-clobbers-refresh-token.md)。
 - 新 Provider 只能放在 `crates/providers/<id>`，再到 `AppContext::build()` 注册，并在默认入口同步本地 active。
 - AutoSwap 默认阈值只改 `crates/core/src/defaults.rs::AUTO_SWAP_THRESHOLD`，并同步
   [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md)。
@@ -55,7 +58,9 @@
   Anthropic usage 端点限流极严（~每账号每分钟 1 次），**禁止手动 `curl` 连发去"复现"**——会打爆桶、
   污染判断。查询前先走缓存节流：缓存比 `settings.quota.min_refresh_interval_ms`(默认 90s) 新就复用、
   不打端点；daemon 与 CLI 共用 `quota_cache.json`，两条路径都要尊重。**429 ≠ token 失效**，三种「查不出」
-  的区分与处理见 [docs/troubleshooting/2026-06-14-claude-quota-unqueryable-429-vs-invalid-grant.md](docs/troubleshooting/2026-06-14-claude-quota-unqueryable-429-vs-invalid-grant.md)。
+  的区分与处理见 [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) 的「Usage 接口异常状态码」；
+  根因与修复历史见
+  [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](docs/troubleshooting/TROUBLESHOOTING_INDEX.md)。
 
 ## 代码风格
 
@@ -114,19 +119,12 @@ docs/                     中文项目文档
 | [docs/CONFIG.md](docs/CONFIG.md) | `config.toml` 字段与热加载 |
 | [docs/CLI.md](docs/CLI.md) | 改 CLI 命令面、交互向导或 `subswapd` 辅助进程前必读 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 里程碑进度 |
-| [docs/troubleshooting/2026-05-28-claude-config-dir-parent-pollution.md](docs/troubleshooting/2026-05-28-claude-config-dir-parent-pollution.md) | 排查 Claude 配置父目录污染、路径误判或配置目录隔离问题 |
-| [docs/troubleshooting/2026-05-28-toml-null-serialization.md](docs/troubleshooting/2026-05-28-toml-null-serialization.md) | 排查 TOML 序列化写出 null、配置保存异常前阅读 |
-| [docs/troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md](docs/troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md) | 排查 daemon 与 keyutils session 隔离、凭据读取失败前阅读 |
-| [docs/troubleshooting/2026-05-29-macos-keychain-prompts.md](docs/troubleshooting/2026-05-29-macos-keychain-prompts.md) | 排查 macOS Keychain 弹窗、凭据访问提示或权限体验前阅读 |
-| [docs/troubleshooting/2026-06-06-filestore-credential-backend.md](docs/troubleshooting/2026-06-06-filestore-credential-backend.md) | 排查 filestore 凭据后端、跨平台凭据保存行为前阅读 |
-| [docs/troubleshooting/2026-06-08-codex-refresh-token-already-used.md](docs/troubleshooting/2026-06-08-codex-refresh-token-already-used.md) | 排查 Codex refresh token already used、令牌刷新竞态前阅读 |
-| [docs/troubleshooting/2026-06-11-claude-code-keychain-acl-poisoning.md](docs/troubleshooting/2026-06-11-claude-code-keychain-acl-poisoning.md) | 排查 macOS 反复弹「security wants to access "Claude Code-credentials"」、改 Claude keychain 读写前必读 |
-| [docs/troubleshooting/2026-06-14-claude-quota-unqueryable-429-vs-invalid-grant.md](docs/troubleshooting/2026-06-14-claude-quota-unqueryable-429-vs-invalid-grant.md) | 排查 Claude 用量查不出来 / 忽好忽坏 / 全员 cached、429 与 invalid_grant 混淆、改缓存节流或死 token 守卫前必读 |
+| [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（9 篇记录：keychain ACL 中毒、refresh token 覆写、429 vs invalid_grant、TOML null 等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **subswap** (1556 symbols, 4075 relationships, 135 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **subswap** (1558 symbols, 4084 relationships, 135 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
