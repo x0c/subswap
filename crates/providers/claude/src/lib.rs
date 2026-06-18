@@ -1400,6 +1400,29 @@ fn capture_live_into_store(
     if registry.find(PROVIDER_ID, &id)?.is_none() {
         return Ok(());
     }
+
+    // 守卫：live 读到的 refresh token 为空时，不能让它覆盖 store 里已有的非空 refresh token。
+    // Claude Code 轮换 token 期间钥匙串可能短暂处于「有 access、缺 refresh」的状态;若照单全收,
+    // store 里原本可续期的账号会被写成永久过期(active 账号只读不刷,这个空缺再也补不回来)。
+    // 命中时只跟进 access token / expiresAt,保留旧 refresh token。
+    if live_creds.oauth.refresh_token.as_deref().unwrap_or("").is_empty() {
+        if let Some(raw) = store.get(PROVIDER_ID, id.0.as_str(), CRED_FIELD)? {
+            if let Ok(mut existing) = serde_json::from_str::<CredentialsFile>(&raw) {
+                if !existing.oauth.refresh_token.as_deref().unwrap_or("").is_empty() {
+                    existing.oauth.access_token = live_creds.oauth.access_token;
+                    existing.oauth.expires_at = live_creds.oauth.expires_at;
+                    let merged = serde_json::to_string(&existing)?;
+                    store.set(PROVIDER_ID, id.0.as_str(), CRED_FIELD, &merged)?;
+                    tracing::warn!(
+                        account = %id,
+                        "claude live capture missing refresh token; kept existing refresh token in store, only updated access token"
+                    );
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     let serialized = serde_json::to_string(&live_creds)?;
     store.set(PROVIDER_ID, id.0.as_str(), CRED_FIELD, &serialized)?;
     tracing::debug!(account = %id, "claude live credentials captured into store before swap");
@@ -1795,6 +1818,112 @@ mod tests {
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&stored).unwrap();
         assert_eq!(v["claudeAiOauth"]["refreshToken"], "R2");
+    }
+
+    #[test]
+    fn capture_on_leave_preserves_refresh_when_live_missing_it() {
+        use subswap_core::FileStore;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("claude");
+        std::fs::create_dir_all(&home).unwrap();
+
+        // live credentials.json:Claude Code 轮换期间钥匙串短暂缺 refreshToken。
+        let live_creds = r#"{"claudeAiOauth":{"accessToken":"AT2","expiresAt":222}}"#;
+        std::fs::write(credentials_path(&home), live_creds).unwrap();
+        std::fs::write(
+            global_config_path(&home),
+            r#"{"oauthAccount":{"emailAddress":"a@x.com"}}"#,
+        )
+        .unwrap();
+
+        let store = FileStore::new(tmp.path().join("creds.json"));
+        let registry = AccountRegistry::new(tmp.path().join("registry.toml"));
+
+        // store 里已有可续期的 refresh token R1，不能被这次回灌抹空。
+        store
+            .set(
+                PROVIDER_ID,
+                "a@x.com",
+                CRED_FIELD,
+                r#"{"claudeAiOauth":{"accessToken":"AT1","refreshToken":"R1"}}"#,
+            )
+            .unwrap();
+        registry
+            .upsert(Account {
+                provider: PROVIDER_ID.into(),
+                id: AccountId("a@x.com".into()),
+                label: "a@x.com".into(),
+                active: true,
+                created_at: Utc::now(),
+                last_used_at: None,
+                priority: 100,
+                extra: serde_json::Map::new(),
+            })
+            .unwrap();
+
+        capture_live_into_store(&store, &registry, &home, false).unwrap();
+
+        // refresh token 必须保留(R1),access token 跟进最新值(AT2)。
+        let stored = store
+            .get(PROVIDER_ID, "a@x.com", CRED_FIELD)
+            .unwrap()
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(v["claudeAiOauth"]["refreshToken"], "R1");
+        assert_eq!(v["claudeAiOauth"]["accessToken"], "AT2");
+    }
+
+    #[test]
+    fn capture_on_leave_overwrites_when_neither_side_has_refresh() {
+        use subswap_core::FileStore;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("claude");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let live_creds = r#"{"claudeAiOauth":{"accessToken":"AT2"}}"#;
+        std::fs::write(credentials_path(&home), live_creds).unwrap();
+        std::fs::write(
+            global_config_path(&home),
+            r#"{"oauthAccount":{"emailAddress":"a@x.com"}}"#,
+        )
+        .unwrap();
+
+        let store = FileStore::new(tmp.path().join("creds.json"));
+        let registry = AccountRegistry::new(tmp.path().join("registry.toml"));
+
+        // store 里原本也没有 refresh token：两边都缺时维持原行为，正常覆盖。
+        store
+            .set(
+                PROVIDER_ID,
+                "a@x.com",
+                CRED_FIELD,
+                r#"{"claudeAiOauth":{"accessToken":"AT1"}}"#,
+            )
+            .unwrap();
+        registry
+            .upsert(Account {
+                provider: PROVIDER_ID.into(),
+                id: AccountId("a@x.com".into()),
+                label: "a@x.com".into(),
+                active: true,
+                created_at: Utc::now(),
+                last_used_at: None,
+                priority: 100,
+                extra: serde_json::Map::new(),
+            })
+            .unwrap();
+
+        capture_live_into_store(&store, &registry, &home, false).unwrap();
+
+        let stored = store
+            .get(PROVIDER_ID, "a@x.com", CRED_FIELD)
+            .unwrap()
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(v["claudeAiOauth"]["accessToken"], "AT2");
+        assert!(v["claudeAiOauth"]["refreshToken"].is_null());
     }
 
     #[test]
