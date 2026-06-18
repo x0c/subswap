@@ -557,6 +557,22 @@ fn capture_live_into_store(
     let Some(owner) = owner else {
         return Ok(());
     };
+
+    // 守卫：live auth.json 缺 refresh_token 时，不能用它覆盖 store 里已有的非空 refresh_token。
+    // codex 自身轮换 token 期间 auth.json 可能短暂处于不完整状态；整段覆盖会把 store 里
+    // 原本可续期的账号写成残缺副本。命中时跳过本次回灌，保留 store 现有快照。
+    if extract_refresh_token(&live_raw).is_none() {
+        if let Some(existing_raw) = store.get(PROVIDER_ID, owner.id.0.as_str(), AUTH_FIELD)? {
+            if extract_refresh_token(&existing_raw).is_some() {
+                tracing::warn!(
+                    account = %owner.id,
+                    "codex live capture missing refresh_token; skipped overwrite to keep existing store copy"
+                );
+                return Ok(());
+            }
+        }
+    }
+
     store.set(PROVIDER_ID, owner.id.0.as_str(), AUTH_FIELD, &live_raw)?;
     tracing::debug!(account = %owner.id, "codex live auth captured into store before swap");
     Ok(())
@@ -652,6 +668,32 @@ fn extract_access_token(raw: &str) -> Option<String> {
     walk(&value)
 }
 
+/// 同 [`extract_access_token`]，宽松查找非空 refresh_token。只用于回灌前的「是否更差」判断，
+/// 不依赖完整 schema，符合本文件「整段 opaque blob」的处理原则。
+fn extract_refresh_token(raw: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    fn walk(v: &serde_json::Value) -> Option<String> {
+        match v {
+            serde_json::Value::Object(map) => {
+                if let Some(serde_json::Value::String(s)) = map.get("refresh_token") {
+                    if !s.is_empty() {
+                        return Some(s.clone());
+                    }
+                }
+                for child in map.values() {
+                    if let Some(found) = walk(child) {
+                        return Some(found);
+                    }
+                }
+                None
+            }
+            serde_json::Value::Array(items) => items.iter().find_map(walk),
+            _ => None,
+        }
+    }
+    walk(&value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -714,6 +756,72 @@ mod tests {
         capture_live_into_store(&store, &registry, &codex_home).unwrap();
 
         // 回灌后 store 应为 live 全文(含 R2),不再是陈旧 R1。
+        let stored = store.get(PROVIDER_ID, "k1", AUTH_FIELD).unwrap().unwrap();
+        assert_eq!(stored, live);
+    }
+
+    #[test]
+    fn capture_on_leave_preserves_refresh_when_live_missing_it() {
+        use subswap_core::FileStore;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let codex_home = tmp.path().join("codex");
+        std::fs::create_dir_all(&codex_home).unwrap();
+
+        // live auth.json:codex 自身轮换期间短暂缺 refresh_token。
+        let live = r#"{"account_key":"k1","email":"a@x.com","tokens":{"access_token":"AT2"}}"#;
+        std::fs::write(active_auth_path(&codex_home), live).unwrap();
+
+        let store = FileStore::new(tmp.path().join("creds.json"));
+        let registry = AccountRegistry::new(tmp.path().join("registry.toml"));
+
+        // store 里已有可续期的 refresh_token R1，不能被这次回灌抹空。
+        let existing = r#"{"account_key":"k1","tokens":{"access_token":"AT1","refresh_token":"R1"}}"#;
+        store
+            .set(PROVIDER_ID, "k1", AUTH_FIELD, existing)
+            .unwrap();
+
+        let mut account = account_with_email_id("a@x.com");
+        account.id = AccountId("k1".into());
+        registry.upsert(account).unwrap();
+
+        capture_live_into_store(&store, &registry, &codex_home).unwrap();
+
+        // store 应保持原样(R1)，不能被缺 refresh 的 live 覆盖。
+        let stored = store.get(PROVIDER_ID, "k1", AUTH_FIELD).unwrap().unwrap();
+        assert_eq!(stored, existing);
+    }
+
+    #[test]
+    fn capture_on_leave_overwrites_when_neither_side_has_refresh() {
+        use subswap_core::FileStore;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let codex_home = tmp.path().join("codex");
+        std::fs::create_dir_all(&codex_home).unwrap();
+
+        let live = r#"{"account_key":"k1","email":"a@x.com","tokens":{"access_token":"AT2"}}"#;
+        std::fs::write(active_auth_path(&codex_home), live).unwrap();
+
+        let store = FileStore::new(tmp.path().join("creds.json"));
+        let registry = AccountRegistry::new(tmp.path().join("registry.toml"));
+
+        // store 里原本也没有 refresh_token：两边都缺时维持原行为，正常覆盖。
+        store
+            .set(
+                PROVIDER_ID,
+                "k1",
+                AUTH_FIELD,
+                r#"{"account_key":"k1","tokens":{"access_token":"AT1"}}"#,
+            )
+            .unwrap();
+
+        let mut account = account_with_email_id("a@x.com");
+        account.id = AccountId("k1".into());
+        registry.upsert(account).unwrap();
+
+        capture_live_into_store(&store, &registry, &codex_home).unwrap();
+
         let stored = store.get(PROVIDER_ID, "k1", AUTH_FIELD).unwrap().unwrap();
         assert_eq!(stored, live);
     }
