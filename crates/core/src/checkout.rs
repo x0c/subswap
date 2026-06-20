@@ -1,62 +1,46 @@
-//! 账号 checkout 锁：环境隔离启动（`subswap run`）时给账号加独占占用。
+//! 账号 checkout：环境隔离启动（`subswap run`）时为每个并发会话准备独立私有目录。
 //!
-//! 设计见 [docs/design/ACCOUNT_ISOLATION_DESIGN.md]。核心不变量：**同一账号同一时刻只能被一个
-//! 隔离环境借走**。否则两个原生客户端会从同一份 refresh token 各自轮换，必有一方被服务端作废
-//! （`refresh token already used`）。
+//! 设计见 [docs/design/ACCOUNT_ISOLATION_DESIGN.md]。
+//! 同一账号可以并发开启多个隔离会话（不再有独占锁）；每个 `Checkout` 实例获得一个唯一的
+//! `env_dir`（路径带序列号后缀），保证两个并发 claude/codex 进程各自有独立的
+//! CLAUDE_CONFIG_DIR / CODEX_HOME，不会互相污染会话文件。
 //!
-//! 实现用 `fs2` 文件锁：`subswap run` 进程在整个子进程生命周期内持有该账号 `.lock` 的独占锁。
-//! 选文件锁而非 PID 文件的理由——**进程崩溃 / 被强杀时操作系统自动释放锁**，从根上避免陈旧锁泄漏。
+//! 注意：OAuth refresh token 是一次性轮换；若多个会话同时触发 token 刷新，
+//! 其中一方会因「refresh token already used」失败需重新登录。实践中 token 有效期较长
+//! （数月），短任务执行期间触发轮换的概率极低；有需要时用 absorb 的写时校验降低冲突。
 
-use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use fs2::FileExt;
+use crate::error::Result;
 
-use crate::error::{Error, Result};
+/// 单调递增序列号，用于生成同账号并发 checkout 的唯一目录名。
+static CHECKOUT_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// 一次账号占用。持有期间锁生效；`Drop` 时释放（关闭文件即解锁，显式 unlock 只为清晰）。
+/// 一次账号 checkout。`Drop` 时清理私有 env 目录（best-effort）。
 pub struct Checkout {
     provider: String,
     id: String,
-    lock_file: File,
     env_dir: PathBuf,
 }
 
 impl Checkout {
-    /// 占用 `(provider, id)`：在 `<data_dir>/checkouts/` 下取独占文件锁，并准备
-    /// `<data_dir>/envs/<provider>/<id>/` 隔离目录（`0700`）。
-    ///
-    /// 锁已被其他存活进程持有时返回 [`Error::Provider`]，提示该账号正被另一个隔离会话使用。
+    /// 为 `(provider, id)` 准备一个新的私有隔离目录并返回 Checkout 句柄。
+    /// 同一账号可并发调用，每次返回不同的 `env_dir`（路径含单调序列号后缀）。
     pub fn acquire(data_dir: &Path, provider: &str, id: &str) -> Result<Self> {
-        let checkouts_dir = data_dir.join("checkouts");
-        std::fs::create_dir_all(&checkouts_dir)?;
-
-        let lock_path = checkouts_dir.join(format!("{provider}__{}.lock", sanitize(id)));
-        let lock_file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&lock_path)?;
-
-        match lock_file.try_lock_exclusive() {
-            Ok(()) => {}
-            Err(_) => {
-                return Err(Error::Provider(format!(
-                    "{provider}/{id} is already checked out by another isolated session; \
-                     close it first or pick another account"
-                )));
-            }
-        }
-
-        let env_dir = env_dir(data_dir, provider, id);
+        let seq = CHECKOUT_SEQ.fetch_add(1, Ordering::Relaxed);
+        // 路径格式：<data_dir>/envs/<provider>/<sanitized_id>/<seq>
+        let env_dir = data_dir
+            .join("envs")
+            .join(provider)
+            .join(sanitize(id))
+            .join(seq.to_string());
         std::fs::create_dir_all(&env_dir)?;
         harden_dir(&env_dir);
 
         Ok(Self {
             provider: provider.to_string(),
             id: id.to_string(),
-            lock_file,
             env_dir,
         })
     }
@@ -66,7 +50,7 @@ impl Checkout {
         &self.env_dir
     }
 
-    /// 被占用的账号 `(provider, id)`。
+    /// 被 checkout 的账号 `(provider, id)`。
     pub fn account(&self) -> (&str, &str) {
         (&self.provider, &self.id)
     }
@@ -74,33 +58,26 @@ impl Checkout {
 
 impl Drop for Checkout {
     fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.lock_file);
+        // 清理私有 env 目录；失败时静默忽略（例如 absorb 后目录已删）。
+        let _ = std::fs::remove_dir_all(&self.env_dir);
     }
 }
 
-/// 该账号当前是否正被某个隔离会话占用（daemon 保活据此跳过，避免抢刷活账号 token）。
-///
-/// 用「非阻塞独占锁探测」实现：能立刻拿到锁说明无人持有（随即释放）；拿不到说明被占用。
-pub fn is_checked_out(data_dir: &Path, provider: &str, id: &str) -> bool {
-    let lock_path = data_dir
-        .join("checkouts")
-        .join(format!("{provider}__{}.lock", sanitize(id)));
-    let Ok(file) = OpenOptions::new().read(true).write(true).open(&lock_path) else {
-        // 锁文件不存在 → 从未被占用。
-        return false;
-    };
-    match file.try_lock_exclusive() {
-        Ok(()) => {
-            let _ = FileExt::unlock(&file);
-            false
-        }
-        Err(_) => true,
-    }
-}
-
-/// 隔离环境私有目录路径：`<data_dir>/envs/<provider>/<sanitized id>/`。
+/// 隔离环境基础目录（账号级，不含序列号后缀）：`<data_dir>/envs/<provider>/<sanitized id>/`。
+/// 各 Checkout 实例在此目录下再建带序列号的子目录；此函数供外部查询账号级目录（如 absorb 路径计算）。
 pub fn env_dir(data_dir: &Path, provider: &str, id: &str) -> PathBuf {
     data_dir.join("envs").join(provider).join(sanitize(id))
+}
+
+/// 该账号当前是否有活跃的隔离会话。
+/// 检测方式：账号级 env 基础目录下是否存在任意子目录（每个活跃 Checkout 实例建一个）。
+/// Drop 时子目录被清理，进程崩溃时目录会残留——可视为近似指标，不影响安全性。
+pub fn is_checked_out(data_dir: &Path, provider: &str, id: &str) -> bool {
+    let base = env_dir(data_dir, provider, id);
+    std::fs::read_dir(&base)
+        .ok()
+        .and_then(|mut d| d.next())
+        .is_some()
 }
 
 /// 把账号 id 清洗成安全文件名：保留字母数字与 `._@-`，其余（含路径分隔符）转 `_`。
@@ -130,21 +107,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn second_acquire_same_account_fails_while_held() {
+    fn same_account_concurrent_acquire_succeeds() {
         let tmp = tempfile::tempdir().unwrap();
         let first = Checkout::acquire(tmp.path(), "codex", "a@x.com").unwrap();
-        assert!(is_checked_out(tmp.path(), "codex", "a@x.com"));
-
-        let second = Checkout::acquire(tmp.path(), "codex", "a@x.com");
-        assert!(
-            second.is_err(),
-            "second checkout must fail while first held"
-        );
-
-        drop(first);
-        // 释放后可重新占用。
-        let third = Checkout::acquire(tmp.path(), "codex", "a@x.com");
-        assert!(third.is_ok());
+        // 同账号并发 checkout 应成功，不再报「已被占用」。
+        let second = Checkout::acquire(tmp.path(), "codex", "a@x.com")
+            .expect("concurrent checkout of same account must succeed");
+        // 两个实例的 env_dir 路径不同（各有独立序列号后缀）。
+        assert_ne!(first.env_dir(), second.env_dir(), "concurrent checkouts must have distinct env dirs");
     }
 
     #[test]
@@ -156,9 +126,16 @@ mod tests {
     }
 
     #[test]
-    fn not_checked_out_when_no_lock_file() {
+    fn env_dir_cleaned_up_on_drop() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(!is_checked_out(tmp.path(), "codex", "never@x.com"));
+        let dir;
+        {
+            let checkout = Checkout::acquire(tmp.path(), "codex", "a@x.com").unwrap();
+            dir = checkout.env_dir().to_path_buf();
+            assert!(dir.exists(), "env_dir 应在 checkout 持有期间存在");
+        }
+        // Drop 后目录应被清理。
+        assert!(!dir.exists(), "env_dir 应在 checkout drop 后被清理");
     }
 
     #[test]
