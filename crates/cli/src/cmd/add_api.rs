@@ -4,7 +4,7 @@ use std::io::{self, IsTerminal};
 
 use anyhow::{bail, Context, Result};
 use dialoguer::{Confirm, Input, Select};
-use subswap_core::AuditEvent;
+use subswap_core::{AuditEvent, BillingKind};
 use subswap_provider_claude::ClaudeApiConfig;
 
 use crate::app::AppContext;
@@ -22,6 +22,9 @@ pub struct AddApiOptions {
     pub haiku_model: Option<String>,
     pub subagent_model: Option<String>,
     pub effort: Option<String>,
+    /// 计费方式：flat（订阅固定费率）| metered（按量）| unlimited（不限量）。
+    /// 决定 OpenConductor 等下游消费者按权重自动切换时的优先级。
+    pub billing: Option<String>,
     pub yes: bool,
 }
 
@@ -37,6 +40,7 @@ struct Draft {
     haiku_model: String,
     subagent_model: String,
     effort: String,
+    billing: BillingKind,
     skip_confirmation: bool,
 }
 
@@ -75,6 +79,7 @@ pub fn run(ctx: &AppContext, options: AddApiOptions) -> Result<()> {
                 subagent_model: draft.subagent_model,
                 effort_level: draft.effort,
             },
+            draft.billing,
         )
         .context("add Claude API provider")?;
     ctx.audit.append(AuditEvent::ok(
@@ -213,6 +218,25 @@ fn build_draft(options: AddApiOptions, interactive: bool) -> Result<Draft> {
         "Effort",
         "max",
     )?;
+    let billing = match options.billing {
+        Some(value) => normalize_billing(&value)?,
+        None if interactive => {
+            let choices = ["Metered (按量计费)", "Unlimited (不限量)", "Flat (固定费率)"];
+            match Select::new()
+                .with_prompt("Billing")
+                .items(&choices)
+                .default(0)
+                .interact()?
+            {
+                0 => BillingKind::Metered,
+                1 => BillingKind::Unlimited,
+                _ => BillingKind::Flat,
+            }
+        }
+        // 非交互且未显式指定：自定义 API 端点默认按量计费，这是最常见也最保守的假设
+        // （宁可被当作"会花钱"而提前预警，也不要默认不限量而被无脑自动切过去）。
+        None => BillingKind::Metered,
+    };
 
     Ok(Draft {
         id,
@@ -230,6 +254,7 @@ fn build_draft(options: AddApiOptions, interactive: bool) -> Result<Draft> {
         haiku_model,
         subagent_model,
         effort,
+        billing,
         skip_confirmation: options.yes,
     })
 }
@@ -303,6 +328,14 @@ fn normalize_auth(value: &str) -> Result<String> {
         "api-key" | "api_key" | "anthropic_api_key" => Ok("api-key".into()),
         other => bail!("unknown auth mode: {other} (expected bearer or api-key)"),
     }
+}
+
+fn normalize_billing(value: &str) -> Result<BillingKind> {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .parse::<BillingKind>()
+        .map_err(|_| anyhow::anyhow!("unknown billing mode: {} (expected flat, metered or unlimited)", value))
 }
 
 fn slugify(value: &str) -> String {

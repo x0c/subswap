@@ -73,6 +73,9 @@ struct AccountQuotaJson {
     provider: String,
     label: String,
     active: bool,
+    /// 计费方式：flat（订阅固定费率）| metered（按量计费）| unlimited（不限量）。
+    /// 给 OpenConductor 等下游消费者判断"是否真花钱"并据此排权重。
+    billing: String,
     /// quota 拉取状态：ready | loading | failed | stale。
     fetch_state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -97,6 +100,7 @@ fn print_quota_json(snapshots: &[ProviderSnapshot]) -> Result<()> {
                 provider: awq.account.provider.clone(),
                 label: awq.account.label.clone(),
                 active: awq.account.active,
+                billing: awq.account.billing().to_string(),
                 fetch_state,
                 error,
                 quotas: awq.quotas.clone(),

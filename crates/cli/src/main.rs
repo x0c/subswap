@@ -100,6 +100,12 @@ enum Cmd {
         #[arg(long)]
         effort: Option<String>,
 
+        /// Billing mode: flat (fixed-rate subscription), metered (pay-per-use), or unlimited.
+        /// Determines auto-switch priority in downstream consumers like OpenConductor.
+        /// Defaults to metered when not specified.
+        #[arg(long)]
+        billing: Option<String>,
+
         /// Skip the final confirmation.
         #[arg(long)]
         yes: bool,
@@ -213,6 +219,7 @@ async fn main() -> Result<()> {
             haiku_model,
             subagent_model,
             effort,
+            billing,
             yes,
         }) => cmd::add_api::run(
             &ctx,
@@ -229,6 +236,7 @@ async fn main() -> Result<()> {
                 haiku_model,
                 subagent_model,
                 effort,
+                billing,
                 yes,
             },
         ),

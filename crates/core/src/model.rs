@@ -51,10 +51,75 @@ impl Account {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
     }
+
+    /// 计费方式。读 `extra["billing"]`，缺省（原生登录的订阅账号）视为 [`BillingKind::Flat`]。
+    ///
+    /// 这是给下游消费者（如 OpenConductor）判断"按量花钱"的唯一信号；新增 Provider
+    /// 适配器（公司号、不限量 APIKEY、第三方中转号池等）只需在 `extra` 里如实标注，
+    /// 不需要 subswap-core 认识具体账号名。
+    ///
+    /// 向后兼容：早于 0.3.23 版本登记的 API 账号没有 `billing` 字段，
+    /// 但会带 `kind=api`（见 `subswap add-api` 的历史写入），自动视为 metered。
+    pub fn billing(&self) -> BillingKind {
+        if let Some(billing) = self
+            .extra
+            .get("billing")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|s| s.parse().ok())
+        {
+            return billing;
+        }
+        // 旧账号：kind=api 暗示按量计费端点（自定义 API 节点默认按量）。
+        if self
+            .extra
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            == Some("api")
+        {
+            return BillingKind::Metered;
+        }
+        BillingKind::Flat
+    }
 }
 
 fn default_priority() -> i32 {
     100
+}
+
+/// 账号的计费方式：决定它在自动切换中的优先级与对外的"是否真花钱"语义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BillingKind {
+    /// 固定费率订阅（如官方登录号），用量在套餐内不额外计费。
+    Flat,
+    /// 按量计费（如自定义 API 端点接的按 token 计费上游）。
+    Metered,
+    /// 不限量（如公司自建网关、不限量 API Key）。
+    Unlimited,
+}
+
+impl fmt::Display for BillingKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Flat => "flat",
+            Self::Metered => "metered",
+            Self::Unlimited => "unlimited",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::str::FromStr for BillingKind {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "flat" => Ok(Self::Flat),
+            "metered" => Ok(Self::Metered),
+            "unlimited" => Ok(Self::Unlimited),
+            _ => Err(()),
+        }
+    }
 }
 
 /// 额度统计窗口。
