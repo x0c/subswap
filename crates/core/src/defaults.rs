@@ -16,7 +16,7 @@
 /// 任一窗口 used/limit ≥ 此值即触发切换。
 ///
 /// 配套不变量：AGENTS.md #5。
-pub const AUTO_SWAP_THRESHOLD: f64 = 0.98;
+pub const AUTO_SWAP_THRESHOLD: f64 = 0.99;
 
 /// 自动切换冷却期（毫秒）。
 ///
@@ -103,4 +103,4 @@ pub const DAEMON_IDLE_THRESHOLD_MS: i64 = 30 * 60 * 1000;
 ///
 /// 由 [`DAEMON_IDLE_THRESHOLD_MS`] 判定空闲后启用；一旦 probe 文件再次变动，
 /// 下一轮立刻回到 [`DAEMON_POLL_INTERVAL_MS`]。
-pub const DAEMON_IDLE_POLL_INTERVAL_MS: u64 = 15 * 60 * 1000;
+pub const DAEMON_IDLE_POLL_INTERVAL_MS: u64 = 30 * 60 * 1000;

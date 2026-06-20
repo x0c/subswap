@@ -1,7 +1,8 @@
 //! 默认入口的渐进式渲染：先出账号骨架，quota 拉到一个刷一个。
 //!
 //! 设计要点：
-//! - 交互终端用 ANSI `\x1b[NA\x1b[J` 回到块首再重绘；非交互场景仅在最终态打印一次。
+//! - 交互终端用 ANSI `\x1b[NA\x1b[J` 回到块首再重绘；`N` 按终端物理行数计算，避免长行软换行后旧帧残留。
+//!   非交互场景仅在最终态打印一次。
 //! - 不区分 stdout / stderr：所有可视输出都走 stdout 一条线，便于 `subswap | tee` 抓取。
 //! - **视觉分层**：交互终端下用 ANSI dim/color 区分轻重点 —— 次要信息（编号、reset 时间、ok 状态）灰掉，
 //!   告警（warn=黄、full=红）和当前激活账号（cyan/bold *）保留醒目色；非交互或重定向时全部退化为纯文本。
@@ -15,6 +16,7 @@ use chrono::{DateTime, Utc};
 use subswap_core::{
     AccountWithQuotas, ProviderSnapshot, Quota, QuotaFetchState, QuotaStatus, QuotaWindow,
 };
+use unicode_width::UnicodeWidthChar;
 
 pub struct InlineRenderer {
     enabled: bool,
@@ -40,8 +42,91 @@ impl InlineRenderer {
         }
         print!("{output}");
         io::stdout().flush()?;
-        self.rendered_lines = output.lines().count();
+        self.rendered_lines = rendered_line_count(&output, terminal_width());
         Ok(())
+    }
+}
+
+fn terminal_width() -> usize {
+    terminal_width_from_os()
+        .or_else(terminal_width_from_env)
+        .unwrap_or(80)
+        .max(1)
+}
+
+#[cfg(unix)]
+fn terminal_width_from_os() -> Option<usize> {
+    use std::os::fd::AsRawFd;
+
+    let mut size = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // 只读 stdout 的 TTY 尺寸；失败时回退到 COLUMNS/80。
+    let result = unsafe { libc::ioctl(io::stdout().as_raw_fd(), libc::TIOCGWINSZ, &mut size) };
+    if result == 0 && size.ws_col > 0 {
+        Some(size.ws_col as usize)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(unix))]
+fn terminal_width_from_os() -> Option<usize> {
+    None
+}
+
+fn terminal_width_from_env() -> Option<usize> {
+    std::env::var("COLUMNS").ok()?.parse::<usize>().ok()
+}
+
+fn rendered_line_count(output: &str, terminal_width: usize) -> usize {
+    let width = terminal_width.max(1);
+    output
+        .split_inclusive('\n')
+        .map(|segment| {
+            let has_newline = segment.ends_with('\n');
+            let text = segment.strip_suffix('\n').unwrap_or(segment);
+            if has_newline || !text.is_empty() {
+                physical_rows(text, width)
+            } else {
+                0
+            }
+        })
+        .sum()
+}
+
+fn physical_rows(line: &str, terminal_width: usize) -> usize {
+    let visible_width = visible_width(line);
+    visible_width.div_ceil(terminal_width).max(1)
+}
+
+fn visible_width(text: &str) -> usize {
+    let mut width = 0;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            skip_ansi_sequence(&mut chars);
+            continue;
+        }
+        width += ch.width().unwrap_or(0);
+    }
+    width
+}
+
+fn skip_ansi_sequence<I>(chars: &mut std::iter::Peekable<I>)
+where
+    I: Iterator<Item = char>,
+{
+    if chars.next_if_eq(&'[').is_none() {
+        return;
+    }
+    for ch in chars.by_ref() {
+        if ('@'..='~').contains(&ch) {
+            break;
+        }
     }
 }
 
@@ -456,7 +541,9 @@ mod tests {
     fn compact_error_names_dead_refresh_token() {
         // parked 账号 refresh token 作废:展示具体的 re-login 提示,而非泛化的 401。
         assert_eq!(
-            compact_error("quota fetch: re-login required for claude:a@x.com; refresh token invalid"),
+            compact_error(
+                "quota fetch: re-login required for claude:a@x.com; refresh token invalid"
+            ),
             "needs re-login"
         );
         assert_eq!(
@@ -509,5 +596,17 @@ mod tests {
         };
         let text = render_to_string(&[snap], &[], true);
         assert!(text.contains("\x1b[1;36m*"), "{text:?}");
+    }
+
+    #[test]
+    fn rendered_line_count_includes_soft_wrapped_rows_and_blank_lines() {
+        let output = "\x1b[2m1234567890X\x1b[0m\n\n";
+        assert_eq!(output.lines().count(), 2);
+        assert_eq!(rendered_line_count(output, 10), 3);
+    }
+
+    #[test]
+    fn rendered_line_count_handles_wide_characters() {
+        assert_eq!(rendered_line_count("账号账号账号\n", 5), 3);
     }
 }

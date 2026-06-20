@@ -776,10 +776,9 @@ mod tests {
         let registry = AccountRegistry::new(tmp.path().join("registry.toml"));
 
         // store 里已有可续期的 refresh_token R1，不能被这次回灌抹空。
-        let existing = r#"{"account_key":"k1","tokens":{"access_token":"AT1","refresh_token":"R1"}}"#;
-        store
-            .set(PROVIDER_ID, "k1", AUTH_FIELD, existing)
-            .unwrap();
+        let existing =
+            r#"{"account_key":"k1","tokens":{"access_token":"AT1","refresh_token":"R1"}}"#;
+        store.set(PROVIDER_ID, "k1", AUTH_FIELD, existing).unwrap();
 
         let mut account = account_with_email_id("a@x.com");
         account.id = AccountId("k1".into());

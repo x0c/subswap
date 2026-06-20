@@ -343,7 +343,12 @@ impl ClaudeProvider {
         if !is_expired_or_soon(&creds, settings::current().token.refresh_slack_ms) {
             return Ok(false);
         }
-        let refresh_token = creds.oauth.refresh_token.as_deref().unwrap_or("").to_string();
+        let refresh_token = creds
+            .oauth
+            .refresh_token
+            .as_deref()
+            .unwrap_or("")
+            .to_string();
         if refresh_token.is_empty() {
             return Ok(false);
         }
@@ -1405,10 +1410,22 @@ fn capture_live_into_store(
     // Claude Code 轮换 token 期间钥匙串可能短暂处于「有 access、缺 refresh」的状态;若照单全收,
     // store 里原本可续期的账号会被写成永久过期(active 账号只读不刷,这个空缺再也补不回来)。
     // 命中时只跟进 access token / expiresAt,保留旧 refresh token。
-    if live_creds.oauth.refresh_token.as_deref().unwrap_or("").is_empty() {
+    if live_creds
+        .oauth
+        .refresh_token
+        .as_deref()
+        .unwrap_or("")
+        .is_empty()
+    {
         if let Some(raw) = store.get(PROVIDER_ID, id.0.as_str(), CRED_FIELD)? {
             if let Ok(mut existing) = serde_json::from_str::<CredentialsFile>(&raw) {
-                if !existing.oauth.refresh_token.as_deref().unwrap_or("").is_empty() {
+                if !existing
+                    .oauth
+                    .refresh_token
+                    .as_deref()
+                    .unwrap_or("")
+                    .is_empty()
+                {
                     existing.oauth.access_token = live_creds.oauth.access_token;
                     existing.oauth.expires_at = live_creds.oauth.expires_at;
                     let merged = serde_json::to_string(&existing)?;
@@ -1496,7 +1513,9 @@ fn is_auth_error(err: &Error) -> bool {
 /// refresh endpoint 是否回 `invalid_grant`(refresh token 被服务端作废)。
 /// 与网络/超时等瞬时错误区分：只有它才把 token 标记为「死」并停止重试。
 fn is_invalid_grant(err: &Error) -> bool {
-    err.to_string().to_ascii_lowercase().contains("invalid_grant")
+    err.to_string()
+        .to_ascii_lowercase()
+        .contains("invalid_grant")
 }
 
 /// refresh token 的短指纹(sha256 前 8 字节 hex)。只用于内存去重，不落盘、不外泄原 token。
@@ -1504,7 +1523,12 @@ fn refresh_fingerprint(refresh_token: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(refresh_token.as_bytes());
-    hasher.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect()
+    hasher
+        .finalize()
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// parked 账号 refresh token 已死时返回的统一错误。文本含 "re-login"，供 CLI 压成
@@ -1666,7 +1690,9 @@ mod tests {
         assert!(is_invalid_grant(&Error::QuotaFetch(
             "refresh returned 400: {\"error\":\"invalid_grant\"}".into()
         )));
-        assert!(!is_invalid_grant(&Error::QuotaFetch("request timeout".into())));
+        assert!(!is_invalid_grant(&Error::QuotaFetch(
+            "request timeout".into()
+        )));
         // 透出给 CLI 的错误文本含 "re-login",供 compact_error 归一成 needs re-login。
         let msg = relogin_required_error(&AccountId("a@x.com".into())).to_string();
         assert!(msg.contains("re-login"), "{msg}");
