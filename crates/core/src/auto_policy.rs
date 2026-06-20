@@ -394,13 +394,31 @@ fn quota_blocks_candidate(q: &Quota, threshold: f64) -> bool {
 }
 
 fn compare_candidates(a: &AccountWithQuotas, b: &AccountWithQuotas) -> std::cmp::Ordering {
-    // 「最忙窗口」used 升序（剩余多的优先）
-    let a_busiest = busiest_used(&a.quotas);
-    let b_busiest = busiest_used(&b.quotas);
-    a_busiest
-        .cmp(&b_busiest)
+    // 主排序：哪个窗口最快重置就优先选谁——尽快用完即将清零的额度，让账号尽早进入下一轮可用周期。
+    // 没有 reset_at 信息（多见于测试 mock）时退化为「最忙窗口」used 升序（剩余多的优先）。
+    let a_reset = earliest_reset(&a.quotas);
+    let b_reset = earliest_reset(&b.quotas);
+    compare_optional_reset(a_reset, b_reset)
+        .then_with(|| busiest_used(&a.quotas).cmp(&busiest_used(&b.quotas)))
         .then(a.account.priority.cmp(&b.account.priority))
         .then(a.account.id.0.cmp(&b.account.id.0))
+}
+
+fn earliest_reset(quotas: &[Quota]) -> Option<DateTime<Utc>> {
+    quotas.iter().filter_map(|q| q.reset_at).min()
+}
+
+/// `None`（无重置时间信息）视为「最晚」，排在已知重置时间的候选之后。
+fn compare_optional_reset(
+    a: Option<DateTime<Utc>>,
+    b: Option<DateTime<Utc>>,
+) -> std::cmp::Ordering {
+    match (a, b) {
+        (Some(x), Some(y)) => x.cmp(&y),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
 }
 
 fn compare_reset_candidates(
@@ -715,6 +733,31 @@ mod tests {
             &PolicyConfig::default(),
         );
         assert!(matches!(d, PolicyDecision::Swap { to, .. } if to.0 == "candidate"));
+    }
+
+    /// 候选都有额度（未达阈值）时，应优先选窗口最快重置的，而不是单纯剩余最多的。
+    #[test]
+    fn swap_prefers_soonest_reset_candidate_over_more_headroom() {
+        let now = Utc::now();
+        let mut active = mk_awq("a", true, 99, QuotaStatus::Warn);
+        active.quotas[0].reset_at = Some(now + chrono::Duration::hours(4));
+
+        let mut more_headroom = mk_awq("b", false, 22, QuotaStatus::Ok);
+        more_headroom.quotas[0].reset_at = Some(now + chrono::Duration::hours(4));
+
+        let mut soonest_reset = mk_awq("c", false, 43, QuotaStatus::Ok);
+        soonest_reset.quotas[0].reset_at = Some(now + chrono::Duration::hours(2));
+
+        let snap = ProviderSnapshot {
+            provider: "claude".into(),
+            accounts: vec![active, more_headroom, soonest_reset],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        match d {
+            // c 剩余更少，但重置更快，应该被优先选中
+            PolicyDecision::Swap { to, .. } => assert_eq!(to.0, "c"),
+            other => panic!("expected Swap, got {other:?}"),
+        }
     }
 
     #[test]
