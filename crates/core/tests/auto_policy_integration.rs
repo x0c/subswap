@@ -59,9 +59,9 @@ fn warn_below_auto_threshold_does_not_swap() {
 }
 
 #[test]
-fn default_threshold_swaps_at_98_percent() {
+fn default_threshold_swaps_at_99_percent() {
     let snap = snapshot(vec![
-        awq("active", true, 98, QuotaStatus::Warn),
+        awq("active", true, 99, QuotaStatus::Warn),
         awq("candidate", false, 1, QuotaStatus::Ok),
     ]);
 

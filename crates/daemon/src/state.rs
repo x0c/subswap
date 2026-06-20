@@ -76,9 +76,9 @@ impl DaemonState {
             .filter(|(_, t)| now.duration_since(*t) <= FLAP_WINDOW)
             .count()
             >= MAX_FLAP_PER_5MIN;
-        let oscillating = history.iter().any(|(id, _)| {
-            history.iter().filter(|(other, _)| other == id).count() >= 2
-        });
+        let oscillating = history
+            .iter()
+            .any(|(id, _)| history.iter().filter(|(other, _)| other == id).count() >= 2);
         rapid || oscillating
     }
 
