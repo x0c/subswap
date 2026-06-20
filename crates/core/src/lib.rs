@@ -24,7 +24,7 @@ pub use auto_policy::{
     QuotaFetchState,
 };
 pub use error::{Error, Result};
-pub use model::{Account, AccountId, ClientTarget, Quota, QuotaStatus, QuotaWindow};
+pub use model::{Account, AccountId, BillingKind, ClientTarget, Quota, QuotaStatus, QuotaWindow};
 pub use provider::Provider;
 pub use quota_cache::{CachedEntry, QuotaCache, ValidEntry};
 pub use quota_query::query_quota_with_retry;

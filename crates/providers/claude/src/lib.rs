@@ -21,8 +21,8 @@ use chrono::Utc;
 use subswap_core::error::{Error, Result};
 use subswap_core::swap::{swap_with_snapshot, SwapTarget};
 use subswap_core::{
-    Account, AccountId, AccountRegistry, ClientTarget, CredentialStore, Provider, Quota,
-    QuotaStatus, QuotaWindow,
+    Account, AccountId, AccountRegistry, BillingKind, ClientTarget, CredentialStore, Provider,
+    Quota, QuotaStatus, QuotaWindow,
 };
 
 use crate::claude_files::{
@@ -167,6 +167,7 @@ impl ClaudeProvider {
         label: String,
         api_key: String,
         config: ClaudeApiConfig,
+        billing: BillingKind,
     ) -> Result<Account> {
         validate_api_id(&id)?;
         if api_key.trim().is_empty() {
@@ -191,6 +192,7 @@ impl ClaudeProvider {
         let mut extra = serde_json::Map::new();
         extra.insert(ACCOUNT_KIND_FIELD.into(), API_KIND.into());
         extra.insert("manual_only".into(), true.into());
+        extra.insert("billing".into(), billing.to_string().into());
         extra.insert(API_CONFIG_FIELD.into(), serde_json::to_value(config)?);
         let account = Account {
             provider: PROVIDER_ID.into(),
