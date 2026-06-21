@@ -70,13 +70,21 @@ pub fn env_dir(data_dir: &Path, provider: &str, id: &str) -> PathBuf {
 }
 
 /// 该账号当前是否有活跃的隔离会话。
-/// 检测方式：账号级 env 基础目录下是否存在任意子目录（每个活跃 Checkout 实例建一个）。
+/// 检测方式：账号级 env 基础目录下是否存在以纯数字命名的子目录（`Checkout::acquire` 写入的序列号目录）。
+/// 只认数字名子目录，忽略旧格式遗留的 CLAUDE_CONFIG_DIR 文件/符号链接，避免把历史数据误判为活跃会话。
 /// Drop 时子目录被清理，进程崩溃时目录会残留——可视为近似指标，不影响安全性。
 pub fn is_checked_out(data_dir: &Path, provider: &str, id: &str) -> bool {
     let base = env_dir(data_dir, provider, id);
     std::fs::read_dir(&base)
         .ok()
-        .and_then(|mut d| d.next())
+        .and_then(|d| {
+            d.filter_map(|e| e.ok()).find(|e| {
+                e.file_type().ok().is_some_and(|ft| ft.is_dir())
+                    && e.file_name()
+                        .to_str()
+                        .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+            })
+        })
         .is_some()
 }
 
