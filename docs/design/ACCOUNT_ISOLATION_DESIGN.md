@@ -1,8 +1,8 @@
 # 账号环境隔离设计（subswap run / shell）
 
 > 提案状态：**已实现并验证**——Codex 与 Claude 隔离路径、`run`/`shell`/`env` 三个子命令、
-> checkout 独占锁、daemon 保活避让均已落地。改隔离启动、checkout 锁、daemon 避让、或 macOS
-> 钥匙串命名空间逻辑前必读。与现有 in-place `swap` 模型并存，不替换。
+> checkout 独占锁、daemon 保活避让均已落地。本文覆盖隔离启动、checkout 锁、daemon 避让、macOS
+> 钥匙串命名空间逻辑，并说明它与现有 in-place `swap` 模型如何并存。
 >
 > 已落地代码：
 > - `crates/core/src/checkout.rs`：flock 独占锁 + `is_checked_out` 探测 + 隔离目录。

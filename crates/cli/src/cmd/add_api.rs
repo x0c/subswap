@@ -221,7 +221,11 @@ fn build_draft(options: AddApiOptions, interactive: bool) -> Result<Draft> {
     let billing = match options.billing {
         Some(value) => normalize_billing(&value)?,
         None if interactive => {
-            let choices = ["Metered (按量计费)", "Unlimited (不限量)", "Flat (固定费率)"];
+            let choices = [
+                "Metered (按量计费)",
+                "Unlimited (不限量)",
+                "Flat (固定费率)",
+            ];
             match Select::new()
                 .with_prompt("Billing")
                 .items(&choices)
@@ -335,7 +339,12 @@ fn normalize_billing(value: &str) -> Result<BillingKind> {
         .trim()
         .to_ascii_lowercase()
         .parse::<BillingKind>()
-        .map_err(|_| anyhow::anyhow!("unknown billing mode: {} (expected flat, metered or unlimited)", value))
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "unknown billing mode: {} (expected flat, metered or unlimited)",
+                value
+            )
+        })
 }
 
 fn slugify(value: &str) -> String {

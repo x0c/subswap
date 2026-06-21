@@ -70,12 +70,7 @@ impl Account {
             return billing;
         }
         // 旧账号：kind=api 暗示按量计费端点（自定义 API 节点默认按量）。
-        if self
-            .extra
-            .get("kind")
-            .and_then(serde_json::Value::as_str)
-            == Some("api")
-        {
+        if self.extra.get("kind").and_then(serde_json::Value::as_str) == Some("api") {
             return BillingKind::Metered;
         }
         BillingKind::Flat

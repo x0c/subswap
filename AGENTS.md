@@ -111,20 +111,35 @@ docs/                     中文项目文档
 
 | 文档 | 用途 |
 |---|---|
-| [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) | 改 Provider 切换、认证、额度或自定义 API 逻辑前必读 |
-| [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) | 架构、模块边界、数据流 |
-| [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md) | 改自动切换候选筛选、阈值、manual_only、防抖/振荡刹车，或排查「默认入口渐进式重判 / 一次 subswap 多次切换 / 连跑结果不同 / 卡在耗尽号 / 账号间无限横跳(A→B→A 振荡)」前必读 |
-| [docs/design/PREWARM_DESIGN.md](docs/design/PREWARM_DESIGN.md) | 窗口预热提案 |
-| [docs/design/ACCOUNT_ISOLATION_DESIGN.md](docs/design/ACCOUNT_ISOLATION_DESIGN.md) | 做 `subswap run`/`shell` 账号环境隔离、改 checkout 锁 / daemon 避让 / macOS 钥匙串命名空间，或排查 Claude resume 看不到会话 / 隔离目录不共享 projects、settings、plugins 前必读 |
-| [docs/CONFIG.md](docs/CONFIG.md) | `config.toml` 字段与热加载 |
-| [docs/CLI.md](docs/CLI.md) | 改 CLI 命令面、交互向导或 `subswapd` 辅助进程前必读 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | 里程碑进度 |
+| [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) | 改、评审、分析或排查 Provider 切换、认证、额度、refresh token、自定义 API、Claude/Codex 本地激活文件前必读 |
+| [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) | 改、评审或分析 workspace 分层、Provider 抽象、核心数据流、凭证文件布局、新 Provider 接入前必读 |
+| [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md) | 改、评审或排查自动切换候选筛选、阈值、manual_only、防抖/振荡刹车、daemon token 保活，或排查「默认入口渐进式重判 / 一次 subswap 多次切换 / 连跑结果不同 / 卡在耗尽号 / 账号间无限横跳(A→B→A 振荡)」前必读 |
+| [docs/design/PREWARM_DESIGN.md](docs/design/PREWARM_DESIGN.md) | 设计、评审或实现窗口预热、预热阈值、预热通知与自动切换协同时必读 |
+| [docs/design/ACCOUNT_ISOLATION_DESIGN.md](docs/design/ACCOUNT_ISOLATION_DESIGN.md) | 改、评审、分析或排查 `subswap run`/`shell`/`env` 账号环境隔离、checkout 锁、daemon 避让、macOS 钥匙串命名空间、Claude resume 会话共享前必读 |
+| [docs/CONFIG.md](docs/CONFIG.md) | 改、评审或排查 `config.toml` 字段、热加载、默认阈值、轮询间隔、quota 查询节流和配置生效问题前必读 |
+| [docs/CLI.md](docs/CLI.md) | 改、评审、分析或排查 CLI 命令面、交互向导、默认入口输出、`subswapd` 辅助进程、账号环境隔离命令前必读 |
+| [docs/OPERATIONS_GUIDE.md](docs/OPERATIONS_GUIDE.md) | 改、评审或排查本地构建、测试、release 构建、本机覆盖安装、daemon 冒烟、CI/Release 发布流程前必读 |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | 规划、评审或同步里程碑范围、已完成能力和后续功能优先级前必读 |
 | [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（9 篇记录：keychain ACL 中毒、refresh token 覆写、429 vs invalid_grant、TOML null 等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
+
+## 领域地图（doc-init）
+
+| 领域 | 入口锚点 | 状态 |
+|------|---------|------|
+| Provider 账号、凭证、额度与激活 | `crates/providers/`、`crates/core/src/provider.rs`、`docs/PROVIDER_KNOWLEDGE_BASE.md` | 已生成（复用现有） |
+| CLI 命令面与默认入口 | `crates/cli/src/main.rs`、`crates/cli/src/cmd/`、`docs/CLI.md` | 已生成（复用现有） |
+| 自动切换策略与 daemon 协同 | `crates/core/src/auto_policy.rs`、`crates/daemon/`、`docs/design/AUTO_SWAP_DESIGN.md` | 已生成（复用现有） |
+| 账号环境隔离运行 | `crates/cli/src/cmd/run.rs`、`crates/core/src/checkout.rs`、`docs/design/ACCOUNT_ISOLATION_DESIGN.md` | 已生成（复用现有） |
+| 运行时配置与默认参数 | `crates/core/src/settings.rs`、`crates/core/src/defaults.rs`、`docs/CONFIG.md` | 已生成（复用现有） |
+| 架构分层与新 Provider 接入 | `crates/core/`、`crates/providers/`、`docs/design/ARCHITECTURE.md` | 已生成（复用现有） |
+| 窗口预热设计 | `docs/design/PREWARM_DESIGN.md` | 已生成（复用现有） |
+| 运行、验证与发布流程 | `.github/workflows/`、`Cargo.toml`、`docs/OPERATIONS_GUIDE.md` | 本次深写 |
+| 故障排查知识网络 | `docs/troubleshooting/TROUBLESHOOTING_INDEX.md` | 已生成（复用现有） |
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **subswap** (1584 symbols, 4145 relationships, 137 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **subswap** (1611 symbols, 4231 relationships, 140 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

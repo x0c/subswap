@@ -157,6 +157,7 @@ pub fn render_to_string(
         return out;
     }
 
+    let layout = render_layout(snapshots);
     let mut global_index: usize = 0;
     for snap in snapshots {
         if snap.accounts.is_empty() {
@@ -178,16 +179,9 @@ pub fn render_to_string(
             ));
         }
 
-        let name_width = snap
-            .accounts
-            .iter()
-            .map(|a| account_name(a).chars().count())
-            .max()
-            .unwrap_or(0)
-            .clamp(16, 36);
         for awq in &snap.accounts {
             global_index += 1;
-            out.push_str(&render_row(awq, global_index, name_width, color));
+            out.push_str(&render_row(awq, global_index, layout, color));
             out.push('\n');
         }
         out.push('\n');
@@ -195,7 +189,40 @@ pub fn render_to_string(
     out
 }
 
-fn render_row(awq: &AccountWithQuotas, index: usize, name_width: usize, color: bool) -> String {
+#[derive(Clone, Copy)]
+struct RenderLayout {
+    index_width: usize,
+    name_width: usize,
+    quota_width: usize,
+}
+
+fn render_layout(snapshots: &[ProviderSnapshot]) -> RenderLayout {
+    let account_count = snapshots.iter().map(|s| s.accounts.len()).sum::<usize>();
+    let index_width = account_count.to_string().len().max(2);
+    let name_width = snapshots
+        .iter()
+        .flat_map(|s| s.accounts.iter())
+        .map(|a| account_name(a).chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(16, 36);
+    let quota_width = snapshots
+        .iter()
+        .flat_map(|s| s.accounts.iter())
+        .flat_map(|a| a.quotas.iter())
+        .filter(|q| quota_has_display_value(q))
+        .map(|q| visible_width(&format_quota_compact(q, false)))
+        .max()
+        .unwrap_or(0);
+
+    RenderLayout {
+        index_width,
+        name_width,
+        quota_width,
+    }
+}
+
+fn render_row(awq: &AccountWithQuotas, index: usize, layout: RenderLayout, color: bool) -> String {
     let active = awq.account.active;
     let star_plain = if active { "*" } else { " " };
     let star = if active {
@@ -203,11 +230,11 @@ fn render_row(awq: &AccountWithQuotas, index: usize, name_width: usize, color: b
     } else {
         star_plain.into()
     };
-    let num_plain = format!("{index:>2}");
+    let num_plain = format!("{index:>width$}", width = layout.index_width);
     let num = style(color, "2", &num_plain);
 
-    let name_plain = truncate_to_width(&account_name(awq), name_width);
-    let name_padded = format!("{name_plain:<name_width$}");
+    let name_plain = truncate_to_width(&account_name(awq), layout.name_width);
+    let name_padded = format!("{name_plain:<width$}", width = layout.name_width);
     // 激活账号保持默认色（视觉上比 dim 的兄弟亮），非激活整体灰掉。
     let name = if active {
         name_padded
@@ -223,10 +250,10 @@ fn render_row(awq: &AccountWithQuotas, index: usize, name_width: usize, color: b
             // 失败状态本身就是高 signal，不需要再细分。
             style(color, "31", &text)
         }
-        QuotaFetchState::Ready => render_quota_parts(&awq.quotas, color),
+        QuotaFetchState::Ready => render_quota_parts(&awq.quotas, layout.quota_width, color),
         QuotaFetchState::Stale { cached_at, error } => {
             // 缓存数据 + 「为什么在用缓存」：年龄 + 压缩后的失败原因,让用户一眼看出是限流/网络等。
-            let parts = render_quota_parts(&awq.quotas, color);
+            let parts = render_quota_parts(&awq.quotas, layout.quota_width, color);
             let age = format_age(*cached_at);
             let reason = compact_error(error);
             let tag = style(color, "2", &format!("(cached ~{age} · {reason})"));
@@ -394,11 +421,11 @@ pub fn quota_has_display_value(q: &Quota) -> bool {
     q.limit > 0 || q.reset_at.is_some() || !matches!(q.status, QuotaStatus::Unknown)
 }
 
-fn render_quota_parts(quotas: &[Quota], color: bool) -> String {
+fn render_quota_parts(quotas: &[Quota], quota_width: usize, color: bool) -> String {
     let parts: Vec<String> = quotas
         .iter()
         .filter(|q| quota_has_display_value(q))
-        .map(|q| format_quota_compact(q, color))
+        .map(|q| pad_visible(format_quota_compact(q, color), quota_width))
         .collect();
     if parts.is_empty() {
         if quotas.is_empty() {
@@ -408,6 +435,15 @@ fn render_quota_parts(quotas: &[Quota], color: bool) -> String {
         }
     } else {
         parts.join("  ")
+    }
+}
+
+fn pad_visible(value: String, width: usize) -> String {
+    let padding = width.saturating_sub(visible_width(&value));
+    if padding == 0 {
+        value
+    } else {
+        format!("{value}{}", " ".repeat(padding))
     }
 }
 
@@ -586,6 +622,56 @@ mod tests {
         assert!(text.contains(" 1 a@x.com"), "{text}");
         assert!(text.contains(" 2 b@x.com"), "{text}");
         assert!(text.contains(" 3 c@x.com"), "{text}");
+    }
+
+    #[test]
+    fn render_to_string_aligns_columns_across_providers() {
+        let mut claude = make_awq("long-address@example.com", false, QuotaFetchState::Ready);
+        claude.quotas = vec![
+            quota(QuotaWindow::FiveHour, 30, 100, QuotaStatus::Ok),
+            quota(QuotaWindow::SevenDay, 40, 100, QuotaStatus::Ok),
+        ];
+
+        let mut custom = make_awq("DeepSeek", false, QuotaFetchState::Ready);
+        custom
+            .account
+            .extra
+            .insert("manual_only".into(), true.into());
+
+        let mut codex = make_awq("x@y.io", true, QuotaFetchState::Ready);
+        codex.quotas = vec![
+            quota(QuotaWindow::FiveHour, 1, 100, QuotaStatus::Ok),
+            quota(QuotaWindow::SevenDay, 92, 100, QuotaStatus::Warn),
+        ];
+
+        let text = render_to_string(
+            &[
+                ProviderSnapshot {
+                    provider: "claude".into(),
+                    accounts: vec![claude, custom],
+                },
+                ProviderSnapshot {
+                    provider: "codex".into(),
+                    accounts: vec![codex],
+                },
+            ],
+            &[],
+            false,
+        );
+
+        let claude_row = text
+            .lines()
+            .find(|line| line.contains("long-address@example.com"))
+            .unwrap();
+        let custom_row = text.lines().find(|line| line.contains("DeepSeek")).unwrap();
+        let codex_row = text.lines().find(|line| line.contains("x@y.io")).unwrap();
+
+        let five_hour_col = claude_row.find("5h [").unwrap();
+        assert_eq!(codex_row.find("5h ["), Some(five_hour_col), "{text}");
+        assert_eq!(custom_row.find("custom"), Some(five_hour_col), "{text}");
+
+        let seven_day_col = claude_row.find("7d [").unwrap();
+        assert_eq!(codex_row.find("7d ["), Some(seven_day_col), "{text}");
     }
 
     #[test]
