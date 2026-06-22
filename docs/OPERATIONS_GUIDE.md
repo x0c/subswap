@@ -87,6 +87,36 @@ pgrep -af 'subswap __daemon|subswapd' || true
 | 本地默认入口留下后台进程 | 没有设置 `SUBSWAP_NO_DAEMON=1` | `pgrep -af 'subswap __daemon|subswapd'` | 测试场景设置 `SUBSWAP_NO_DAEMON=1`，需要冒烟时再显式启动 | README/测试 |
 | daemon 冒烟后版本仍旧 | `~/.local/bin` 未覆盖或 shell 命中旧路径 | `command -v subswap`、`subswap --version`、哈希对比 | 重新安装 release 产物并确认 PATH | AGENTS |
 
+## Homebrew Tap 自动更新
+
+`x0c/homebrew-tap` 的 `Formula/subswap.rb` 由 `.github/workflows/update-homebrew.yml` 全自动维护，**无需手动操作**。
+
+### 工作原理
+
+1. `release.yml` 的 `publish` 作业把 draft 切成 published（`gh release edit ... --draft=false`）
+2. GitHub 触发 `release: published` 事件，`update-homebrew.yml` 自动执行
+3. workflow 从 release assets 下载各平台的 `.sha256` 文件，用 Python 渲染新 formula，通过 GitHub API PUT 到 `homebrew-tap` 仓库
+
+### 用到的 Secret
+
+`HOMEBREW_TAP_TOKEN`（已在 `x0c/subswap` 仓库 Actions Secrets 里设置）：用 `gh auth token`（`repo` scope 的 OAuth token）写入，可 push 到同账号下的 `homebrew-tap` 仓库。
+
+若 token 过期导致 workflow 失败，重新设置方法：
+
+```bash
+gh auth token | gh secret set HOMEBREW_TAP_TOKEN --repo x0c/subswap
+```
+
+### 用户安装命令
+
+```bash
+brew install x0c/tap/subswap   # 一步安装
+# 或
+brew tap x0c/tap && brew install subswap
+# 升级
+brew upgrade subswap
+```
+
 ## 通用改动验证套路
 
 - 改 CLI 命令面：先跑 `cargo test --workspace`，再看 `subswap --help` 输出；删除或新增命令时同步 `docs/CLI.md`。
