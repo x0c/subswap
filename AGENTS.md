@@ -120,7 +120,7 @@ docs/                     中文项目文档
 | [docs/design/ACCOUNT_ISOLATION_DESIGN.md](docs/design/ACCOUNT_ISOLATION_DESIGN.md) | 改、评审、分析或排查 `subswap run`/`shell`/`env` 账号环境隔离、checkout 锁、daemon 避让、macOS 钥匙串命名空间、Claude resume 会话共享前必读 |
 | [docs/CONFIG.md](docs/CONFIG.md) | 改、评审或排查 `config.toml` 字段、热加载、默认阈值、轮询间隔、quota 查询节流和配置生效问题前必读 |
 | [docs/CLI.md](docs/CLI.md) | 改、评审、分析或排查 CLI 命令面、交互向导、默认入口输出、`subswapd` 辅助进程、账号环境隔离命令前必读 |
-| [docs/OPERATIONS_GUIDE.md](docs/OPERATIONS_GUIDE.md) | 改、评审或排查本地构建、测试、release 构建、本机覆盖安装、daemon 冒烟、CI/Release 发布流程前必读 |
+| [docs/OPERATIONS_GUIDE.md](docs/OPERATIONS_GUIDE.md) | 改、评审或排查本地构建、测试、release 构建、本机覆盖安装、daemon 冒烟、CI/Release 发布流程、Homebrew tap formula 更新机制或 `HOMEBREW_TAP_TOKEN` 配置前必读 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 规划、评审或同步里程碑范围、已完成能力和后续功能优先级前必读 |
 | [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（9 篇记录：keychain ACL 中毒、refresh token 覆写、429 vs invalid_grant、TOML null 等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
 
@@ -141,7 +141,7 @@ docs/                     中文项目文档
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **subswap** (1617 symbols, 4250 relationships, 140 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **subswap** (1624 symbols, 4245 relationships, 141 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
@@ -150,9 +150,8 @@ This project is indexed by GitNexus as **subswap** (1617 symbols, 4250 relations
 - **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
 - **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "main"})`.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `query({search_query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When exploring unfamiliar code, use `query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
 - When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
-- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
 
 ## Never Do
 
