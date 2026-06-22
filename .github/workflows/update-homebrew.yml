@@ -1,0 +1,116 @@
+name: Update Homebrew Formula
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  update-formula:
+    name: update homebrew-tap formula
+    runs-on: ubuntu-latest
+    steps:
+      - name: download sha256 files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
+            gh release download "${TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              -p "subswap-${TAG}-${target}.tar.gz.sha256" \
+              -O "${target}.sha256"
+          done
+
+      - name: generate and push formula
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER="${TAG#v}"
+          sha() { awk '{print $1}' "$1.sha256"; }
+
+          python3 - <<PYEOF
+          import base64, json, os, urllib.request
+
+          tag = os.environ["TAG"]
+          ver = tag.lstrip("v")
+          token = os.environ["HOMEBREW_TAP_TOKEN"]
+          repo = os.environ.get("GITHUB_REPOSITORY", "x0c/subswap")
+
+          def sha(target):
+              with open(f"{target}.sha256") as f:
+                  return f.read().split()[0]
+
+          formula = f'''class Subswap < Formula
+            desc "Claude, Codex and ChatGPT account switcher with quota-aware auto-swap"
+            homepage "https://github.com/x0c/subswap"
+            version "{ver}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/x0c/subswap/releases/download/{tag}/subswap-{tag}-aarch64-apple-darwin.tar.gz"
+                sha256 "{sha("aarch64-apple-darwin")}"
+              end
+
+              on_intel do
+                url "https://github.com/x0c/subswap/releases/download/{tag}/subswap-{tag}-x86_64-apple-darwin.tar.gz"
+                sha256 "{sha("x86_64-apple-darwin")}"
+              end
+            end
+
+            on_linux do
+              depends_on "dbus"
+
+              on_arm do
+                url "https://github.com/x0c/subswap/releases/download/{tag}/subswap-{tag}-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "{sha("aarch64-unknown-linux-gnu")}"
+              end
+
+              on_intel do
+                url "https://github.com/x0c/subswap/releases/download/{tag}/subswap-{tag}-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "{sha("x86_64-unknown-linux-gnu")}"
+              end
+            end
+
+            def install
+              bin.install "subswap"
+              bin.install "subswapd" if File.exist?("subswapd")
+            end
+
+            test do
+              assert_match "subswap", shell_output("#{"{bin}"}/subswap --help")
+            end
+          end
+          '''
+
+          api = "https://api.github.com/repos/x0c/homebrew-tap/contents/Formula/subswap.rb"
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Content-Type": "application/json",
+              "Accept": "application/vnd.github+json",
+          }
+
+          # 获取当前文件 SHA
+          req = urllib.request.Request(api, headers=headers)
+          with urllib.request.urlopen(req) as r:
+              file_sha = json.loads(r.read())["sha"]
+
+          # 推送新版本
+          payload = json.dumps({
+              "message": f"chore: bump subswap to {tag}",
+              "content": base64.b64encode(formula.encode()).decode(),
+              "sha": file_sha,
+          }).encode()
+          req = urllib.request.Request(api, data=payload, headers=headers, method="PUT")
+          with urllib.request.urlopen(req) as r:
+              commit = json.loads(r.read())["commit"]["sha"]
+          print(f"Formula updated to {tag} (commit {commit})")
+          PYEOF
