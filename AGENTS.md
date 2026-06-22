@@ -11,6 +11,8 @@
    - 先覆盖安装本机 `subswap` / `subswapd`。
    - 重启 daemon，并验证版本与构建产物哈希。
    - 再提交 Git、创建并推送版本 tag、确认 GitHub Release 发布成功。
+   - GitHub Release publish 后 `update-homebrew.yml` 会**自动**更新 `x0c/homebrew-tap` 的 formula，无需手动操作。
+     详见 [docs/OPERATIONS_GUIDE.md](docs/OPERATIONS_GUIDE.md) §「Homebrew Tap 自动更新」。
 2. **修改代码前先用 GitNexus。**
    编辑函数 / 方法 / 类型前跑 `gitnexus_impact(repo: "subswap", direction: "upstream")`；
    HIGH / CRITICAL 先告警。提交前跑 `gitnexus_detect_changes(scope: "staged")`。
