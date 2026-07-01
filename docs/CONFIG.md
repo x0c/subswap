@@ -22,7 +22,7 @@ Windows: %APPDATA%\subswap\subswap\config\config.toml
 
 | 字段 | 默认值 | 单位 | 说明 |
 |---|---|---|---|
-| `auto_swap.threshold` | `defaults::AUTO_SWAP_THRESHOLD` | 0.0~1.0 | 任一窗口 `used/limit ≥` 此值 → 自动切换 |
+| `auto_swap.threshold` | `defaults::AUTO_SWAP_THRESHOLD` | 0.0~1.0 | 小时级窗口 `used/limit ≥` 此值 → 自动切换；7d/月度等长窗口只在明确耗尽时阻断 |
 | `auto_swap.cooldown_ms` | `300000` | 毫秒 | 切换后该账号冷却期，daemon 内不再选回 |
 | `auto_swap.settle_grace_ms` | `60000` | 毫秒 | 账号刚激活后此窗口内不因 quota loading / 查询失败被自动切走，避免顶掉手动选择 |
 | `quota.warn_pct` | `90.0` | 0~100 | CLI 显示 `warn` 的阈值；不参与切换决策 |
