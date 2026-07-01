@@ -91,6 +91,11 @@ pgrep -af 'subswap __daemon|subswapd' || true
 
 `x0c/homebrew-tap` 的 `Formula/subswap.rb` 由 `.github/workflows/update-homebrew.yml` 全自动维护，**无需手动操作**。
 
+发布后必须实际确认 `Update Homebrew Formula` 是否运行、tap 里的 formula 是否已升到新版本。若 Release
+由 workflow 内的默认 GitHub token 发布，GitHub 可能不会再触发另一个 release workflow；此时按
+`update-homebrew.yml` 的脚本逻辑，使用 Release 资产里的 `.sha256` 手动更新 `x0c/homebrew-tap`，并读回
+`Formula/subswap.rb` 验证版本号、URL 和 sha256。
+
 ### 工作原理
 
 1. `release.yml` 的 `publish` 作业把 draft 切成 published（`gh release edit ... --draft=false`）
