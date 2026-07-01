@@ -10,7 +10,7 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::model::{Account, AccountId, Quota, QuotaStatus};
+use crate::model::{Account, AccountId, Quota, QuotaStatus, QuotaWindow};
 use crate::settings;
 
 #[derive(Debug, Clone, Copy)]
@@ -310,12 +310,12 @@ fn account_needs_swap(a: &AccountWithQuotas, threshold: f64) -> bool {
     if a.quotas.is_empty() {
         return false; // 无窗口数据时不主动切（保守）
     }
-    // 只看「已耗尽」或「达到 threshold」。Provider 自己的 Warn 标记仅作
-    // 展示用途的着色不耦合到自动切换决策——否则改默认 threshold 时
-    // 还得连同 Provider 内 Warn 阈值一起调。
-    a.quotas
-        .iter()
-        .any(|q| matches!(q.status, QuotaStatus::Exhausted) || q.is_above(threshold))
+    // 只看「已耗尽」或「小时级窗口达到 threshold」。Provider 自己的 Warn 标记仅作
+    // 展示用途的着色不耦合到自动切换决策；7d/月度这类长窗口接近阈值仍有
+    // 很多实际余量，不作为自动切换触发条件。
+    a.quotas.iter().any(|q| {
+        matches!(q.status, QuotaStatus::Exhausted) || quota_exceeds_auto_threshold(q, threshold)
+    })
 }
 
 fn best_known_available_candidate<'a>(
@@ -341,8 +341,12 @@ fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: boo
     if a.quotas.is_empty() {
         return allow_unknown;
     }
-    // 候选不能有任何窗口达到/超过 threshold，否则切过去仍无法正常承接流量。
-    let no_above_threshold = a.quotas.iter().all(|q| !q.is_above(threshold));
+    // 候选不能有小时级窗口达到/超过 threshold，否则切过去仍无法正常承接流量。
+    // 长窗口只在明确 Exhausted 时阻断。
+    let no_above_threshold = a
+        .quotas
+        .iter()
+        .all(|q| !quota_exceeds_auto_threshold(q, threshold));
     let no_exhausted = a
         .quotas
         .iter()
@@ -390,7 +394,11 @@ fn reset_ready_at(
 }
 
 fn quota_blocks_candidate(q: &Quota, threshold: f64) -> bool {
-    matches!(q.status, QuotaStatus::Exhausted) || q.is_above(threshold)
+    matches!(q.status, QuotaStatus::Exhausted) || quota_exceeds_auto_threshold(q, threshold)
+}
+
+fn quota_exceeds_auto_threshold(q: &Quota, threshold: f64) -> bool {
+    matches!(q.window, QuotaWindow::FiveHour) && q.is_above(threshold)
 }
 
 fn compare_candidates(a: &AccountWithQuotas, b: &AccountWithQuotas) -> std::cmp::Ordering {
@@ -471,10 +479,19 @@ mod tests {
         status: QuotaStatus,
         reset_at: Option<chrono::DateTime<Utc>>,
     ) -> Quota {
+        mk_quota_with_window(used, status, QuotaWindow::FiveHour, reset_at)
+    }
+
+    fn mk_quota_with_window(
+        used: u64,
+        status: QuotaStatus,
+        window: QuotaWindow,
+        reset_at: Option<chrono::DateTime<Utc>>,
+    ) -> Quota {
         Quota {
             provider: "claude".into(),
             account_id: AccountId("x".into()),
-            window: QuotaWindow::FiveHour,
+            window,
             used,
             limit: 100,
             reset_at,
@@ -523,6 +540,63 @@ mod tests {
             }
             other => panic!("expected Swap, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn seven_day_threshold_does_not_trigger_auto_swap() {
+        let mut active = mk_awq("a", true, 99, QuotaStatus::Warn);
+        active.quotas = vec![mk_quota_with_window(
+            99,
+            QuotaStatus::Warn,
+            QuotaWindow::SevenDay,
+            None,
+        )];
+        let snap = ProviderSnapshot {
+            provider: "claude".into(),
+            accounts: vec![active, mk_awq("b", false, 10, QuotaStatus::Ok)],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
+    }
+
+    #[test]
+    fn seven_day_threshold_does_not_block_candidate() {
+        let mut candidate = mk_awq("b", false, 10, QuotaStatus::Ok);
+        candidate.quotas.push(mk_quota_with_window(
+            99,
+            QuotaStatus::Warn,
+            QuotaWindow::SevenDay,
+            None,
+        ));
+        let snap = ProviderSnapshot {
+            provider: "claude".into(),
+            accounts: vec![mk_awq("a", true, 99, QuotaStatus::Warn), candidate],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(
+            matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "b"),
+            "got {d:?}"
+        );
+    }
+
+    #[test]
+    fn seven_day_exhausted_still_triggers_auto_swap() {
+        let mut active = mk_awq("a", true, 100, QuotaStatus::Exhausted);
+        active.quotas = vec![mk_quota_with_window(
+            100,
+            QuotaStatus::Exhausted,
+            QuotaWindow::SevenDay,
+            None,
+        )];
+        let snap = ProviderSnapshot {
+            provider: "claude".into(),
+            accounts: vec![active, mk_awq("b", false, 10, QuotaStatus::Ok)],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(
+            matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "b"),
+            "got {d:?}"
+        );
     }
 
     #[test]

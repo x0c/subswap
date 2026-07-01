@@ -21,7 +21,7 @@ fn quota(id: &str, used: u64, status: QuotaStatus) -> Quota {
     Quota {
         provider: "mock".into(),
         account_id: AccountId(id.into()),
-        window: QuotaWindow::Month,
+        window: QuotaWindow::FiveHour,
         used,
         limit: 100,
         reset_at: None,
@@ -72,6 +72,18 @@ fn default_threshold_swaps_at_99_percent() {
         }
         other => panic!("expected swap at default threshold, got {other:?}"),
     }
+}
+
+#[test]
+fn seven_day_threshold_does_not_swap_at_99_percent() {
+    let mut active = awq("active", true, 99, QuotaStatus::Warn);
+    active.quotas[0].window = QuotaWindow::SevenDay;
+    let snap = snapshot(vec![active, awq("candidate", false, 1, QuotaStatus::Ok)]);
+
+    assert!(matches!(
+        auto_decide(&snap, &PolicyConfig::default()),
+        PolicyDecision::NoOp { .. }
+    ));
 }
 
 #[test]

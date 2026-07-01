@@ -610,7 +610,7 @@ mod tests {
         Quota {
             provider: provider.into(),
             account_id: AccountId(id.into()),
-            window: QuotaWindow::Month,
+            window: QuotaWindow::FiveHour,
             used,
             limit: 100,
             reset_at: None,
