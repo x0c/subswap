@@ -122,7 +122,11 @@ mod tests {
         let second = Checkout::acquire(tmp.path(), "codex", "a@x.com")
             .expect("concurrent checkout of same account must succeed");
         // 两个实例的 env_dir 路径不同（各有独立序列号后缀）。
-        assert_ne!(first.env_dir(), second.env_dir(), "concurrent checkouts must have distinct env dirs");
+        assert_ne!(
+            first.env_dir(),
+            second.env_dir(),
+            "concurrent checkouts must have distinct env dirs"
+        );
     }
 
     #[test]
