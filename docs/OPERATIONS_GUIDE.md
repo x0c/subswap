@@ -51,6 +51,15 @@ cargo update --workspace --offline
 cargo build --locked --release -p subswap-cli -p subswap-daemon
 ```
 
+快速开发安装（仅 `subswap` CLI，不含 daemon）：
+
+```bash
+make install   # = cargo build --release + install subswap 到 ~/.local/bin
+```
+
+> 限制：`make install` 只安装 `subswap` 二进制，**不安装 `subswapd`**；
+> 需要 daemon 冒烟或完整发布时，走下方完整流程。
+
 本机覆盖安装和 daemon 冒烟：
 
 ```bash

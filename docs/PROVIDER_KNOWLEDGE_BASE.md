@@ -155,6 +155,30 @@ manual_only = true
 - API active 时 API Key 按 Claude Code 的要求以明文存在于 `settings.json`；这是上游配置机制的安全边界。
 - API 账号 `query_quota` 返回空列表，`manual_only` 保证它只能手动切入，active 时自动换号停用。
 
+### 账号计费方式（BillingKind，v0.3.23+）
+
+`Account.billing()` 返回 `BillingKind`，读取 `extra["billing"]` 字段；供下游消费者（如 OpenConductor）
+判断"按量花钱"的信号。新增 Provider 适配器只需在 `extra` 里如实标注，不需要 subswap-core 认识具体账号名。
+
+| 枚举值 | `extra["billing"]` | 语义 |
+|-------|-------------------|------|
+| `Flat` | 缺省（不写 billing 字段） | 固定费率订阅（官方登录号），用量在套餐内不额外计费 |
+| `Metered` | `"metered"` | 按量计费（接自定义 API 端点的按 token 计费上游） |
+| `Unlimited` | `"unlimited"` | 不限量（公司自建网关、不限量 API Key）|
+
+**向后兼容**：早于 v0.3.23 登记的 API 账号没有 `billing` 字段，但带有 `kind = "api"`；
+`Account::billing()` 检测到 `kind = "api"` 时自动视为 `Metered`，无需手动补写。
+
+JSON 输出（`subswap list --json`）中 `billing` 字段对应该值的序列化形式（`"flat"` / `"metered"` / `"unlimited"`）；
+默认入口（`subswap` 无参）显示的每行账号摘要也包含 `billing` 字段。
+
+**写入时机**：`subswap add-api` 交互向导提供三选一（metered / unlimited / flat），也可用
+`--billing <value>` 直接指定；缺省为 `metered`（按量计费最安全的默认值）。
+
+**目前未影响 auto_policy 排序**：`auto_policy.rs` 的候选筛选和 `compare_candidates` 排序**不**使用
+`BillingKind`，该字段当前只供下游消费者（如 OpenConductor）做"是否按量花钱"判断，
+不改变 subswap 自身的自动切换决策。
+
 ---
 
 ## Codex / ChatGPT
@@ -213,6 +237,11 @@ ChatGPT 后端响应字段会随产品调整；subswap 在 `openai_usage::normal
 
 **用户表现**：切到一个长期未用的 codex 账号、Codex CLI 启动时立即报 401 →
 解决办法是在 Codex 客户端里重新登录，然后重新运行 `subswap` 让它自动导入当前激活账号。
+
+> **注意**：codex-cli 不保证每次对话后都把刷新的 access_token 落盘写回 `auth.json`——实测见过
+> CLI 对话正常、但磁盘上 token 已过期，subswap 查用量因此 401 的情况，账号本身并未失效。
+> `401 auth failed` 不等于账号真失效，排查前先看
+> [troubleshooting/2026-07-09](troubleshooting/2026-07-09-codex-quota-401-despite-working-cli.md)。
 
 Claude 那边的保活由 subswap daemon (M4) 自己做，因为非活跃 Claude 账号的凭证只存在 keyring 里、
 没有 Claude CLI 帮它刷；Codex 没这个问题（所有账号最终都流经 `~/.codex/auth.json`，Codex CLI 持续维护）。

@@ -21,3 +21,4 @@ state.json
 # gitnexus 代码索引工具的本地缓存目录
 .gitnexus/
 .codegraph/
+.doc-init-*.json
