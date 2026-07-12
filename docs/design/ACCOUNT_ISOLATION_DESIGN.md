@@ -1,11 +1,11 @@
 # 账号环境隔离设计（subswap run / shell）
 
 > 提案状态：**已实现并验证**——Codex 与 Claude 隔离路径、`run`/`shell`/`env` 三个子命令、
-> checkout 独占锁、daemon 保活避让均已落地。本文覆盖隔离启动、checkout 锁、daemon 避让、macOS
+> 同账号并发会话支持、daemon 保活避让均已落地。本文覆盖隔离启动、并发会话目录、daemon 避让、macOS
 > 钥匙串命名空间逻辑，并说明它与现有 in-place `swap` 模型如何并存。
 >
 > 已落地代码：
-> - `crates/core/src/checkout.rs`：flock 独占锁 + `is_checked_out` 探测 + 隔离目录。
+> - `crates/core/src/checkout.rs`：序列号并发子目录 + `is_checked_out` 探测 + 隔离目录（v0.3.25 起移除独占 flock 锁）。
 > - `crates/providers/codex/src/lib.rs`：`export_auth_blob` / `absorb_auth_blob`。
 > - `crates/providers/claude/src/lib.rs`：`export_isolated_credentials` / `materialize_isolated` /
 >   `absorb_isolated` / `isolated_keychain_service`（macOS 命名空间 service 名，公式见 §2.1）。
@@ -111,9 +111,15 @@ account = $USER（按上面正则清洗，非法 → "claude-code-user"）
 
 现状之所以成立是因为「全局只有一个活账号」。隔离后同一时刻有多个活账号，必须处理：
 
-1. **账号独占 checkout 锁**。同一账号绝不能同时被两个隔离环境借走：两个 Claude Code 会从
-   同一份 refresh token 各自轮换，必有一方被服务端作废 → `refresh token already used` 强制重登。
-   借出即加锁，挡住第二次借用 **和** 全局 `swap`。
+1. **同账号并发会话支持**（v0.3.25）。`Checkout::acquire` 不再加独占 flock 锁，改为用单调递增
+   序列号给每个会话分配唯一子目录（格式：`<data_dir>/envs/<provider>/<id>/<seq>/`），
+   同一账号可同时开启多个隔离会话而不互相污染文件。
+   **token 轮换并发风险**：若多个会话同时触发 OAuth refresh token 轮换，其中一方会收到
+   `refresh token already used` 需重新登录——实践中 token 有效期数月、短任务执行期间触发轮换概率极低，
+   可接受；`absorb_isolated` 目前直接覆盖写回 FileStore，**无写时冲突检测**——并发 absorb 时最后一次
+   覆盖胜出，若先 absorb 的一方持有更新的 refresh token，可能被后者覆盖为旧值（低概率但可能）。
+   全局 `swap` 仍会跳过已有活跃隔离会话的账号（`is_checked_out` 探测），避免全局写入与隔离会话同时
+   持有同一份可轮换凭证。
 2. **daemon 保活避让**。`active_account_id()`（`lib.rs:335`）现靠全局 `~/.claude.json` 的
    `oauthAccount` 判断活账号从而跳过。隔离环境里的活账号分散在各私有目录、daemon 看不见，会把它当
    parked 去后台刷 → 同样作废。daemon 必须读一张「已 checkout 账号」表并跳过其中所有账号。
@@ -128,8 +134,8 @@ account = $USER（按上面正则清洗，非法 → "claude-code-user"）
 ```
 subswap run codex <id> [-- ...]   # ✅ 已实现：设 CODEX_HOME=<私有目录>
    ├─ export_auth_blob(<id>) 取 auth.json（active 优先 live，其余读 FileStore）
-   ├─ Checkout::acquire：flock 独占锁（阻止同账号重复借用；崩溃自动释放）
-   ├─ 物化 <data_dir>/envs/codex/<id>/：写 auth.json(0600)，best-effort 复制 config.toml
+   ├─ Checkout::acquire：分配序列号子目录 <data_dir>/envs/codex/<id>/<seq>/（Drop 时清理；崩溃残留为近似指标）
+   ├─ 物化该子目录：写 auth.json(0600)，best-effort 复制 config.toml
    ├─ 设 CODEX_HOME，spawn codex，持锁等待子进程
    └─ 退出：absorb_auth_blob 把轮换后的 auth.json 吸收回 FileStore，release
 subswap run claude <id> [-- ...]  # ✅ 已实现：在 <data_dir>/envs/claude/<id>/ 物化私有目录
@@ -150,8 +156,11 @@ subswap env <id>                  # ✅ 已实现：打印 export 行，供 eval
 - **私有目录里的明文凭证**：Linux `.credentials.json`、macOS 命名空间 item 都落在用户可读位置，
   权限须 `0600`，目录 `0700`；会话结束按策略清理或保留（待定）。
 - **manual_only API 账号**：API 模式靠 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 进程级注入，
-  天然适配隔离，不涉及轮换；但仍受 checkout 锁与现有 `manual_only` 语义约束。
-- **崩溃 / 强杀导致锁泄漏**：已解决——checkout 用 flock，进程退出（含崩溃）OS 自动释放，无陈旧锁。
+  天然适配隔离，不涉及轮换；仍受现有 `manual_only` 语义约束（不参与自动切换）。
+- **崩溃 / 强杀导致 env 目录残留**：v0.3.25 移除 flock 锁后，崩溃时 `Checkout::Drop` 不会执行，
+  `<id>/<seq>/` 子目录可能残留。`is_checked_out` 以数字名子目录存在作为近似活跃指标，
+  残留目录会被误判为活跃会话直至手动清理——不影响安全性，但可能导致 `swap` 多跳过一次。
+  如需清理可删 `<data_dir>/envs/<provider>/<id>/` 下的数字名子目录。
 - **对「全局 active 账号」做隔离启动的轮换冲突（已做保护）**：`run` / `shell` / `env` 对全局 active
   账号会打印告警；手动 `swap` 会拒绝切到正在 checked-out 的账号；默认入口与 daemon 的 auto-swap 在同
   provider 存在 checked-out 账号时跳过本轮自动切换，避免全局写入与隔离会话抢同一份可轮换凭证。

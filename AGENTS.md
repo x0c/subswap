@@ -13,9 +13,8 @@
    - 再提交 Git、创建并推送版本 tag、确认 GitHub Release 发布成功。
    - GitHub Release publish 后 `update-homebrew.yml` 会**自动**更新 `x0c/homebrew-tap` 的 formula，无需手动操作。
      详见 [docs/OPERATIONS_GUIDE.md](docs/OPERATIONS_GUIDE.md) §「Homebrew Tap 自动更新」。
-2. **修改代码前先用 GitNexus。**
-   编辑函数 / 方法 / 类型前跑 `gitnexus_impact(repo: "subswap", direction: "upstream")`；
-   HIGH / CRITICAL 先告警。提交前跑 `gitnexus_detect_changes(scope: "staged")`。
+2. **修改代码前先查调用链。**
+   编辑函数 / 方法 / 类型前用 codebase-memory-mcp 的 `trace_path` 查清调用者 / 被调用者，评估影响面后再动手。
 3. **工作区可能是脏的。**
    不回滚、不覆盖无关本地改动；提交时只 stage 本次相关文件。
 4. **改完必须验证。**
@@ -122,62 +121,20 @@ docs/                     中文项目文档
 | [docs/CLI.md](docs/CLI.md) | 改、评审、分析或排查 CLI 命令面、交互向导、默认入口输出、`subswapd` 辅助进程、账号环境隔离命令前必读 |
 | [docs/OPERATIONS_GUIDE.md](docs/OPERATIONS_GUIDE.md) | 改、评审或排查本地构建、测试、release 构建、本机覆盖安装、daemon 冒烟、CI/Release 发布流程、Homebrew tap formula 更新机制或 `HOMEBREW_TAP_TOKEN` 配置前必读 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 规划、评审或同步里程碑范围、已完成能力和后续功能优先级前必读 |
-| [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（9 篇记录：keychain ACL 中毒、refresh token 覆写、429 vs invalid_grant、TOML null 等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
+| [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（10 篇记录：keychain ACL 中毒、refresh token 覆写、429 vs invalid_grant、TOML null、Codex 用量 401 但 CLI 能正常用等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
 
 ## 领域地图（doc-init）
 
-| 领域 | 入口锚点 | 状态 |
-|------|---------|------|
-| Provider 账号、凭证、额度与激活 | `crates/providers/`、`crates/core/src/provider.rs`、`docs/PROVIDER_KNOWLEDGE_BASE.md` | 已生成（复用现有） |
-| CLI 命令面与默认入口 | `crates/cli/src/main.rs`、`crates/cli/src/cmd/`、`docs/CLI.md` | 已生成（复用现有） |
-| 自动切换策略与 daemon 协同 | `crates/core/src/auto_policy.rs`、`crates/daemon/`、`docs/design/AUTO_SWAP_DESIGN.md` | 已生成（复用现有） |
-| 账号环境隔离运行 | `crates/cli/src/cmd/run.rs`、`crates/core/src/checkout.rs`、`docs/design/ACCOUNT_ISOLATION_DESIGN.md` | 已生成（复用现有） |
-| 运行时配置与默认参数 | `crates/core/src/settings.rs`、`crates/core/src/defaults.rs`、`docs/CONFIG.md` | 已生成（复用现有） |
-| 架构分层与新 Provider 接入 | `crates/core/`、`crates/providers/`、`docs/design/ARCHITECTURE.md` | 已生成（复用现有） |
-| 窗口预热设计 | `docs/design/PREWARM_DESIGN.md` | 已生成（复用现有） |
-| 运行、验证与发布流程 | `.github/workflows/`、`Cargo.toml`、`docs/OPERATIONS_GUIDE.md` | 本次深写 |
-| 故障排查知识网络 | `docs/troubleshooting/TROUBLESHOOTING_INDEX.md` | 已生成（复用现有） |
+<!-- 覆盖度复核基线：2026-06-29 · 源码指纹 扫描 91 文件 / Rust 45 / 5 子模块 · 基线提交 73cb6d8 -->
 
-<!-- gitnexus:start -->
-# GitNexus — Code Intelligence
-
-This project is indexed by GitNexus as **subswap** (1624 symbols, 4245 relationships, 141 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
-
-> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
-
-## Always Do
-
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "main"})`.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
-
-## Never Do
-
-- NEVER edit a function, class, or method without first running `impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
-- NEVER commit changes without running `detect_changes()` to check affected scope.
-
-## Resources
-
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/subswap/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/subswap/clusters` | All functional areas |
-| `gitnexus://repo/subswap/processes` | All execution flows |
-| `gitnexus://repo/subswap/process/{name}` | Step-by-step execution trace |
-
-## CLI
-
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-
-<!-- gitnexus:end -->
+| 领域 | 入口锚点 |
+|------|---------|
+| Provider 账号、凭证、额度与激活 | `crates/providers/`、`crates/core/src/provider.rs` |
+| CLI 命令面与默认入口 | `crates/cli/src/main.rs`、`crates/cli/src/cmd/` |
+| 自动切换策略与 daemon 协同 | `crates/core/src/auto_policy.rs`、`crates/daemon/` |
+| 账号环境隔离运行 | `crates/cli/src/cmd/run.rs`、`crates/core/src/checkout.rs` |
+| 运行时配置与默认参数 | `crates/core/src/settings.rs`、`crates/core/src/defaults.rs` |
+| 架构分层与新 Provider 接入 | `crates/core/`、`crates/providers/` |
+| 窗口预热设计 | `docs/design/PREWARM_DESIGN.md` |
+| 运行、验证与发布流程 | `.github/workflows/`、`Cargo.toml` |
+| 故障排查知识网络 | `docs/troubleshooting/TROUBLESHOOTING_INDEX.md` |
