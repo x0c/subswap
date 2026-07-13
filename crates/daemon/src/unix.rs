@@ -160,16 +160,6 @@ async fn run_cycle(
             tracing::debug!(provider = %snap.provider, "provider in degraded window; skip");
             continue;
         }
-        if provider_has_checked_out_account(data_dir.to_path_buf(), &snap.provider, &snap.accounts)
-            .await?
-        {
-            tracing::debug!(
-                provider = %snap.provider,
-                "skip auto swap: isolated session active"
-            );
-            continue;
-        }
-
         match auto_decide(snap, policy) {
             PolicyDecision::Swap { from, to, .. } => {
                 // 冷却:刚被切走 / 切到的账号短期不再选回。
@@ -373,24 +363,6 @@ async fn keep_claude_tokens_alive(claude: &Arc<ClaudeProvider>, data_dir: &std::
     }
 }
 
-async fn provider_has_checked_out_account(
-    data_dir: PathBuf,
-    provider: &str,
-    accounts: &[AccountWithQuotas],
-) -> Result<bool> {
-    let provider = provider.to_string();
-    let ids: Vec<String> = accounts
-        .iter()
-        .map(|awq| awq.account.id.0.clone())
-        .collect();
-    tokio::task::spawn_blocking(move || {
-        Ok(ids
-            .iter()
-            .any(|id| subswap_core::checkout::is_checked_out(&data_dir, &provider, id)))
-    })
-    .await?
-}
-
 async fn account_checked_out(data_dir: PathBuf, provider: String, id: String) -> bool {
     tokio::task::spawn_blocking(move || {
         subswap_core::checkout::is_checked_out(&data_dir, &provider, &id)
@@ -455,7 +427,10 @@ fn mtime_age(path: &Path, now: SystemTime) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use subswap_core::{Account, AccountId};
+    use subswap_core::{
+        auto_decide, checkout::Checkout, Account, AccountId, AccountWithQuotas, PolicyConfig,
+        PolicyDecision, ProviderSnapshot, Quota, QuotaFetchState, QuotaStatus, QuotaWindow,
+    };
 
     use super::auto_swap_still_allowed;
 
@@ -507,5 +482,67 @@ mod tests {
             &accounts,
             Some(&AccountId("oauth".into()))
         ));
+    }
+
+    #[test]
+    fn checkout_marker_does_not_block_auto_swap_decision() {
+        let temp = std::env::temp_dir().join(format!(
+            "subswap-daemon-checkout-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp).unwrap();
+        let checkout = Checkout::acquire(&temp, "codex", "candidate").unwrap();
+        assert!(subswap_core::checkout::is_checked_out(
+            &temp,
+            "codex",
+            "candidate"
+        ));
+        let snapshot = ProviderSnapshot {
+            provider: "codex".into(),
+            accounts: vec![
+                account_with_quota("active", true, 100, QuotaStatus::Exhausted),
+                account_with_quota("candidate", false, 0, QuotaStatus::Ok),
+            ],
+        };
+        let policy = PolicyConfig {
+            enabled: true,
+            threshold: 0.98,
+            allow_unknown: false,
+            settle_grace_ms: 0,
+        };
+
+        assert!(matches!(
+            auto_decide(&snapshot, &policy),
+            PolicyDecision::Swap { to, .. } if to == AccountId("candidate".into())
+        ));
+
+        drop(checkout);
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    fn account_with_quota(
+        id: &str,
+        active: bool,
+        used: u64,
+        status: QuotaStatus,
+    ) -> AccountWithQuotas {
+        AccountWithQuotas {
+            account: account(id, active, false),
+            quotas: vec![Quota {
+                provider: "claude".into(),
+                account_id: AccountId(id.into()),
+                window: QuotaWindow::FiveHour,
+                used,
+                limit: 100,
+                reset_at: None,
+                status,
+                note: None,
+            }],
+            fetch_state: QuotaFetchState::Ready,
+        }
     }
 }

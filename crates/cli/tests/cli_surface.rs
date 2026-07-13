@@ -227,6 +227,15 @@ emailAddress = "oauth@example.com"
     );
     assert!(stdout.contains("added → claude/deepseek"), "{stdout}");
 
+    // 模拟同一 Claude 账号仍有隔离会话在运行；手动切换仍必须可用。
+    fs::create_dir_all(
+        app_data_dir(&tmp)
+            .join("envs")
+            .join("claude")
+            .join("deepseek")
+            .join("0"),
+    )
+    .unwrap();
     assert_success(
         isolated_subswap(&tmp)
             .args(["swap", "deepseek"])
