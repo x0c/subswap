@@ -118,8 +118,9 @@ account = $USER（按上面正则清洗，非法 → "claude-code-user"）
    `refresh token already used` 需重新登录——实践中 token 有效期数月、短任务执行期间触发轮换概率极低，
    可接受；`absorb_isolated` 目前直接覆盖写回 FileStore，**无写时冲突检测**——并发 absorb 时最后一次
    覆盖胜出，若先 absorb 的一方持有更新的 refresh token，可能被后者覆盖为旧值（低概率但可能）。
-   全局 `swap` 仍会跳过已有活跃隔离会话的账号（`is_checked_out` 探测），避免全局写入与隔离会话同时
-   持有同一份可轮换凭证。
+   全局 `swap` 与自动切换不会因已有活跃隔离会话而拒绝或跳过账号。全局与隔离会话可能同时持有同一份
+   可轮换凭证，其风险与同账号并发隔离会话相同：只有在低概率的 token 轮换窗口才可能要求重新登录，
+   当前接受这一风险以保证全局切号始终可用。
 2. **daemon 保活避让**。`active_account_id()`（`lib.rs:335`）现靠全局 `~/.claude.json` 的
    `oauthAccount` 判断活账号从而跳过。隔离环境里的活账号分散在各私有目录、daemon 看不见，会把它当
    parked 去后台刷 → 同样作废。daemon 必须读一张「已 checkout 账号」表并跳过其中所有账号。
@@ -159,11 +160,13 @@ subswap env <id>                  # ✅ 已实现：打印 export 行，供 eval
   天然适配隔离，不涉及轮换；仍受现有 `manual_only` 语义约束（不参与自动切换）。
 - **崩溃 / 强杀导致 env 目录残留**：v0.3.25 移除 flock 锁后，崩溃时 `Checkout::Drop` 不会执行，
   `<id>/<seq>/` 子目录可能残留。`is_checked_out` 以数字名子目录存在作为近似活跃指标，
-  残留目录会被误判为活跃会话直至手动清理——不影响安全性，但可能导致 `swap` 多跳过一次。
+  残留目录会被误判为活跃会话直至手动清理——不影响全局 `swap`，但会让 daemon 暂停该具体 Claude
+  账号的后台保活。
   如需清理可删 `<data_dir>/envs/<provider>/<id>/` 下的数字名子目录。
-- **对「全局 active 账号」做隔离启动的轮换冲突（已做保护）**：`run` / `shell` / `env` 对全局 active
-  账号会打印告警；手动 `swap` 会拒绝切到正在 checked-out 的账号；默认入口与 daemon 的 auto-swap 在同
-  provider 存在 checked-out 账号时跳过本轮自动切换，避免全局写入与隔离会话抢同一份可轮换凭证。
+- **对「全局 active 账号」做隔离启动的轮换冲突（已知低概率风险）**：`run` / `shell` / `env` 对全局 active
+  账号会打印告警；手动 `swap`、默认入口与 daemon 的 auto-swap 仍可在隔离会话运行期间切换。它们与
+  同账号并发隔离会话一样，只有恰逢 refresh token 轮换才可能互相使旧 token 失效并要求重新登录；为保证
+  全局切换始终可用，当前接受此风险。
 - **daemon 避让已接线**：`keep_claude_tokens_alive` 每轮对每个 Claude 账号先查 `is_checked_out`，
   命中则跳过保活刷新，避免抢刷被隔离会话持有的账号 token。
 - **`env`（eval 模式）的固有局限**：`eval "$(subswap env <id>)"` 设完环境变量后 subswap 即退出，
@@ -171,6 +174,7 @@ subswap env <id>                  # ✅ 已实现：打印 export 行，供 eval
 
 ## 6. 不变量影响（实现时同步 AGENTS.md）
 
-- 「全局单活账号」假设被打破 → daemon 保活与 `active_account_id()` 须改为「跳过所有 checked-out 账号」。
+- 「全局单活账号」假设被打破 → daemon 的 Claude token 保活须逐账号跳过 checked-out 账号；全局手动与
+  自动切换不因隔离会话而阻断。
 - `Provider::activate` 仍只服务全局 swap；隔离启动走新路径（植入 + checkout），不复用 activate 的原地覆盖。
 - 新增 `subswap run` / `shell` / `env` 子命令须遵守 CLI 既有约定（编号、`swap` 命名、`list_ordered`）。
