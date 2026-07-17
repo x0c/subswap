@@ -23,17 +23,37 @@
            │                                     │
 ┌──────────▼────────────┐             ┌──────────▼─────────────┐
 │ providers/codex       │             │ providers/claude        │
-│ - 解析 registry.json  │             │ - keyring + 备份替换    │
-│ - OpenAI usage 端点   │             │ - Anthropic usage 端点  │
-│ - 同步 CLI/VSCode/App │             │ - 同步 ~/.claude        │
+│ providers/kimi        │             │ - keyring + 备份替换    │
+│ - CodexRuntime /      │             │ - Anthropic usage 端点  │
+│   KimiRuntime         │             │ - 同步 ~/.claude        │
+│ - 只写差异点：本地路径│             │ - 自定义 API 账号       │
+│   解析/元数据/刷新/   │             │ - 独立实现，不接 common │
+│   usage 查询          │             │                         │
 └──────────┬────────────┘             └──────────┬─────────────┘
-           │                                     │
-┌──────────▼─────────────────────────────────────▼─────────────┐
-│ 平台抽象 (crates/core)                                        │
-│  - CredentialStore (trait) → KeyringStore (impl)              │
-│  - AppPaths (XDG / Library / AppData)                         │
-└──────────────────────────────────────────────────────────────┘
+           │ 实现 FileBlobRuntime                 │
+┌──────────▼────────────┐                         │
+│ providers/common       │                        │
+│（文件型 OAuth 切换共享引擎）                     │
+│ - FileBlobProvider<A>： │                        │
+│   activate/query_quota/│                         │
+│   capture-on-leave/    │                         │
+│   隔离导出导入（机制） │                         │
+│ - IsolatedProvider：    │                        │
+│   run/shell/env 隔离   │                         │
+│   运行的 blanket impl  │                         │
+└──────────┬─────────────┘                         │
+           │                                       │
+┌──────────▼───────────────────────────────────────▼─────────────┐
+│ 平台抽象 (crates/core)                                          │
+│  - CredentialStore (trait) → KeyringStore (impl)                │
+│  - AppPaths (XDG / Library / AppData)                           │
+└──────────────────────────────────────────────────────────────────┘
 ```
+
+Codex 与 Kimi 共享 `providers/common` 里的切换机制（原子写文件、快照回滚、capture-on-leave 回灌、
+parked-only 刷新、隔离导出/吸收），各自只实现 `FileBlobRuntime` trait 提供的差异点（本地路径解析、
+凭证 blob 里的元数据抽取、刷新请求、usage 查询）。Claude 因 macOS Keychain 存储 + 自定义 API 账号
+这类无本地凭证文件的特殊形状，继续保留独立实现，不接入这个引擎。
 
 ## 2. 设计模式
 
@@ -88,6 +108,7 @@
 ```
 claude: subswap login claude → claude auth login --claudeai → claude.import_active()
 codex:  subswap login codex  → codex login                 → codex.import_active()
+kimi:   subswap login kimi   → （用户自己先跑 kimi 登录）  → kimi.import_active()
                                       └─ registry.set_active(provider, imported_id)
 ```
 
@@ -95,6 +116,8 @@ codex:  subswap login codex  → codex login                 → codex.import_ac
 - login 不复刻私有 OAuth 流程，优先委托厂商官方 CLI，降低接口漂移和风控/条款风险。
 - 同一账号重新 login 时按 `(provider, id)` 覆盖 keyring 旧凭证，不新增重复账号。
 - 登录完成后以官方 CLI 当前激活账号为准，导入 registry 并标记为 active。
+- Kimi 没有可供 subswap 驱动的官方 CLI 登录子命令，因此 `subswap login kimi` 不跑任何 OAuth
+  流程，只是单纯 import：约定用户已自行用 `kimi` 这个原生 TUI 登录过。
 
 ### 3.3 `subswap swap [<id|N>]`
 
@@ -203,10 +226,28 @@ Linux 的 keyutils 后端按**内核 session keyring** 隔离。`subswapd` 由 C
 
 - Codex：`~/.codex/accounts/registry.json` + `~/.codex/sessions/`
 - Claude：`~/.claude/`
+- Kimi：`~/.kimi-code/credentials/kimi-code.json`（`KIMI_CODE_HOME` 可覆盖工作目录）
 
 subswap 切换时**写**这些上游目录，但**只读不存** token 元数据（token 已在凭证仓库 `FileStore`）。
 
 ## 5. 扩展新 Provider 的步骤
+
+**若新 Provider 也是「本地一个 JSON 凭证文件、切换 = 原子覆盖该文件」这种形状**（Codex/Kimi 同款），
+优先复用共享引擎，只写一个 adapter：
+
+1. 新建 `crates/providers/<id>/` crate，依赖 `subswap-core` + `subswap-provider-common`。
+2. 实现 `FileBlobRuntime` trait（`crates/providers/common/src/runtime.rs`）：路径解析、元数据解析、
+   刷新、usage 查询、隔离环境变量名等差异点；机制（切换/回滚/回灌/隔离导出导入）由
+   `FileBlobProvider<A>` 引擎统一提供，不用自己实现。
+3. 在 `crates/cli/src/app.rs::AppContext::build()` 注册一行（provider 列表）；若要支持
+   `subswap run/shell/env` 隔离运行，同时插一行进 `isolated: HashMap<&str, Arc<dyn IsolatedProvider>>`
+   表（`FileBlobRuntime` 有隔离能力时自动获得 `IsolatedProvider` blanket impl，见 `isolated.rs`）——
+   不需要改 `run.rs` / `login.rs` 的 provider 分支逻辑。
+4. 在 `crates/cli/Cargo.toml` 加依赖；在 `sync_local_active()` 加 import_active 调用。
+5. 在 `docs/PROVIDER_KNOWLEDGE_BASE.md` 补该 Provider 的接口/坑笔记（含共享引擎小节里的 adapter 差异点表）。
+
+**若新 Provider 形状不同**（如 Claude 那种走系统 Keychain、且有无凭证文件的特殊账号类型），
+则不接入共享引擎，走通用步骤：
 
 1. 新建 `crates/providers/<id>/` crate，依赖 `subswap-core`。
 2. 实现 `Provider` trait（`list_accounts / activate / query_quota / client_targets`）。
@@ -307,16 +348,45 @@ daemon（M4）按 `DAEMON_POLL_INTERVAL_MS` 低频轮询，并在失败后退避
 
 ### 7.4 Codex provider（`crates/providers/codex/src/`）
 
+自 Task 8a/8b 起 Codex 跑在共享引擎（§7.5）上，`runtime.rs` 只是纯转发的 adapter：
+
 | 职责 | 函数 / 文件 |
 |---|---|
-| 导入本地激活账号 / 切换 / 拉 quota | `lib.rs::import_active` / `activate` / `query_quota` |
+| `FileBlobRuntime` adapter（纯转发，不新增逻辑） | `runtime.rs::CodexRuntime` |
+| 差异点：`store_field()→"auth_json"` / `dedup_extra_key()→"chatgpt_account_id"`（迁移前存量数据兼容） | `runtime.rs` |
+| legacy 恢复（store/live 都拿不到时从 `~/.codex/accounts/` 找回）+ 隔离物化时拷 `config.toml` | `legacy.rs::recover_legacy_auth_for_account` / `copy_codex_config_best_effort` |
+| usage 查询（`openai_usage` + legacy 缓存回退） | `quota.rs::fetch_codex_quota` |
 | usage 解析（字段不稳定，容错） | `openai_usage.rs` |
 | `~/.codex/auth.json` opaque 透传 schema | `codex_files.rs` |
 | 路径 | `paths.rs` |
 
-> Codex **不做** token 刷新（设计理由见 PROVIDER_KNOWLEDGE_BASE.md「Codex Token 刷新（subswap 不做）」）。
+> Codex **不做** token 刷新（`runtime.rs::CodexRuntime::refresh` 恒返回 `Unsupported`；设计理由见
+> PROVIDER_KNOWLEDGE_BASE.md「Codex Token 刷新（subswap 不做）」）。
 
-### 7.5 daemon（`crates/daemon/src/`，Unix-only）
+### 7.5 文件型 OAuth 切换共享引擎（`crates/providers/common/src/`）
+
+| 职责 | 函数 / 文件 |
+|---|---|
+| adapter 契约（每个 runtime 的差异点，含 `store_field()`/`dedup_extra_key()` 两个兼容 hook） | `runtime.rs::FileBlobRuntime` |
+| 机制实现：原子切换 / capture-on-leave / capture-on-arrival / parked-only 刷新 / 取 blob fallback 链 | `engine.rs::FileBlobProvider<A>` |
+| 隔离运行的对象安全抽象（供 `run.rs` 查表分发，不必按 provider 硬编码分支） | `isolated.rs::IsolatedProvider`（`FileBlobRuntime` 的 blanket impl） |
+
+完整职责边界与 adapter 差异点表见
+[PROVIDER_KNOWLEDGE_BASE.md「文件型 OAuth 切换共享引擎」](../PROVIDER_KNOWLEDGE_BASE.md#文件型-oauth-切换共享引擎crates-providers-common)。
+
+### 7.6 Kimi provider（`crates/providers/kimi/src/`）
+
+| 职责 | 函数 / 文件 |
+|---|---|
+| `FileBlobRuntime` adapter（组装成 `KimiProvider = FileBlobProvider<KimiRuntime>`） | `lib.rs::KimiRuntime` |
+| 路径解析（`KIMI_CODE_HOME` 环境变量覆盖） | `paths.rs` |
+| JWT access_token 解析元数据（`user_id`/`client_id`/`scope`，无 email） | `kimi_files.rs::parse_metadata` / `decode_jwt_payload` |
+| OAuth 刷新（`KIMI_CODE_OAUTH_HOST` 覆盖） | `oauth.rs::refresh_blob` |
+| usage 查询与窗口映射（`KIMI_CODE_BASE_URL` 覆盖） | `kimi_usage.rs::fetch_quota` / `parse_usages` |
+
+端点、令牌生命周期、窗口映射细节见 PROVIDER_KNOWLEDGE_BASE.md「Kimi / Moonshot」一节。
+
+### 7.7 daemon（`crates/daemon/src/`，Unix-only）
 
 | 职责 | 位置 |
 |---|---|
@@ -326,11 +396,12 @@ daemon（M4）按 `DAEMON_POLL_INTERVAL_MS` 低频轮询，并在失败后退避
 | 单实例 PID 文件锁 | `unix.rs::open_pid_lock` / `write_pid` |
 | CLI 无感拉起（`fork + setsid` + stdio 重定向到日志） | `crates/cli/src/daemon_spawn.rs::ensure_daemon_running` / `spawn_detached_daemon` |
 
-### 7.6 CLI（`crates/cli/src/`）
+### 7.8 CLI（`crates/cli/src/`）
 
 | 职责 | 位置 |
 |---|---|
-| `AppContext`（注册所有 provider，**定义在 app.rs**，main.rs 只调用） | `app.rs::AppContext::build` |
+| `AppContext`（注册所有 provider + `isolated: HashMap<&str, Arc<dyn IsolatedProvider>>` 隔离分发表，**定义在 app.rs**，main.rs 只调用） | `app.rs::AppContext::build` |
+| `run/shell/env` 隔离物化/吸收/环境变量按 provider 分发（表内 codex/kimi 走通用 `IsolatedProvider`；claude 保留专用分支） | `cmd/run.rs::materialize` / `absorb` / `env_vars` |
 | 全局编号（与默认入口渲染顺序必须一致，AGENTS.md #7） | `app.rs::AppContext::list_ordered` |
 | 默认入口总流程 | `cmd/default.rs::run` |
 | 自动 import 本地激活账号 | `cmd/default.rs::sync_local_active` |
@@ -338,7 +409,7 @@ daemon（M4）按 `DAEMON_POLL_INTERVAL_MS` 低频轮询，并在失败后退避
 | 原地刷新渲染 / 全局编号渲染 | `render.rs::InlineRenderer` / `render_to_string` |
 | 底层错误压成一行短语（401/429/timeout/network…） | `render.rs::compact_error` |
 
-### 7.7 自动切换决策（`crates/core/src/auto_policy.rs`）
+### 7.9 自动切换决策（`crates/core/src/auto_policy.rs`）
 
 | 职责 | 位置 |
 |---|---|
