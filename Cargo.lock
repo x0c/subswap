@@ -1573,6 +1573,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "subswap-provider-common"
+version = "1.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "subswap-core",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "subswap-provider-kimi"
+version = "1.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "subswap-core",
+ "subswap-provider-common",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
