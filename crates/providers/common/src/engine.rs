@@ -38,7 +38,11 @@ pub struct FileBlobProvider<A: FileBlobRuntime> {
 // ---------------------------------------------------------------------------
 
 impl<A: FileBlobRuntime> FileBlobProvider<A> {
-    pub fn new(runtime: A, store: Arc<dyn CredentialStore>, registry: Arc<AccountRegistry>) -> Self {
+    pub fn new(
+        runtime: A,
+        store: Arc<dyn CredentialStore>,
+        registry: Arc<AccountRegistry>,
+    ) -> Self {
         let runtime = Arc::new(runtime);
         let home = runtime.home();
         Self {
@@ -113,7 +117,10 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
                 .label
                 .as_deref()
                 .is_some_and(|v| Self::value_matches_account(v, account));
-        let dedup_hit = match (meta.dedup_key.as_deref(), account.extra.get(dedup_extra_key)) {
+        let dedup_hit = match (
+            meta.dedup_key.as_deref(),
+            account.extra.get(dedup_extra_key),
+        ) {
             (Some(dk), Some(v)) => v.as_str() == Some(dk),
             _ => false,
         };
@@ -167,8 +174,12 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
             .or_else(|| meta.label.clone())
             .unwrap_or_else(|| id.0.clone());
 
-        self.store
-            .set(self.runtime.id(), id.0.as_str(), self.runtime.store_field(), &raw)?;
+        self.store.set(
+            self.runtime.id(),
+            id.0.as_str(),
+            self.runtime.store_field(),
+            &raw,
+        )?;
 
         let mut extra = meta.extra.clone();
         if let Some(dk) = meta.dedup_key.clone() {
@@ -184,9 +195,11 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
             .or_else(|| self.find_by_dedup(&meta));
         if let Some(ex) = existing.as_ref() {
             if ex.id != id {
-                let _ = self
-                    .store
-                    .delete(self.runtime.id(), ex.id.0.as_str(), self.runtime.store_field());
+                let _ = self.store.delete(
+                    self.runtime.id(),
+                    ex.id.0.as_str(),
+                    self.runtime.store_field(),
+                );
                 self.registry.remove(self.runtime.id(), &ex.id)?;
             }
         }
@@ -196,7 +209,10 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
             id: id.clone(),
             label,
             active: active_override.unwrap_or_else(|| existing.as_ref().is_some_and(|a| a.active)),
-            created_at: existing.as_ref().map(|a| a.created_at).unwrap_or_else(Utc::now),
+            created_at: existing
+                .as_ref()
+                .map(|a| a.created_at)
+                .unwrap_or_else(Utc::now),
             last_used_at: existing.and_then(|a| a.last_used_at),
             priority: 100,
             extra,
@@ -244,13 +260,12 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
             let pid = meta.primary_id.clone().unwrap();
             let id = AccountId(pid);
             self.registry.set_active(self.runtime.id(), &id)?;
-            return self
-                .registry
-                .find(self.runtime.id(), &id)?
-                .ok_or_else(|| Error::AccountNotFound {
+            return self.registry.find(self.runtime.id(), &id)?.ok_or_else(|| {
+                Error::AccountNotFound {
                     provider: self.runtime.id().into(),
                     id: id.to_string(),
-                });
+                }
+            });
         }
         self.store_account(raw, label_hint, Some(true))
     }
@@ -376,7 +391,9 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
         let Some(owner) = owner else { return Ok(()) };
 
         if extract_refresh_token(&live_raw).is_none() {
-            if let Some(existing) = store.get(runtime.id(), owner.id.0.as_str(), runtime.store_field())? {
+            if let Some(existing) =
+                store.get(runtime.id(), owner.id.0.as_str(), runtime.store_field())?
+            {
                 if extract_refresh_token(&existing).is_some() {
                     tracing::warn!(
                         account = %owner.id,
@@ -386,7 +403,12 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
                 }
             }
         }
-        store.set(runtime.id(), owner.id.0.as_str(), runtime.store_field(), &live_raw)?;
+        store.set(
+            runtime.id(),
+            owner.id.0.as_str(),
+            runtime.store_field(),
+            &live_raw,
+        )?;
         Ok(())
     }
 
@@ -405,8 +427,12 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
     pub fn absorb_blob(&self, id: &AccountId, raw: &str) -> Result<()> {
         serde_json::from_str::<serde_json::Value>(raw)
             .map_err(|e| Error::Provider(format!("isolated credentials not valid JSON: {e}")))?;
-        self.store
-            .set(self.runtime.id(), id.0.as_str(), self.runtime.store_field(), raw)?;
+        self.store.set(
+            self.runtime.id(),
+            id.0.as_str(),
+            self.runtime.store_field(),
+            raw,
+        )?;
         Ok(())
     }
 }
@@ -498,7 +524,11 @@ impl<A: FileBlobRuntime> Provider for FileBlobProvider<A> {
 
 impl<A: FileBlobRuntime> FileBlobProvider<A> {
     /// parked 账号刷新一次并写回 store。返回 `Some(新 blob)` 表示已轮换。
-    async fn refresh_parked_if_needed(&self, account: &Account, raw: &str) -> Result<Option<String>> {
+    async fn refresh_parked_if_needed(
+        &self,
+        account: &Account,
+        raw: &str,
+    ) -> Result<Option<String>> {
         match self.runtime.refresh(raw).await? {
             RefreshOutcome::Rotated(new_blob) => {
                 self.store.set(
@@ -647,7 +677,9 @@ mod tests {
                 RefreshBehavior::Rotate => {
                     let v: serde_json::Value = serde_json::from_str(blob).unwrap_or_default();
                     let uid = v.get("uid").and_then(|x| x.as_str()).unwrap_or_default();
-                    RefreshOutcome::Rotated(format!(r#"{{"uid":"{uid}","access_token":"ROTATED"}}"#))
+                    RefreshOutcome::Rotated(format!(
+                        r#"{{"uid":"{uid}","access_token":"ROTATED"}}"#
+                    ))
                 }
             })
         }
@@ -728,8 +760,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let p = provider(tmp.path());
         fs::create_dir_all(p.home()).unwrap();
-        p.import_raw(r#"{"uid":"u1","access_token":"A1"}"#.into(), None, Some(false))
-            .unwrap();
+        p.import_raw(
+            r#"{"uid":"u1","access_token":"A1"}"#.into(),
+            None,
+            Some(false),
+        )
+        .unwrap();
         let live = r#"{"uid":"u1","refresh_token":"R2","access_token":"A2"}"#;
         fs::write(p.test_live_path(), live).unwrap();
         p.reconcile_active_from_live().unwrap();
@@ -742,8 +778,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let p = provider(tmp.path());
         fs::create_dir_all(p.home()).unwrap();
-        p.import_raw(r#"{"uid":"u1","access_token":"A1"}"#.into(), None, Some(false))
-            .unwrap();
+        p.import_raw(
+            r#"{"uid":"u1","access_token":"A1"}"#.into(),
+            None,
+            Some(false),
+        )
+        .unwrap();
         let live = r#"{"uid":"u1","access_token":"A2"}"#;
         fs::write(p.test_live_path(), live).unwrap();
         p.reconcile_active_from_live().unwrap();
@@ -774,7 +814,8 @@ mod tests {
     #[test]
     fn capture_finds_owner_via_dedup_key_under_runtime_specific_extra_key_name() {
         let tmp = tempfile::tempdir().unwrap();
-        let runtime = FakeRuntime::with_dedup_extra_key(tmp.path().join("home"), "chatgpt_account_id");
+        let runtime =
+            FakeRuntime::with_dedup_extra_key(tmp.path().join("home"), "chatgpt_account_id");
         let p = provider_with(tmp.path(), runtime);
         fs::create_dir_all(p.home()).unwrap();
 
@@ -782,13 +823,18 @@ mod tests {
         // extra 只有旧键名 "chatgpt_account_id"，没有 "dedup_key"。
         let mut account = fake_account("old-key");
         account.label = "user@example.com".into();
-        account
-            .extra
-            .insert("chatgpt_account_id".into(), serde_json::Value::String("stable-id".into()));
+        account.extra.insert(
+            "chatgpt_account_id".into(),
+            serde_json::Value::String("stable-id".into()),
+        );
         p.test_registry_upsert(account).unwrap();
 
         // live blob：account_key 已轮换成新值，label 缺失，但去重键（dedup）仍是同一个稳定值。
-        fs::write(p.test_live_path(), r#"{"uid":"new-key","dedup":"stable-id"}"#).unwrap();
+        fs::write(
+            p.test_live_path(),
+            r#"{"uid":"new-key","dedup":"stable-id"}"#,
+        )
+        .unwrap();
         p.reconcile_active_from_live().unwrap();
 
         let stored = p
@@ -869,7 +915,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let p = provider(tmp.path());
         let account = p
-            .import_raw(r#"{"uid":"u1","access_token":"A1"}"#.into(), None, Some(true))
+            .import_raw(
+                r#"{"uid":"u1","access_token":"A1"}"#.into(),
+                None,
+                Some(true),
+            )
             .unwrap();
         assert_eq!(account.id.0, "u1");
         assert!(account.active);
@@ -882,7 +932,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let p = provider(tmp.path());
         let account = p
-            .import_raw(r#"{"uid":"u1","access_token":"A1"}"#.into(), None, Some(false))
+            .import_raw(
+                r#"{"uid":"u1","access_token":"A1"}"#.into(),
+                None,
+                Some(false),
+            )
             .unwrap();
 
         assert!(p.absorb_blob(&account.id, "not json").is_err());
@@ -950,14 +1004,22 @@ mod tests {
         let runtime = FakeRuntime::with_behavior(tmp.path().join("home"), RefreshBehavior::Rotate);
         let p = provider_with(tmp.path(), runtime);
         let account = p
-            .import_raw(r#"{"uid":"u1","access_token":"A1"}"#.into(), None, Some(true))
+            .import_raw(
+                r#"{"uid":"u1","access_token":"A1"}"#.into(),
+                None,
+                Some(true),
+            )
             .unwrap();
 
         p.query_quota(&account.id).await.unwrap();
 
         assert_eq!(p.test_runtime().refresh_calls.load(Ordering::SeqCst), 0);
         assert_eq!(
-            p.test_runtime().last_access_token.lock().unwrap().as_deref(),
+            p.test_runtime()
+                .last_access_token
+                .lock()
+                .unwrap()
+                .as_deref(),
             Some("A1")
         );
     }
@@ -968,14 +1030,22 @@ mod tests {
         let runtime = FakeRuntime::with_behavior(tmp.path().join("home"), RefreshBehavior::Rotate);
         let p = provider_with(tmp.path(), runtime);
         let account = p
-            .import_raw(r#"{"uid":"u1","access_token":"OLD"}"#.into(), None, Some(false))
+            .import_raw(
+                r#"{"uid":"u1","access_token":"OLD"}"#.into(),
+                None,
+                Some(false),
+            )
             .unwrap();
 
         p.query_quota(&account.id).await.unwrap();
 
         assert_eq!(p.test_runtime().refresh_calls.load(Ordering::SeqCst), 1);
         assert_eq!(
-            p.test_runtime().last_access_token.lock().unwrap().as_deref(),
+            p.test_runtime()
+                .last_access_token
+                .lock()
+                .unwrap()
+                .as_deref(),
             Some("ROTATED")
         );
         let stored = p.test_store_get("u1").unwrap();
@@ -988,16 +1058,27 @@ mod tests {
         let runtime = FakeRuntime::with_behavior(tmp.path().join("home"), RefreshBehavior::Dead);
         let p = provider_with(tmp.path(), runtime);
         let account = p
-            .import_raw(r#"{"uid":"u1","access_token":"OLD"}"#.into(), None, Some(false))
+            .import_raw(
+                r#"{"uid":"u1","access_token":"OLD"}"#.into(),
+                None,
+                Some(false),
+            )
             .unwrap();
 
         // DeadToken 时引擎放弃刷新，继续用旧 access_token 查询（不会因刷新失败而报错）。
         p.query_quota(&account.id).await.unwrap();
 
         assert_eq!(
-            p.test_runtime().last_access_token.lock().unwrap().as_deref(),
+            p.test_runtime()
+                .last_access_token
+                .lock()
+                .unwrap()
+                .as_deref(),
             Some("OLD")
         );
-        assert_eq!(p.test_store_get("u1").unwrap(), r#"{"uid":"u1","access_token":"OLD"}"#);
+        assert_eq!(
+            p.test_store_get("u1").unwrap(),
+            r#"{"uid":"u1","access_token":"OLD"}"#
+        );
     }
 }

@@ -74,7 +74,10 @@ mod tests {
         let m = parse_metadata(&blob);
         assert_eq!(m.primary_id.as_deref(), Some("u-123"));
         assert_eq!(m.label.as_deref(), Some("u-123"));
-        assert_eq!(m.extra.get("scope").and_then(|v| v.as_str()), Some("kimi-code"));
+        assert_eq!(
+            m.extra.get("scope").and_then(|v| v.as_str()),
+            Some("kimi-code")
+        );
     }
 
     #[test]

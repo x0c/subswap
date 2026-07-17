@@ -59,17 +59,24 @@ pub async fn refresh_blob(blob: &str) -> Result<RefreshOutcome> {
         return Ok(RefreshOutcome::DeadToken);
     }
     if !status.is_success() {
-        return Err(Error::Provider(format!("kimi refresh HTTP {status}: {body}")));
+        return Err(Error::Provider(format!(
+            "kimi refresh HTTP {status}: {body}"
+        )));
     }
     let access = parsed.get("access_token").and_then(|v| v.as_str());
     let Some(access) = access else {
-        return Err(Error::Provider("kimi refresh response missing access_token".into()));
+        return Err(Error::Provider(
+            "kimi refresh response missing access_token".into(),
+        ));
     };
 
     // 合并回原 blob 结构，保留未知字段。
     let mut merged: serde_json::Value = serde_json::from_str(blob).unwrap_or(serde_json::json!({}));
     let obj = merged.as_object_mut().unwrap();
-    obj.insert("access_token".into(), serde_json::Value::String(access.into()));
+    obj.insert(
+        "access_token".into(),
+        serde_json::Value::String(access.into()),
+    );
     for key in ["refresh_token", "scope", "token_type", "expires_in"] {
         if let Some(v) = parsed.get(key) {
             obj.insert(key.into(), v.clone());
