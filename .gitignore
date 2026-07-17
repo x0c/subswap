@@ -22,3 +22,6 @@ state.json
 .gitnexus/
 .codegraph/
 .doc-init-*.json
+
+# 隔离开发用的本地 git worktree
+.worktrees/
