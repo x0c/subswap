@@ -15,6 +15,8 @@ fn isolated_subswap(tmp: &tempfile::TempDir) -> Command {
         .env("XDG_CACHE_HOME", tmp.path().join("cache"))
         .env("CLAUDE_CONFIG_DIR", tmp.path().join("claude"))
         .env("CODEX_HOME", tmp.path().join("codex"))
+        // 隔离测试专用一次性目录，绝不碰真实 `~/.kimi-code`。
+        .env("KIMI_CODE_HOME", tmp.path().join("kimi"))
         // macOS：把 Claude Code 钥匙串读写重定向到一次性 keychain，绝不碰用户真实登录钥匙串
         // （否则集成测试会弹授权框并污染本机凭证）。
         .env("SUBSWAP_CLAUDE_KEYCHAIN_PATH", test_keychain_path(tmp))
@@ -348,4 +350,73 @@ emailAddress = "active@example.com"
     );
 
     teardown_test_keychain(&tmp);
+}
+
+// --- `subswap run kimi` 隔离运行：注册表驱动 dispatch（Task 11） ---
+
+#[test]
+fn run_kimi_unknown_account_reports_not_found() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 命令面已注册 "kimi" provider（normalize_provider 接受），但账号不存在时应报「账号不存在」，
+    // 而不是「unknown provider」或 clap 层面的用法错误——证明 `run kimi` 已完整接入命令面。
+    let output = isolated_subswap(&tmp)
+        .args(["run", "kimi", "ghost@example.com"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("account not found"),
+        "expected account-not-found error, got: {stderr}"
+    );
+}
+
+#[test]
+fn run_kimi_materializes_isolated_credentials_via_generic_dispatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry = app_config_dir(&tmp).join("registry.toml");
+    let credentials = app_data_dir(&tmp).join("credentials.json");
+
+    write(
+        &registry,
+        r#"[[accounts]]
+provider = "kimi"
+id = "kimi-user"
+label = "Kimi User"
+active = false
+created_at = "2026-07-01T00:00:00Z"
+priority = 100
+"#,
+    );
+    // KimiRuntime 用默认 store_field "blob"；key 格式 "{provider}:{account}:{field}"。
+    write(
+        &credentials,
+        r#"{"kimi:kimi-user:blob":"{\"user_id\":\"kimi-user\",\"access_token\":\"AT\"}"}"#,
+    );
+
+    let output = isolated_subswap(&tmp)
+        .args(["run", "kimi", "kimi-user"])
+        .output()
+        .unwrap();
+
+    // 本机大概率没有 `kimi` 原生 CLI，预期最终在 spawn 阶段失败；但这必须发生在
+    // materialize 成功、且已经通过 IsolatedProvider 算出 KIMI_CODE_HOME/native_cli 之后，
+    // 证明 run.rs 的注册表驱动 dispatch（materialize/env_vars/native_cli 均查 ctx.isolated）
+    // 对 kimi 完整生效，而不是像重构前那样落进 "isolation not supported for provider kimi"。
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains("isolated KIMI_CODE_HOME="),
+        "materialize/env_vars should have resolved KIMI_CODE_HOME via IsolatedProvider; stdout: {stdout}, stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("isolation not supported for provider kimi"),
+        "kimi must be dispatched through ctx.isolated, not fall through to the unsupported branch: {stderr}"
+    );
+    if !output.status.success() {
+        assert!(
+            stderr.contains("failed to start `kimi`"),
+            "expected native_cli dispatch to attempt spawning `kimi`; stderr: {stderr}"
+        );
+    }
 }

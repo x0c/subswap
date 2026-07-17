@@ -61,8 +61,23 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
         self.runtime.live_cred_path(&self.home)
     }
 
-    /// 原子写 live 凭证：tmp + rename + 0o600。
-    fn write_blob(path: &Path, contents: &str) -> Result<()> {
+    /// live 凭证文件相对 `home` 的子路径（隔离物化用：如 Codex 的 `auth.json`、
+    /// Kimi 的 `credentials/kimi-code.json`），供 [`crate::isolated::IsolatedProvider`] 通用计算
+    /// 隔离目录内的落盘位置，不必按 provider 硬编码具体路径。
+    pub fn live_rel_path(&self) -> PathBuf {
+        self.live_path()
+            .strip_prefix(&self.home)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|_| self.live_path())
+    }
+
+    /// 转调 runtime 的额外物化（如 Codex 复制 `config.toml` 进隔离目录）。
+    pub fn materialize_extra_into(&self, env_dir: &Path) {
+        self.runtime.materialize_extra(&self.home, env_dir);
+    }
+
+    /// 原子写 live 凭证：tmp + rename + 0o600。同时供隔离物化写入使用（`pub(crate)`）。
+    pub(crate) fn write_blob(path: &Path, contents: &str) -> Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }

@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 subswap-core.workspace = true
+subswap-provider-common.workspace = true
 subswap-provider-codex.workspace = true
 subswap-provider-claude.workspace = true
 subswap-provider-kimi.workspace = true
@@ -34,7 +35,6 @@ futures = "0.3"
 indicatif = "0.18"
 base64 = "0.22"
 fs2.workspace = true
-directories.workspace = true
 unicode-width = "0.2"
 
 [target.'cfg(unix)'.dependencies]

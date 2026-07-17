@@ -15,7 +15,6 @@ use anyhow::{bail, Context, Result};
 use subswap_core::checkout::Checkout;
 use subswap_core::paths::AppPaths;
 use subswap_core::Account;
-use subswap_provider_codex::CodexCompat;
 
 use crate::app::AppContext;
 use crate::cmd::resolve_account;
@@ -36,7 +35,7 @@ pub async fn run(
             acc.id
         );
     }
-    let program = native_cli(&acc.provider);
+    let program = native_cli(ctx, &acc.provider);
     launch(ctx, &acc, program, args).await
 }
 
@@ -69,7 +68,7 @@ pub async fn env(ctx: &AppContext, id_input: &str) -> Result<()> {
     let env_dir = checkout.env_dir().to_path_buf();
     materialize(ctx, &acc, &env_dir)?;
 
-    for (k, v) in env_vars(&acc.provider, &env_dir) {
+    for (k, v) in env_vars(ctx, &acc.provider, &env_dir) {
         println!("export {k}={}", shell_quote(&v));
     }
     eprintln!(
@@ -114,12 +113,12 @@ async fn launch_program(
 
     materialize(ctx, acc, &env_dir)?;
 
-    let envs = env_vars(&acc.provider, &env_dir);
+    let envs = env_vars(ctx, &acc.provider, &env_dir);
     println!(
         "run → {}/{} (isolated {}={})",
         acc.provider,
         acc.id,
-        primary_env_name(&acc.provider),
+        primary_env_name(ctx, &acc.provider),
         env_dir.display()
     );
 
@@ -133,20 +132,19 @@ async fn launch_program(
     Ok(())
 }
 
-/// 把账号凭证物化进隔离 env 目录。
+/// 把账号凭证物化进隔离 env 目录。表内 provider（codex/kimi）走通用 `IsolatedProvider`；
+/// claude 保留专用分支（macOS 钥匙串 / API 账号逻辑不适配通用形状）。
 fn materialize(ctx: &AppContext, acc: &Account, env_dir: &Path) -> Result<()> {
+    if let Some(iso) = ctx.isolated.get(acc.provider.as_str()) {
+        return iso.materialize(&acc.id, env_dir).with_context(|| {
+            format!(
+                "materialize isolated {} at {}",
+                iso.isolation_env_var(),
+                env_dir.display()
+            )
+        });
+    }
     match acc.provider.as_str() {
-        "codex" => {
-            let blob = ctx
-                .codex
-                .export_auth_blob(&acc.id)
-                .with_context(|| format!("export credentials for codex/{}", acc.id))?;
-            write_private_file(&env_dir.join("auth.json"), &blob).with_context(|| {
-                format!("materialize isolated CODEX_HOME at {}", env_dir.display())
-            })?;
-            copy_codex_config_best_effort(env_dir);
-            Ok(())
-        }
         "claude" => ctx
             .claude
             .materialize_isolated(&acc.id, env_dir)
@@ -162,11 +160,10 @@ fn materialize(ctx: &AppContext, acc: &Account, env_dir: &Path) -> Result<()> {
 
 /// 会话结束后把（可能轮换过的）凭证吸收回凭证仓库。best-effort。
 fn absorb(ctx: &AppContext, acc: &Account, env_dir: &Path) -> Result<()> {
+    if let Some(iso) = ctx.isolated.get(acc.provider.as_str()) {
+        return iso.absorb(&acc.id, env_dir).map_err(anyhow::Error::from);
+    }
     match acc.provider.as_str() {
-        "codex" => {
-            let raw = std::fs::read_to_string(env_dir.join("auth.json"))?;
-            ctx.codex.absorb_auth_blob(&acc.id, &raw)
-        }
         "claude" => ctx.claude.absorb_isolated(&acc.id, env_dir),
         other => bail!("isolation not supported for provider {other}"),
     }
@@ -174,10 +171,12 @@ fn absorb(ctx: &AppContext, acc: &Account, env_dir: &Path) -> Result<()> {
 }
 
 /// 该 provider 隔离会话需要导出的环境变量。
-fn env_vars(provider: &str, env_dir: &Path) -> Vec<(String, String)> {
+fn env_vars(ctx: &AppContext, provider: &str, env_dir: &Path) -> Vec<(String, String)> {
     let dir = env_dir.to_string_lossy().into_owned();
+    if let Some(iso) = ctx.isolated.get(provider) {
+        return vec![(iso.isolation_env_var().to_string(), dir)];
+    }
     match provider {
-        "codex" => vec![("CODEX_HOME".into(), dir)],
         "claude" => {
             let mut v = vec![("CLAUDE_CONFIG_DIR".into(), dir.clone())];
             // macOS：显式设 SECURESTORAGE 目录，使钥匙串 service 名哈希源为我们已知的确切字符串，
@@ -191,17 +190,21 @@ fn env_vars(provider: &str, env_dir: &Path) -> Vec<(String, String)> {
     }
 }
 
-fn primary_env_name(provider: &str) -> &'static str {
+fn primary_env_name(ctx: &AppContext, provider: &str) -> &'static str {
+    if let Some(iso) = ctx.isolated.get(provider) {
+        return iso.isolation_env_var();
+    }
     match provider {
-        "codex" => "CODEX_HOME",
         "claude" => "CLAUDE_CONFIG_DIR",
         _ => "ENV",
     }
 }
 
-fn native_cli(provider: &str) -> &'static str {
+fn native_cli(ctx: &AppContext, provider: &str) -> &'static str {
+    if let Some(iso) = ctx.isolated.get(provider) {
+        return iso.native_cli();
+    }
     match provider {
-        "codex" => "codex",
         "claude" => "claude",
         _ => "",
     }
@@ -211,7 +214,8 @@ fn normalize_provider(provider: &str) -> Result<&'static str> {
     match provider {
         "codex" | "openai" | "chatgpt" => Ok("codex"),
         "claude" | "anthropic" => Ok("claude"),
-        other => bail!("unknown provider: {other} (expected codex or claude)"),
+        "kimi" | "moonshot" => Ok("kimi"),
+        other => bail!("unknown provider: {other} (expected codex, claude or kimi)"),
     }
 }
 
@@ -256,27 +260,6 @@ fn propagate_exit(status: std::process::ExitStatus) {
     }
 }
 
-/// 写私有凭证文件，Unix 下 `0600`。
-fn write_private_file(path: &Path, contents: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, contents)?;
-    harden_file(path);
-    Ok(())
-}
-
-/// best-effort 复制真实 `~/.codex/config.toml` 进隔离目录，让隔离会话沿用用户常规配置。
-fn copy_codex_config_best_effort(env_dir: &Path) {
-    let Some(dirs) = directories::UserDirs::new() else {
-        return;
-    };
-    let src = dirs.home_dir().join(".codex").join("config.toml");
-    if src.is_file() {
-        let _ = std::fs::copy(&src, env_dir.join("config.toml"));
-    }
-}
-
 /// 给 export 值做最小 shell 引用，避免路径含空格 / 特殊字符时被拆。
 fn shell_quote(value: &str) -> String {
     if value
@@ -288,12 +271,3 @@ fn shell_quote(value: &str) -> String {
         format!("'{}'", value.replace('\'', r"'\''"))
     }
 }
-
-#[cfg(unix)]
-fn harden_file(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-}
-
-#[cfg(not(unix))]
-fn harden_file(_path: &Path) {}
