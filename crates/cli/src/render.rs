@@ -421,10 +421,22 @@ pub fn quota_has_display_value(q: &Quota) -> bool {
     q.limit > 0 || q.reset_at.is_some() || !matches!(q.status, QuotaStatus::Unknown)
 }
 
+/// 窗口的展示顺序：与 provider 返回顺序无关，保证不同 provider 的行在视觉上一致
+/// （例如 Kimi 的 `/usages` 先给 7d 再给 5h，若不排序会跟 Claude 的 5h/7d 顺序相反）。
+fn window_display_order(window: QuotaWindow) -> u8 {
+    match window {
+        QuotaWindow::FiveHour => 0,
+        QuotaWindow::SevenDay => 1,
+        QuotaWindow::Month => 2,
+        QuotaWindow::Custom => 3,
+    }
+}
+
 fn render_quota_parts(quotas: &[Quota], quota_width: usize, color: bool) -> String {
-    let parts: Vec<String> = quotas
-        .iter()
-        .filter(|q| quota_has_display_value(q))
+    let mut sorted: Vec<&Quota> = quotas.iter().filter(|q| quota_has_display_value(q)).collect();
+    sorted.sort_by_key(|q| window_display_order(q.window));
+    let parts: Vec<String> = sorted
+        .into_iter()
         .map(|q| pad_visible(format_quota_compact(q, color), quota_width))
         .collect();
     if parts.is_empty() {
@@ -622,6 +634,20 @@ mod tests {
         assert!(text.contains(" 1 a@x.com"), "{text}");
         assert!(text.contains(" 2 b@x.com"), "{text}");
         assert!(text.contains(" 3 c@x.com"), "{text}");
+    }
+
+    #[test]
+    fn quota_parts_render_5h_before_7d_regardless_of_provider_return_order() {
+        // Kimi 的 /usages 先给 7d(usage 字段)再给 5h(limits[]);Claude 反过来。
+        // 渲染必须与 provider 返回顺序无关,统一展示 5h 在前。
+        let reversed = vec![
+            quota(QuotaWindow::SevenDay, 25, 100, QuotaStatus::Ok),
+            quota(QuotaWindow::FiveHour, 23, 100, QuotaStatus::Ok),
+        ];
+        let rendered = render_quota_parts(&reversed, 0, false);
+        let pos_5h = rendered.find("5h").expect("5h label present");
+        let pos_7d = rendered.find("7d").expect("7d label present");
+        assert!(pos_5h < pos_7d, "expected 5h before 7d, got: {rendered}");
     }
 
     #[test]
