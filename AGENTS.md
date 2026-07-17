@@ -51,12 +51,17 @@
   （`FileBlobProvider<A>` 引擎）。新增此类 provider（如未来第三个）**只写一个 `FileBlobRuntime` 实现**
   （路径、元数据解析、刷新、usage 查询等差异点），在 `AppContext::build()` 的 provider 列表注册一行，
   若要支持 `subswap run/shell/env` 隔离运行再把它塞进 `isolated: HashMap<&str, Arc<dyn IsolatedProvider>>`
-  表（`FileBlobRuntime` 有隔离能力时自动获得 `IsolatedProvider` blanket impl）——**不改** `run.rs` / `login.rs`
-  的 provider 分支逻辑。历史数据兼容用两个可选 hook：`store_field()`（凭证仓库里存 blob 的字段名，
-  默认 `"blob"`）与 `dedup_extra_key()`（`registry.toml extra` 里去重键的字段名，默认 `"dedup_key"`）——
-  仅当迁移一个已有存量账号数据、且旧字段名与默认值不同的 provider（如 Codex 分别覆盖成
-  `"auth_json"`/`"chatgpt_account_id"`）时才需要覆盖，全新 provider（如 Kimi）用默认值即可。
-  Claude 因 macOS 钥匙串 + API 账号特殊逻辑，不在此引擎上，`run.rs` 保留其专用分支。
+  表（`FileBlobRuntime` 有隔离能力时自动获得 `IsolatedProvider` blanket impl）——**隔离分发**
+  （`run.rs` 内的 materialize/absorb/env_vars/native_cli 查表逻辑）因此不用改。但 `run.rs` 的
+  `normalize_provider` 仍需加一行别名匹配（把用户输入的 provider 名解析成规范 id，纯文本解析，
+  查表机制吸收不了）；`login.rs` **必须**新增一个该 provider 专属的 match 分支——登录流程从未做成
+  通用查表（Codex 走 `codex login` 子进程、Claude 走 `claude auth login --claudeai`、Kimi 是纯导入
+  已登录凭证，语义各不相同），每个新 provider 都要写自己的登录分支。历史数据兼容用两个可选 hook：
+  `store_field()`（凭证仓库里存 blob 的字段名，默认 `"blob"`）与 `dedup_extra_key()`（`registry.toml
+  extra` 里去重键的字段名，默认 `"dedup_key"`）——仅当迁移一个已有存量账号数据、且旧字段名与默认值
+  不同的 provider（如 Codex 分别覆盖成 `"auth_json"`/`"chatgpt_account_id"`）时才需要覆盖，全新
+  provider（如 Kimi）用默认值即可。Claude 因 macOS 钥匙串 + API 账号特殊逻辑，不在此引擎上，`run.rs`
+  保留其专用分支。
 - AutoSwap 默认阈值只改 `crates/core/src/defaults.rs::AUTO_SWAP_THRESHOLD`，并同步
   [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md)。
 - `async fn` 内不得直接做阻塞 IO；文件锁、`std::fs`、keyring 等必须包进 `tokio::task::spawn_blocking`。
