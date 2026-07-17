@@ -50,6 +50,12 @@ pub trait FileBlobRuntime: Send + Sync + 'static {
     fn store_field(&self) -> &'static str {
         "blob"
     }
+    /// registry.toml `extra` 里存跨主键去重键的字段名。默认 "dedup_key"；
+    /// Codex 覆盖为 "chatgpt_account_id" 以兼容此次迁移前已存在的账号数据
+    /// （迁移前的 `registry.toml` 只有这个键名，没有通用的 "dedup_key"）。
+    fn dedup_extra_key(&self) -> &'static str {
+        "dedup_key"
+    }
     /// 解析 provider 工作目录（读 env + 默认目录）。
     fn home(&self) -> PathBuf;
     /// 工作目录内的 live 凭证文件路径。

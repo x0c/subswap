@@ -25,9 +25,6 @@ use subswap_core::{
 use crate::json::{extract_access_token, extract_refresh_token};
 use crate::runtime::{BlobMetadata, FileBlobRuntime, IsolationSpec, RefreshOutcome};
 
-/// registry.toml `extra` 里存去重键。
-const META_DEDUP: &str = "dedup_key";
-
 /// 文件型 OAuth 账号切换引擎：接一个 [`FileBlobRuntime`] adapter 即可获得完整 [`Provider`] 实现。
 pub struct FileBlobProvider<A: FileBlobRuntime> {
     runtime: Arc<A>,
@@ -89,15 +86,28 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
             })
     }
 
-    /// 元数据是否指向给定账号：命中主键/label，或跨主键去重键。
-    fn metadata_matches(meta: &BlobMetadata, account: &Account) -> bool {
-        let id_hit = meta.primary_id.as_deref() == Some(account.id.0.as_str())
-            || meta.label.as_deref() == Some(account.id.0.as_str());
-        let dedup_hit = match (meta.dedup_key.as_deref(), account.extra.get(META_DEDUP)) {
+    /// 元数据是否指向给定账号：primary_id/label 命中 account.id 或 account.label 任一值，
+    /// 或跨主键去重键命中（去重键的 extra 字段名由 `dedup_extra_key` 决定，与原始 Codex
+    /// 实现的 `auth_metadata_matches_account`/`string_matches_account` 保持完全一致的比较范围）。
+    fn metadata_matches(meta: &BlobMetadata, account: &Account, dedup_extra_key: &str) -> bool {
+        let id_hit = meta
+            .primary_id
+            .as_deref()
+            .is_some_and(|v| Self::value_matches_account(v, account))
+            || meta
+                .label
+                .as_deref()
+                .is_some_and(|v| Self::value_matches_account(v, account));
+        let dedup_hit = match (meta.dedup_key.as_deref(), account.extra.get(dedup_extra_key)) {
             (Some(dk), Some(v)) => v.as_str() == Some(dk),
             _ => false,
         };
         id_hit || dedup_hit
+    }
+
+    /// 单个候选值是否命中账号：等于 account.id，或（label 非空时）等于 account.label。
+    fn value_matches_account(value: &str, account: &Account) -> bool {
+        value == account.id.0 || (!account.label.trim().is_empty() && value == account.label)
     }
 }
 
@@ -107,6 +117,8 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
 
 impl<A: FileBlobRuntime> FileBlobProvider<A> {
     /// 从 blob 落库：blob 进 store，元数据进 registry.toml。`active_override=None` 时保留原 active。
+    /// 元数据由 `self.runtime.parse_metadata(&raw)` 派生；若调用方已持有 metadata（如 legacy
+    /// registry 迁移场景），改用 [`Self::store_account_with_metadata`] 跳过重新派生。
     fn store_account(
         &self,
         raw: String,
@@ -114,6 +126,17 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
         active_override: Option<bool>,
     ) -> Result<Account> {
         let meta = self.runtime.parse_metadata(&raw);
+        self.store_account_with_metadata(raw, meta, label_hint, active_override)
+    }
+
+    /// 同 [`Self::store_account`]，但接收调用方提供的、已解析好的 metadata，不再从 `raw` 重新派生。
+    fn store_account_with_metadata(
+        &self,
+        raw: String,
+        meta: BlobMetadata,
+        label_hint: Option<String>,
+        active_override: Option<bool>,
+    ) -> Result<Account> {
         let id_string = meta
             .primary_id
             .clone()
@@ -134,7 +157,10 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
 
         let mut extra = meta.extra.clone();
         if let Some(dk) = meta.dedup_key.clone() {
-            extra.insert(META_DEDUP.into(), serde_json::Value::String(dk));
+            extra.insert(
+                self.runtime.dedup_extra_key().into(),
+                serde_json::Value::String(dk),
+            );
         }
 
         let existing = self
@@ -166,11 +192,12 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
 
     fn find_by_dedup(&self, meta: &BlobMetadata) -> Option<Account> {
         let target = meta.dedup_key.as_deref()?;
+        let dedup_extra_key = self.runtime.dedup_extra_key();
         self.registry
             .list_by_provider(self.runtime.id())
             .ok()?
             .into_iter()
-            .find(|a| a.extra.get(META_DEDUP).and_then(|v| v.as_str()) == Some(target))
+            .find(|a| a.extra.get(dedup_extra_key).and_then(|v| v.as_str()) == Some(target))
     }
 
     /// 从当前 live 文件导入（可切换）。
@@ -230,6 +257,18 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
     ) -> Result<Account> {
         self.store_account(raw, label_hint, active)
     }
+
+    /// 同 [`Self::import_raw`]，但用调用方提供的 metadata（不重新从 blob 派生）。
+    /// 供 legacy registry 迁移场景使用：迁移前的 metadata 可能带有当前 blob 解析逻辑
+    /// 推导不出的字段（如缓存的用量、旧 schema 才有的字段），必须原样保留。
+    pub fn import_raw_with_explicit_metadata(
+        &self,
+        raw: String,
+        metadata: BlobMetadata,
+        active: Option<bool>,
+    ) -> Result<Account> {
+        self.store_account_with_metadata(raw, metadata, None, active)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -284,7 +323,7 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
     fn read_live_if_matches(&self, account: &Account) -> Option<String> {
         let raw = fs::read_to_string(self.live_path()).ok()?;
         let meta = self.runtime.parse_metadata(&raw);
-        Self::metadata_matches(&meta, account).then_some(raw)
+        Self::metadata_matches(&meta, account, self.runtime.dedup_extra_key()).then_some(raw)
     }
 
     /// 覆盖 live 前把 live 凭证回灌进其 owner 账号 store（自身走一份，供 `reconcile_active_from_live`
@@ -314,10 +353,11 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
             Err(_) => return Ok(()),
         };
         let meta = runtime.parse_metadata(&live_raw);
+        let dedup_extra_key = runtime.dedup_extra_key();
         let owner = registry
             .list_by_provider(runtime.id())?
             .into_iter()
-            .find(|a| Self::metadata_matches(&meta, a));
+            .find(|a| Self::metadata_matches(&meta, a, dedup_extra_key));
         let Some(owner) = owner else { return Ok(()) };
 
         if extract_refresh_token(&live_raw).is_none() {
@@ -483,6 +523,10 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
     pub(crate) fn test_runtime(&self) -> &A {
         self.runtime.as_ref()
     }
+
+    pub(crate) fn test_registry_upsert(&self, account: Account) -> Result<()> {
+        self.registry.upsert(account)
+    }
 }
 
 #[cfg(test)]
@@ -506,6 +550,9 @@ mod tests {
         refresh_calls: AtomicUsize,
         last_access_token: Mutex<Option<String>>,
         legacy_blob: Option<String>,
+        /// 默认 "dedup_key"；部分测试覆盖成非默认名，模拟 Codex 把去重键落在
+        /// 一个迁移前就存在、不叫 "dedup_key" 的字段名下。
+        dedup_extra_key: &'static str,
     }
 
     impl FakeRuntime {
@@ -520,12 +567,20 @@ mod tests {
                 refresh_calls: AtomicUsize::new(0),
                 last_access_token: Mutex::new(None),
                 legacy_blob: None,
+                dedup_extra_key: "dedup_key",
             }
         }
 
         fn with_legacy(home: PathBuf, legacy_blob: &str) -> Self {
             Self {
                 legacy_blob: Some(legacy_blob.to_string()),
+                ..Self::new(home)
+            }
+        }
+
+        fn with_dedup_extra_key(home: PathBuf, dedup_extra_key: &'static str) -> Self {
+            Self {
+                dedup_extra_key,
                 ..Self::new(home)
             }
         }
@@ -545,12 +600,21 @@ mod tests {
         fn live_cred_path(&self, home: &Path) -> PathBuf {
             home.join("live.json")
         }
+        fn dedup_extra_key(&self) -> &'static str {
+            self.dedup_extra_key
+        }
         fn parse_metadata(&self, blob: &str) -> BlobMetadata {
             let v: serde_json::Value = serde_json::from_str(blob).unwrap_or_default();
             BlobMetadata {
                 primary_id: v.get("uid").and_then(|x| x.as_str()).map(String::from),
-                label: v.get("uid").and_then(|x| x.as_str()).map(String::from),
-                dedup_key: None,
+                // "label" 字段独立可控，缺省时回退到 uid（沿用既有测试的默认行为）；
+                // "dedup" 字段模拟去重键（如 Codex 的 chatgpt_account_id）。
+                label: v
+                    .get("label")
+                    .and_then(|x| x.as_str())
+                    .map(String::from)
+                    .or_else(|| v.get("uid").and_then(|x| x.as_str()).map(String::from)),
+                dedup_key: v.get("dedup").and_then(|x| x.as_str()).map(String::from),
                 extra: serde_json::Map::new(),
             }
         }
@@ -681,6 +745,106 @@ mod tests {
         // 无匹配账号 → 不写 store。
         p.reconcile_active_from_live().unwrap();
         assert!(p.test_store_get("unmanaged").is_none());
+    }
+
+    // --- Finding 1 回归：账号匹配不应比迁移前的 Codex 实现窄 ---
+
+    /// 回归测试：迁移前已存在的账号（`extra` 只有旧键名 "chatgpt_account_id"，没有通用
+    /// "dedup_key"）在 primary_id 发生轮换（如 Codex account_key 轮换）后，
+    /// capture-on-leave 仍必须能靠去重键（用 runtime 声明的 extra 键名读取）找到 owner，
+    /// 否则该账号的 store 副本会停留在旧 refresh token 上，导致下次切回后报
+    /// "refresh token already used"。
+    ///
+    /// 修复前：引擎硬编码只读 `extra["dedup_key"]`，这个键名对该账号不存在 → 找不到 owner → 断言失败。
+    #[test]
+    fn capture_finds_owner_via_dedup_key_under_runtime_specific_extra_key_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = FakeRuntime::with_dedup_extra_key(tmp.path().join("home"), "chatgpt_account_id");
+        let p = provider_with(tmp.path(), runtime);
+        fs::create_dir_all(p.home()).unwrap();
+
+        // 模拟迁移前已存在的账号：id = 旧 account_key，label = 邮箱，
+        // extra 只有旧键名 "chatgpt_account_id"，没有 "dedup_key"。
+        let mut account = fake_account("old-key");
+        account.label = "user@example.com".into();
+        account
+            .extra
+            .insert("chatgpt_account_id".into(), serde_json::Value::String("stable-id".into()));
+        p.test_registry_upsert(account).unwrap();
+
+        // live blob：account_key 已轮换成新值，label 缺失，但去重键（dedup）仍是同一个稳定值。
+        fs::write(p.test_live_path(), r#"{"uid":"new-key","dedup":"stable-id"}"#).unwrap();
+        p.reconcile_active_from_live().unwrap();
+
+        let stored = p
+            .test_store_get("old-key")
+            .expect("primary_id 轮换后仍应通过去重键找到 owner 并回灌 store");
+        assert!(stored.contains("new-key"));
+    }
+
+    /// 回归测试：metadata 的 label 字段应对照 account.label 比较（而不是只对照 account.id），
+    /// 与迁移前 `string_matches_account` 检查 `account.id.0` 或 `account.label` 的范围一致。
+    ///
+    /// 修复前：`id_hit` 只把 `meta.label` 与 `account.id` 比较，从不查 `account.label` → 断言失败。
+    #[test]
+    fn label_metadata_field_matches_account_label_when_primary_id_does_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = provider(tmp.path());
+        fs::create_dir_all(p.home()).unwrap();
+
+        let mut account = fake_account("some-id");
+        account.label = "user@example.com".into();
+        p.test_registry_upsert(account).unwrap();
+
+        // primary_id 与 account.id/account.label 都不命中，但 label 字段命中 account.label。
+        fs::write(
+            p.test_live_path(),
+            r#"{"uid":"unrelated-id","label":"user@example.com"}"#,
+        )
+        .unwrap();
+        p.reconcile_active_from_live().unwrap();
+
+        let stored = p
+            .test_store_get("some-id")
+            .expect("metadata.label 命中 account.label 时应能找到 owner");
+        assert!(stored.contains("unrelated-id"));
+    }
+
+    // --- Finding 2 回归：import_raw_with_explicit_metadata 应优先用调用方提供的 metadata ---
+
+    #[test]
+    fn import_raw_with_explicit_metadata_prefers_caller_supplied_metadata_over_derived() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = provider(tmp.path());
+
+        let raw = r#"{"uid":"u1","access_token":"A1"}"#.to_string();
+        // 显式 metadata 与从 raw 派生的结果不同：primary_id/label 换成别的值，
+        // 并带一个 raw 派生不出的 extra 字段（模拟 legacy registry 里缓存的用量字段）。
+        let mut extra = serde_json::Map::new();
+        extra.insert(
+            "cached_field".into(),
+            serde_json::Value::String("explicit-value".into()),
+        );
+        let metadata = BlobMetadata {
+            primary_id: Some("explicit-id".into()),
+            label: Some("explicit-label".into()),
+            dedup_key: None,
+            extra,
+        };
+
+        let account = p
+            .import_raw_with_explicit_metadata(raw, metadata, Some(true))
+            .unwrap();
+        assert_eq!(
+            account.id.0, "explicit-id",
+            "应使用显式 metadata 的 primary_id，而不是从 raw 派生的 u1"
+        );
+        assert_eq!(account.label, "explicit-label");
+        assert_eq!(
+            account.extra.get("cached_field").and_then(|v| v.as_str()),
+            Some("explicit-value"),
+            "raw 派生不出的字段应原样保留"
+        );
     }
 
     // --- 导入 / 导出 / 吸收 ---
