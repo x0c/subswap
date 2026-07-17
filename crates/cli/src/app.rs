@@ -1,5 +1,6 @@
 //! CLI 进程级共享上下文：注册 Provider、打开 keyring、加载 registry。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -9,6 +10,7 @@ use subswap_core::{
 };
 use subswap_provider_claude::ClaudeProvider;
 use subswap_provider_codex::CodexProvider;
+use subswap_provider_common::IsolatedProvider;
 use subswap_provider_kimi::KimiProvider;
 
 pub struct AppContext {
@@ -18,6 +20,10 @@ pub struct AppContext {
     pub codex: Arc<CodexProvider>,
     pub kimi: Arc<KimiProvider>,
     pub providers: ProviderRegistry,
+    /// 隔离运行（`run`/`shell`/`env`）查表：provider id → 通用隔离抽象。
+    /// Claude 不在此表中，走 `run.rs` 里的专用分支（macOS 钥匙串 / API 账号逻辑不适配此通用形状）。
+    /// 新增一个文件型 provider 只需在这里插一行，无需再改 `run.rs` 的 dispatch 逻辑。
+    pub isolated: HashMap<&'static str, Arc<dyn IsolatedProvider>>,
     pub audit: AuditLog,
 }
 
@@ -40,6 +46,10 @@ impl AppContext {
         providers.register(codex.clone());
         providers.register(kimi.clone());
 
+        let mut isolated: HashMap<&'static str, Arc<dyn IsolatedProvider>> = HashMap::new();
+        isolated.insert("codex", codex.clone());
+        isolated.insert("kimi", kimi.clone());
+
         let audit = AuditLog::from_default_paths()?;
 
         Ok(Self {
@@ -49,6 +59,7 @@ impl AppContext {
             codex,
             kimi,
             providers,
+            isolated,
             audit,
         })
     }
