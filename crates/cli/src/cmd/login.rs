@@ -75,7 +75,24 @@ pub async fn run(
             println!("login → codex/{}", account_ref(&account.id.0));
             Ok(())
         }
-        other => bail!("unknown provider: {other} (expected claude or codex)"),
+        "kimi" | "moonshot" => {
+            if email.is_some() || sso || device_auth {
+                bail!("--email/--sso/--device-auth are not supported for kimi login");
+            }
+            // Kimi 登录是交互式 TUI：约定用户先在 kimi 里登录好，这里只导入当前登录的凭证。
+            let account = ctx
+                .kimi
+                .import_active(None)
+                .context("import Kimi login; run `kimi` and sign in first")?;
+            ctx.registry
+                .set_active("kimi", &account.id)
+                .context("mark Kimi login active")?;
+            ctx.audit
+                .append(AuditEvent::ok("login", "kimi", Some(account.id.0.as_str())));
+            println!("login → kimi/{}", account_ref(&account.id.0));
+            Ok(())
+        }
+        other => bail!("unknown provider: {other} (expected claude, codex or kimi)"),
     }
 }
 
