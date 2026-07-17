@@ -1595,11 +1595,13 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "directories",
  "reqwest",
  "serde",
  "serde_json",
  "subswap-core",
  "subswap-provider-common",
+ "tempfile",
  "tokio",
  "tracing",
 ]
