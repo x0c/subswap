@@ -60,7 +60,7 @@ parked-only 刷新、隔离导出/吸收），各自只实现 `FileBlobRuntime` 
 | 模式 | 落地位置 | 作用 |
 |---|---|---|
 | Strategy + Factory | `Provider` trait + `ProviderRegistry` | 多 Provider 多策略，新增 = 加一行注册 |
-| Adapter | `providers/codex`、`providers/claude` | 把各订阅的接口差异封进各自实现 |
+| Adapter | `providers/codex`、`providers/kimi` | 各自实现 `FileBlobRuntime`，把本地路径/元数据/刷新/usage 查询的差异适配进 `providers/common` 共享引擎；Claude 未接入此引擎，直接实现 `Provider` trait（走上面的 Strategy + Factory），不属于这个 Adapter 关系 |
 | Repository | `CredentialStore` trait + `KeyringStore` impl | 隔离 keyring；未来可加加密文件后端 |
 | Observer | M4 的 `UsageMonitor` → `AutoSwapPolicy` | 周期采样触发自动切换 |
 | Chain of Responsibility | M4 的 `AutoSwapPolicy` 内部 | 阈值 → 限流 → 候选筛选 → 选优 |
@@ -242,9 +242,16 @@ subswap 切换时**写**这些上游目录，但**只读不存** token 元数据
 3. 在 `crates/cli/src/app.rs::AppContext::build()` 注册一行（provider 列表）；若要支持
    `subswap run/shell/env` 隔离运行，同时插一行进 `isolated: HashMap<&str, Arc<dyn IsolatedProvider>>`
    表（`FileBlobRuntime` 有隔离能力时自动获得 `IsolatedProvider` blanket impl，见 `isolated.rs`）——
-   不需要改 `run.rs` / `login.rs` 的 provider 分支逻辑。
-4. 在 `crates/cli/Cargo.toml` 加依赖；在 `sync_local_active()` 加 import_active 调用。
-5. 在 `docs/PROVIDER_KNOWLEDGE_BASE.md` 补该 Provider 的接口/坑笔记（含共享引擎小节里的 adapter 差异点表）。
+   这一步之后，`run.rs` 里 materialize/absorb/env_vars/native_cli 这些**隔离分发**逻辑查表即可拿到
+   新 provider，不用改。
+4. `run.rs::normalize_provider` 加一行别名匹配（如 `"kimi" | "moonshot" => Ok("kimi")`），把用户在
+   CLI 参数里输入的 provider 名解析成规范 id——这是纯文本解析，查表机制吸收不了，每个新 provider
+   都要加。
+5. `login.rs` 加一个该 provider 专属的 `match` 分支——登录流程从未做成通用查表，也不会：Codex 走
+   `codex login` 子进程、Claude 走 `claude auth login --claudeai`、Kimi 是纯导入已登录凭证，语义
+   互不相同，每个新 provider 都要自己写登录分支。
+6. 在 `crates/cli/Cargo.toml` 加依赖；在 `sync_local_active()` 加 import_active 调用。
+7. 在 `docs/PROVIDER_KNOWLEDGE_BASE.md` 补该 Provider 的接口/坑笔记（含共享引擎小节里的 adapter 差异点表）。
 
 **若新 Provider 形状不同**（如 Claude 那种走系统 Keychain、且有无凭证文件的特殊账号类型），
 则不接入共享引擎，走通用步骤：
