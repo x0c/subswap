@@ -136,6 +136,9 @@ pub async fn run() -> Result<()> {
 }
 
 /// 一轮调度:拉 quota → 决策 → swap → token 保活。任一 Provider 失败不影响其他。
+// 参数数量是单次调度轮次编排的固有需要(各 provider 句柄 + 状态 + 配置),非公开 API,
+// 拆结构体收益不大,直接放行该 lint。
+#[allow(clippy::too_many_arguments)]
 async fn run_cycle(
     providers: &ProviderRegistry,
     claude: &Arc<ClaudeProvider>,
