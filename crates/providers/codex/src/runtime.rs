@@ -8,7 +8,7 @@ use subswap_core::error::Result;
 use subswap_core::{Account, Quota};
 use subswap_provider_common::{BlobMetadata, FileBlobRuntime, IsolationSpec, RefreshOutcome};
 
-use crate::codex_files::parse_metadata as parse_auth_metadata;
+use crate::codex_files::{parse_metadata as parse_auth_metadata, AuthMetadata};
 use crate::paths::{active_auth_path, codex_home};
 use crate::{META_AUTH_METADATA, META_CHATGPT_ACCOUNT_ID};
 
@@ -29,6 +29,10 @@ impl FileBlobRuntime for CodexRuntime {
     fn store_field(&self) -> &'static str {
         "auth_json"
     }
+    /// 沿用此次迁移前 `registry.toml` 就已存在的键名，兼容存量账号数据（无需迁移即可继续匹配）。
+    fn dedup_extra_key(&self) -> &'static str {
+        META_CHATGPT_ACCOUNT_ID
+    }
     fn home(&self) -> PathBuf {
         codex_home()
     }
@@ -37,22 +41,7 @@ impl FileBlobRuntime for CodexRuntime {
     }
 
     fn parse_metadata(&self, blob: &str) -> BlobMetadata {
-        let m = parse_auth_metadata(blob);
-        let mut extra = serde_json::Map::new();
-        // 保留供 list 展示与 usage header 使用的字段，与迁移前 registry.toml 布局一致。
-        extra.insert(
-            META_AUTH_METADATA.into(),
-            serde_json::to_value(&m).unwrap_or_default(),
-        );
-        if let Some(cid) = m.chatgpt_account_id.clone() {
-            extra.insert(META_CHATGPT_ACCOUNT_ID.into(), serde_json::Value::String(cid));
-        }
-        BlobMetadata {
-            primary_id: m.primary_id(),
-            label: m.label(),
-            dedup_key: m.chatgpt_account_id.clone(),
-            extra,
-        }
+        auth_metadata_to_blob_metadata(parse_auth_metadata(blob))
     }
 
     fn isolation(&self) -> IsolationSpec {
@@ -77,5 +66,26 @@ impl FileBlobRuntime for CodexRuntime {
 
     fn materialize_extra(&self, _home: &Path, env_dir: &Path) {
         crate::legacy::copy_codex_config_best_effort(env_dir);
+    }
+}
+
+/// 把 [`AuthMetadata`] 转成引擎通用的 [`BlobMetadata`]。供 `parse_metadata`（从 blob 派生）和
+/// `CodexCompat::import_raw_with_metadata`（legacy 迁移场景，metadata 由调用方提供、不重新派生）
+/// 共用，避免两处转换逻辑各写一份、慢慢分叉。
+///
+/// 注意：`extra` 只塞 [`META_AUTH_METADATA`]；`dedup_key` 对应的 `extra[dedup_extra_key()]`
+/// （即 [`META_CHATGPT_ACCOUNT_ID`]）由引擎 `store_account` 统一从 `dedup_key` 字段写入，
+/// 这里不重复插入，否则会有两处来源都往同一个键写值。
+pub(crate) fn auth_metadata_to_blob_metadata(m: AuthMetadata) -> BlobMetadata {
+    let mut extra = serde_json::Map::new();
+    extra.insert(
+        META_AUTH_METADATA.into(),
+        serde_json::to_value(&m).unwrap_or_default(),
+    );
+    BlobMetadata {
+        primary_id: m.primary_id(),
+        label: m.label(),
+        dedup_key: m.chatgpt_account_id.clone(),
+        extra,
     }
 }
