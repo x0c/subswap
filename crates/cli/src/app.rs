@@ -30,7 +30,7 @@ impl AppContext {
         let registry = Arc::new(AccountRegistry::from_default_paths()?);
 
         let claude = Arc::new(ClaudeProvider::new(store.clone(), registry.clone()));
-        let codex = Arc::new(CodexProvider::new(store.clone(), registry.clone()));
+        let codex = Arc::new(subswap_provider_codex::new(store.clone(), registry.clone()));
 
         let mut providers = ProviderRegistry::new();
         providers.register(claude.clone());

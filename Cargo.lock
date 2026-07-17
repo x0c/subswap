@@ -1567,6 +1567,7 @@ dependencies = [
  "serde",
  "serde_json",
  "subswap-core",
+ "subswap-provider-common",
  "tempfile",
  "tokio",
  "tracing",

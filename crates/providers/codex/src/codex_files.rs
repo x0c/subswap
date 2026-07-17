@@ -1,16 +1,13 @@
-//! 读写 ~/.codex/auth.json。
+//! 解析 ~/.codex/auth.json 的元数据。
 //!
 //! 设计：subswap 不假设 auth.json 内部结构稳定（codex 自身经历了 v2→v3→v4 schema 迁移），
-//! 整段当 opaque blob 处理。只解析少量元数据用于展示与去重：
+//! 整段当 opaque blob 处理（读写由共享引擎 [`subswap_provider_common::engine`] 统一负责）。
+//! 这里只解析少量元数据用于展示与去重：
 //! - `account_key`（首选主键，缺失时回退用 email）
 //! - `email` / `alias`（用户友好标签）
 //! - `chatgpt_account_id` / `chatgpt_user_id`（额度查询时用作 header）
 
-use std::fs;
-use std::path::Path;
-
 use serde::{Deserialize, Serialize};
-use subswap_core::error::{Error, Result};
 
 /// 从 auth.json 解析出的最小元数据。其余字段不动，整段透传。
 ///
@@ -166,34 +163,6 @@ fn api_key_fingerprint(api_key: &str) -> String {
     format!("{hash:016x}")
 }
 
-/// 读取 auth.json 原文。
-pub fn read_auth(path: &Path) -> Result<String> {
-    fs::read_to_string(path)
-        .map_err(|e| Error::Provider(format!("read {} failed: {e}", path.display())))
-}
-
-/// 原子写 auth.json：tmp + rename + 0o600。
-pub fn write_auth(path: &Path, contents: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension(format!(
-        "{}.{}.tmp",
-        path.extension().and_then(|s| s.to_str()).unwrap_or("json"),
-        std::process::id()
-    ));
-    fs::write(&tmp, contents)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
-    }
-
-    fs::rename(&tmp, path)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,15 +230,5 @@ mod tests {
         let m = parse_metadata("not json at all");
         assert!(m.primary_id().is_none());
         assert!(m.label().is_none());
-    }
-
-    #[test]
-    fn write_then_read_auth_roundtrip() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("auth.json");
-        let body = r#"{"account_key":"k","email":"a@b"}"#;
-        write_auth(&path, body).unwrap();
-        let back = read_auth(&path).unwrap();
-        assert_eq!(back, body);
     }
 }
