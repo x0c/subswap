@@ -104,7 +104,7 @@ pub async fn fetch_quota(access_token: &str, account: &Account) -> Result<Vec<Qu
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(Error::QuotaFetch(format!("kimi usages HTTP {status}")));
+        return Err(Error::QuotaFetch(format!("kimi usages HTTP {status}: {body}")));
     }
     Ok(parse_usages(&body, "kimi", &account.id))
 }
