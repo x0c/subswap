@@ -22,7 +22,9 @@ fn to_u64(v: Option<&serde_json::Value>) -> Option<u64> {
 
 fn reset_at(detail: &serde_json::Value) -> Option<DateTime<Utc>> {
     let s = detail.get("resetTime")?.as_str()?;
-    DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&Utc))
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.with_timezone(&Utc))
 }
 
 fn window_from_minutes(minutes: u64) -> QuotaWindow {
@@ -35,7 +37,10 @@ fn window_from_minutes(minutes: u64) -> QuotaWindow {
 
 fn minutes_of(window: &serde_json::Value) -> Option<u64> {
     let duration = to_u64(window.get("duration"))?;
-    let unit = window.get("timeUnit").and_then(|v| v.as_str()).unwrap_or("");
+    let unit = window
+        .get("timeUnit")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let mins = match unit {
         u if u.contains("MINUTE") => duration,
         u if u.contains("HOUR") => duration * 60,
@@ -45,13 +50,22 @@ fn minutes_of(window: &serde_json::Value) -> Option<u64> {
     Some(mins)
 }
 
-fn quota_from(detail: &serde_json::Value, window: QuotaWindow, provider: &str, id: &AccountId) -> Option<Quota> {
+fn quota_from(
+    detail: &serde_json::Value,
+    window: QuotaWindow,
+    provider: &str,
+    id: &AccountId,
+) -> Option<Quota> {
     let limit = to_u64(detail.get("limit"))?;
     let used = to_u64(detail.get("used")).or_else(|| {
         let rem = to_u64(detail.get("remaining"))?;
         Some(limit.saturating_sub(rem))
     })?;
-    let pct = if limit > 0 { used as f64 / limit as f64 * 100.0 } else { 0.0 };
+    let pct = if limit > 0 {
+        used as f64 / limit as f64 * 100.0
+    } else {
+        0.0
+    };
     Some(Quota {
         provider: provider.into(),
         account_id: id.clone(),
@@ -104,7 +118,9 @@ pub async fn fetch_quota(access_token: &str, account: &Account) -> Result<Vec<Qu
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(Error::QuotaFetch(format!("kimi usages HTTP {status}: {body}")));
+        return Err(Error::QuotaFetch(format!(
+            "kimi usages HTTP {status}: {body}"
+        )));
     }
     Ok(parse_usages(&body, "kimi", &account.id))
 }
@@ -132,7 +148,8 @@ mod tests {
 
     #[test]
     fn used_derived_from_remaining_when_absent() {
-        let body = r#"{"usage":{"limit":"100","remaining":"70","resetTime":"2026-07-24T07:52:15Z"}}"#;
+        let body =
+            r#"{"usage":{"limit":"100","remaining":"70","resetTime":"2026-07-24T07:52:15Z"}}"#;
         let q = parse_usages(body, "kimi", &AccountId("u1".into()));
         assert_eq!((q[0].used, q[0].limit), (30, 100));
     }

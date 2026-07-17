@@ -280,8 +280,12 @@ async fn reconcile_file_blob_provider<A>(
     let provider = provider.clone();
     match tokio::task::spawn_blocking(move || provider.reconcile_active_from_live()).await {
         Ok(Ok(())) => {}
-        Ok(Err(e)) => tracing::debug!(err = %e, provider = %label, "live-credential reconcile skipped"),
-        Err(e) => tracing::debug!(err = %e, provider = %label, "live-credential reconcile join failed"),
+        Ok(Err(e)) => {
+            tracing::debug!(err = %e, provider = %label, "live-credential reconcile skipped")
+        }
+        Err(e) => {
+            tracing::debug!(err = %e, provider = %label, "live-credential reconcile join failed")
+        }
     }
 }
 

@@ -38,7 +38,10 @@ impl FileBlobRuntime for KimiRuntime {
         kimi_files::parse_metadata(blob)
     }
     fn isolation(&self) -> IsolationSpec {
-        IsolationSpec { env_var: "KIMI_CODE_HOME", native_cli: "kimi" }
+        IsolationSpec {
+            env_var: "KIMI_CODE_HOME",
+            native_cli: "kimi",
+        }
     }
     async fn refresh(&self, blob: &str) -> Result<RefreshOutcome> {
         oauth::refresh_blob(blob).await

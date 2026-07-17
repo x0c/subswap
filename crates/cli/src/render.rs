@@ -433,7 +433,10 @@ fn window_display_order(window: QuotaWindow) -> u8 {
 }
 
 fn render_quota_parts(quotas: &[Quota], quota_width: usize, color: bool) -> String {
-    let mut sorted: Vec<&Quota> = quotas.iter().filter(|q| quota_has_display_value(q)).collect();
+    let mut sorted: Vec<&Quota> = quotas
+        .iter()
+        .filter(|q| quota_has_display_value(q))
+        .collect();
     sorted.sort_by_key(|q| window_display_order(q.window));
     let parts: Vec<String> = sorted
         .into_iter()

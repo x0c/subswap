@@ -69,7 +69,10 @@ pub async fn fetch_codex_quota(access_token: &str, account: &Account) -> Result<
             Quota {
                 provider: PROVIDER_ID.into(),
                 account_id: account.id.clone(),
-                window: quota_window_for_usage_window(norm.window_minutes, norm.limit_window_seconds),
+                window: quota_window_for_usage_window(
+                    norm.window_minutes,
+                    norm.limit_window_seconds,
+                ),
                 used,
                 limit,
                 reset_at,
@@ -138,7 +141,13 @@ mod tests {
             quota_window_for_usage_window(None, Some(604_800)),
             QuotaWindow::SevenDay
         );
-        assert_eq!(quota_window_for_usage_window(Some(60), None), QuotaWindow::Custom);
-        assert_eq!(quota_window_for_usage_window(None, None), QuotaWindow::Custom);
+        assert_eq!(
+            quota_window_for_usage_window(Some(60), None),
+            QuotaWindow::Custom
+        );
+        assert_eq!(
+            quota_window_for_usage_window(None, None),
+            QuotaWindow::Custom
+        );
     }
 }
