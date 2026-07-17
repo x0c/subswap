@@ -4,8 +4,10 @@ members = [
     "crates/core",
     "crates/cli",
     "crates/daemon",
+    "crates/providers/common",
     "crates/providers/codex",
     "crates/providers/claude",
+    "crates/providers/kimi",
 ]
 
 [workspace.package]
@@ -54,8 +56,10 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # workspace 内部 crate 互相引用
 subswap-core = { path = "crates/core" }
+subswap-provider-common = { path = "crates/providers/common" }
 subswap-provider-codex = { path = "crates/providers/codex" }
 subswap-provider-claude = { path = "crates/providers/claude" }
+subswap-provider-kimi = { path = "crates/providers/kimi" }
 subswap-daemon = { path = "crates/daemon" }
 
 [profile.release]
