@@ -60,9 +60,92 @@ impl CodexCompat for CodexProvider {
     fn import_raw_with_metadata(
         &self,
         raw: String,
-        _meta: serde_json::Value,
+        meta: serde_json::Value,
         active: bool,
     ) -> Result<subswap_core::Account> {
-        self.import_raw(raw, None, Some(active))
+        // 优先用调用方提供的 legacy metadata（可能带有当前 blob 解析逻辑推导不出的字段，
+        // 如缓存的 last_usage/last_usage_at）；只有反序列化失败（旧 schema 变化）时才退回
+        // 从 raw blob 重新派生，与迁移前 `store_account_with_metadata` 的行为保持一致。
+        match serde_json::from_value::<codex_files::AuthMetadata>(meta) {
+            Ok(auth_meta) => {
+                let blob_metadata = runtime::auth_metadata_to_blob_metadata(auth_meta);
+                self.import_raw_with_explicit_metadata(raw, blob_metadata, Some(active))
+            }
+            Err(_) => self.import_raw(raw, None, Some(active)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use subswap_core::{AccountRegistry, FileStore};
+
+    fn test_provider(tmp: &std::path::Path) -> CodexProvider {
+        let store: Arc<dyn CredentialStore> = Arc::new(FileStore::new(tmp.join("creds.json")));
+        let registry = Arc::new(AccountRegistry::new(tmp.join("registry.toml")));
+        new(store, registry)
+    }
+
+    /// Finding 2 回归：`import_raw_with_metadata`（`subswap migrate` 的一次性导入路径）必须
+    /// 优先用调用方传入的 legacy metadata，而不是无脑重新从 raw blob 派生——否则 legacy
+    /// registry 里带有、但当前 blob 解析不出的字段（这里用 last_usage 缓存举例）会在迁移时静默丢失。
+    ///
+    /// 修复前：`import_raw_with_metadata` 直接忽略 `meta` 参数、总是调用
+    /// `self.import_raw(raw, None, Some(active))` 重新从 raw 派生，last_usage/last_usage_at 丢失。
+    #[test]
+    fn import_raw_with_metadata_prefers_caller_supplied_metadata_over_raw_derivation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = test_provider(tmp.path());
+
+        // raw blob 只有 account_key + token，从它派生的 metadata 不会带 last_usage 缓存。
+        let raw = r#"{"account_key":"key-abc","tokens":{"access_token":"AT"}}"#.to_string();
+
+        // legacy registry 条目里的 metadata：带 raw 派生不出的 last_usage 缓存字段。
+        let legacy_meta = serde_json::json!({
+            "account_key": "key-abc",
+            "email": "user@example.com",
+            "last_usage": {"primary": {"used_percent": 42}},
+            "last_usage_at": 1_700_000_000i64,
+        });
+
+        let account = p.import_raw_with_metadata(raw, legacy_meta, true).unwrap();
+        assert_eq!(account.id.0, "key-abc");
+        assert_eq!(account.label, "user@example.com");
+
+        let auth_metadata = account
+            .extra
+            .get(META_AUTH_METADATA)
+            .expect("auth_metadata 字段应存在");
+        assert_eq!(
+            auth_metadata.get("last_usage_at").and_then(|v| v.as_i64()),
+            Some(1_700_000_000),
+            "legacy metadata 的 last_usage 缓存字段应保留，不应因为 raw 派生不出而丢失"
+        );
+        assert_eq!(
+            auth_metadata
+                .get("last_usage")
+                .and_then(|v| v.get("primary"))
+                .and_then(|v| v.get("used_percent"))
+                .and_then(|v| v.as_i64()),
+            Some(42),
+        );
+    }
+
+    /// meta 反序列化失败（如旧 schema 变化、字段类型不兼容）时应退回从 raw blob 派生，
+    /// 而不是直接报错——与迁移前 `unwrap_or_else(|_| parse_metadata(&raw_auth_json))` 的
+    /// 兜底行为一致。
+    #[test]
+    fn import_raw_with_metadata_falls_back_to_raw_derivation_when_metadata_json_invalid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = test_provider(tmp.path());
+        let raw = r#"{"account_key":"key-xyz","email":"fallback@example.com"}"#.to_string();
+
+        // meta 不是合法的 AuthMetadata 形状（这里给一个数组），应回退到从 raw 派生。
+        let account = p
+            .import_raw_with_metadata(raw, serde_json::json!([1, 2, 3]), true)
+            .unwrap();
+        assert_eq!(account.id.0, "key-xyz");
+        assert_eq!(account.label, "fallback@example.com");
     }
 }
