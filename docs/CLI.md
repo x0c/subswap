@@ -5,9 +5,10 @@
 | `subswap` | 默认入口：扫本地自动 import → 立即显示账号骨架 → quota 渐进刷新 → 单 Provider 就绪即做 AutoSwap 决策 → 最终状态；同时 best-effort 拉起 `subswapd`（用户无感） |
 | `subswap add-api` | 交互式登记 Claude Code 兼容 API；DeepSeek 预设只需输入名称与隐藏 API Key；保存后不自动激活 |
 | `subswap login <claude\|codex>` | 调用官方 CLI 登录流程，完成后导入/覆盖当前登录账号并标记为 active |
+| `subswap login kimi` | **不驱动登录**：约定用户已自行用 `kimi` 原生 TUI 登录过，本命令只导入当前 `~/.kimi-code` 凭证并标记为 active |
 | `subswap swap [<id\|N>]` | 手动切换；`<id>` 用 id/label/`<provider>/<id>`，`<N>` 用默认入口列出的全局序号。无参打印编号清单 |
 | `subswap rm <id\|N>` | 删除账号（registry + keyring），引用形式同 `swap` |
-| `subswap run <provider> <id> [-- args]` | 账号隔离启动：把该账号凭证投影到私有目录，设隔离环境变量后启动原生 CLI（codex/claude），**不动全局活账号**；退出时吸收轮换后的凭证 |
+| `subswap run <provider> <id> [-- args]` | 账号隔离启动：把该账号凭证投影到私有目录，设隔离环境变量后启动原生 CLI（codex/claude/kimi），**不动全局活账号**；退出时吸收轮换后的凭证 |
 | `subswap shell <id>` | 起一个导出好隔离环境变量的子 shell，交互里连跑多条命令；provider 从账号推断；退出时吸收凭证 |
 | `subswap env <id>` | 打印 `export` 行供 `eval`。**注意**：eval 模式不持锁、退出后不吸收凭证，仅供临时短用 |
 | `subswap doctor` | 环境自检 |
@@ -15,8 +16,10 @@
 ### 账号环境隔离（`run` / `shell` / `env`）
 
 与 `swap`（全局原地切换）并存的另一种用法：在不同终端用不同账号**并行**，互不干扰、不改全局活账号。
-机制：Codex 设 `CODEX_HOME`；Claude 设 `CLAUDE_CONFIG_DIR`（macOS 另设 `CLAUDE_SECURESTORAGE_CONFIG_DIR`
-使钥匙串 item 命名空间隔离）。完整设计、约束、风险见
+机制：Codex 设 `CODEX_HOME`；Kimi 设 `KIMI_CODE_HOME`（两者都走 `crates/providers/common` 的
+`IsolatedProvider` 通用实现，注册在 `AppContext.isolated` 查表里）；Claude 设 `CLAUDE_CONFIG_DIR`
+（macOS 另设 `CLAUDE_SECURESTORAGE_CONFIG_DIR` 使钥匙串 item 命名空间隔离，走专用分支，不在该表内）。
+完整设计、约束、风险见
 [docs/design/ACCOUNT_ISOLATION_DESIGN.md](design/ACCOUNT_ISOLATION_DESIGN.md)。
 
 Claude 隔离只隔离账号身份，不隔离工作环境：`projects` / `sessions` / `plugins` / `skills` /
@@ -26,6 +29,7 @@ Claude 隔离只隔离账号身份，不隔离工作环境：`projects` / `sessi
 
 ```bash
 subswap run codex 6 -- --version        # 用 6 号账号在隔离环境跑 codex
+subswap run kimi alice-uid              # 隔离启动 kimi（KIMI_CODE_HOME 指到私有目录）
 subswap run claude alice@x.com          # 隔离启动 claude（按 id 引用）
 subswap shell 3                          # 进子 shell，环境已隔离到 3 号账号
 eval "$(subswap env codex/bob@x.com)"   # 临时把当前 shell 指向某 codex 账号

@@ -47,6 +47,16 @@
   两个 provider 各有守卫，改此逻辑前见
   [docs/troubleshooting/2026-06-18-live-capture-clobbers-refresh-token.md](docs/troubleshooting/2026-06-18-live-capture-clobbers-refresh-token.md)。
 - 新 Provider 只能放在 `crates/providers/<id>`，再到 `AppContext::build()` 注册，并在默认入口同步本地 active。
+- 文件型（凭证是本地一个 JSON blob、靠覆盖文件切换）provider 的切换机制统一在 `crates/providers/common`
+  （`FileBlobProvider<A>` 引擎）。新增此类 provider（如未来第三个）**只写一个 `FileBlobRuntime` 实现**
+  （路径、元数据解析、刷新、usage 查询等差异点），在 `AppContext::build()` 的 provider 列表注册一行，
+  若要支持 `subswap run/shell/env` 隔离运行再把它塞进 `isolated: HashMap<&str, Arc<dyn IsolatedProvider>>`
+  表（`FileBlobRuntime` 有隔离能力时自动获得 `IsolatedProvider` blanket impl）——**不改** `run.rs` / `login.rs`
+  的 provider 分支逻辑。历史数据兼容用两个可选 hook：`store_field()`（凭证仓库里存 blob 的字段名，
+  默认 `"blob"`）与 `dedup_extra_key()`（`registry.toml extra` 里去重键的字段名，默认 `"dedup_key"`）——
+  仅当迁移一个已有存量账号数据、且旧字段名与默认值不同的 provider（如 Codex 分别覆盖成
+  `"auth_json"`/`"chatgpt_account_id"`）时才需要覆盖，全新 provider（如 Kimi）用默认值即可。
+  Claude 因 macOS 钥匙串 + API 账号特殊逻辑，不在此引擎上，`run.rs` 保留其专用分支。
 - AutoSwap 默认阈值只改 `crates/core/src/defaults.rs::AUTO_SWAP_THRESHOLD`，并同步
   [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md)。
 - `async fn` 内不得直接做阻塞 IO；文件锁、`std::fs`、keyring 等必须包进 `tokio::task::spawn_blocking`。
@@ -103,8 +113,10 @@ pgrep -af 'subswap __daemon|subswapd' || true
 crates/core/              数据模型、Provider trait、CredentialStore、路径、策略
 crates/cli/               subswap 二进制与默认入口
 crates/daemon/            subswapd 后台轮询、自动切换、Claude token 保活
-crates/providers/codex/   Codex / ChatGPT Provider
-crates/providers/claude/  Claude / Anthropic Provider
+crates/providers/common/  文件型 OAuth 账号切换共享引擎（FileBlobProvider/FileBlobRuntime/IsolatedProvider）
+crates/providers/codex/   Codex / ChatGPT Provider（adapter，跑在 common 引擎上）
+crates/providers/claude/  Claude / Anthropic Provider（keychain 特化，独立于 common 引擎）
+crates/providers/kimi/    Kimi / Moonshot Provider（adapter，跑在 common 引擎上）
 docs/                     中文项目文档
 ```
 
@@ -112,7 +124,7 @@ docs/                     中文项目文档
 
 | 文档 | 用途 |
 |---|---|
-| [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) | 改、评审、分析或排查 Provider 切换、认证、额度、refresh token、自定义 API、Claude/Codex 本地激活文件前必读 |
+| [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) | 改、评审、分析或排查 Provider 切换、认证、额度、refresh token、自定义 API、Claude/Codex/Kimi 本地激活文件、或文件型 OAuth 切换共享引擎（`crates/providers/common`）前必读 |
 | [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) | 改、评审或分析 workspace 分层、Provider 抽象、核心数据流、凭证文件布局、新 Provider 接入前必读 |
 | [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md) | 改、评审或排查自动切换候选筛选、阈值、manual_only、防抖/振荡刹车、daemon token 保活，或排查「默认入口渐进式重判 / 一次 subswap 多次切换 / 连跑结果不同 / 卡在耗尽号 / 账号间无限横跳(A→B→A 振荡)」前必读 |
 | [docs/design/PREWARM_DESIGN.md](docs/design/PREWARM_DESIGN.md) | 设计、评审或实现窗口预热、预热阈值、预热通知与自动切换协同时必读 |
@@ -129,7 +141,7 @@ docs/                     中文项目文档
 
 | 领域 | 入口锚点 |
 |------|---------|
-| Provider 账号、凭证、额度与激活 | `crates/providers/`、`crates/core/src/provider.rs` |
+| Provider 账号、凭证、额度与激活 | `crates/providers/`、`crates/providers/common/`、`crates/core/src/provider.rs` |
 | CLI 命令面与默认入口 | `crates/cli/src/main.rs`、`crates/cli/src/cmd/` |
 | 自动切换策略与 daemon 协同 | `crates/core/src/auto_policy.rs`、`crates/daemon/` |
 | 账号环境隔离运行 | `crates/cli/src/cmd/run.rs`、`crates/core/src/checkout.rs` |
