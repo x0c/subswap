@@ -18,6 +18,8 @@ path = "src/main.rs"
 subswap-core.workspace = true
 subswap-provider-claude.workspace = true
 subswap-provider-codex.workspace = true
+subswap-provider-kimi.workspace = true
+subswap-provider-common.workspace = true
 
 anyhow.workspace = true
 chrono.workspace = true

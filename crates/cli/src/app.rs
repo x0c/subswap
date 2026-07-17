@@ -9,12 +9,14 @@ use subswap_core::{
 };
 use subswap_provider_claude::ClaudeProvider;
 use subswap_provider_codex::CodexProvider;
+use subswap_provider_kimi::KimiProvider;
 
 pub struct AppContext {
     pub store: Arc<dyn CredentialStore>,
     pub registry: Arc<AccountRegistry>,
     pub claude: Arc<ClaudeProvider>,
     pub codex: Arc<CodexProvider>,
+    pub kimi: Arc<KimiProvider>,
     pub providers: ProviderRegistry,
     pub audit: AuditLog,
 }
@@ -31,10 +33,12 @@ impl AppContext {
 
         let claude = Arc::new(ClaudeProvider::new(store.clone(), registry.clone()));
         let codex = Arc::new(subswap_provider_codex::new(store.clone(), registry.clone()));
+        let kimi = Arc::new(subswap_provider_kimi::new(store.clone(), registry.clone()));
 
         let mut providers = ProviderRegistry::new();
         providers.register(claude.clone());
         providers.register(codex.clone());
+        providers.register(kimi.clone());
 
         let audit = AuditLog::from_default_paths()?;
 
@@ -43,6 +47,7 @@ impl AppContext {
             registry,
             claude,
             codex,
+            kimi,
             providers,
             audit,
         })

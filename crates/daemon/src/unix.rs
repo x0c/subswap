@@ -29,6 +29,8 @@ use subswap_core::{
     Provider, ProviderRegistry, ProviderSnapshot, QuotaCache, QuotaFetchState,
 };
 use subswap_provider_claude::ClaudeProvider;
+use subswap_provider_codex::CodexProvider;
+use subswap_provider_kimi::KimiProvider;
 use tokio::signal::unix::{signal, SignalKind};
 
 use state::DaemonState;
@@ -68,9 +70,11 @@ pub async fn run() -> Result<()> {
 
     let claude = Arc::new(ClaudeProvider::new(store.clone(), registry.clone()));
     let codex = Arc::new(subswap_provider_codex::new(store.clone(), registry.clone()));
+    let kimi = Arc::new(subswap_provider_kimi::new(store.clone(), registry.clone()));
     let mut providers = ProviderRegistry::new();
     providers.register(claude.clone());
     providers.register(codex.clone());
+    providers.register(kimi.clone());
 
     let mut state = DaemonState::new();
 
@@ -94,6 +98,8 @@ pub async fn run() -> Result<()> {
         if let Err(e) = run_cycle(
             &providers,
             &claude,
+            &codex,
+            &kimi,
             &audit,
             &mut state,
             &policy,
@@ -133,6 +139,8 @@ pub async fn run() -> Result<()> {
 async fn run_cycle(
     providers: &ProviderRegistry,
     claude: &Arc<ClaudeProvider>,
+    codex: &Arc<CodexProvider>,
+    kimi: &Arc<KimiProvider>,
     audit: &AuditLog,
     state: &mut DaemonState,
     policy: &PolicyConfig,
@@ -144,6 +152,11 @@ async fn run_cycle(
     if let Err(e) = claude.reconcile_active_from_live().await {
         tracing::debug!(err = %e, "claude live-credential reconcile skipped");
     }
+    // Codex/Kimi 走共享文件型引擎,reconcile 是同步阻塞 IO,包进 spawn_blocking 调用
+    // (不用 block_in_place:该引擎的 activate 同样避开它,原因是调用方可能跑在
+    // current-thread runtime 上会直接 panic,此处沿用同一取舍)。
+    reconcile_file_blob_provider(codex, "codex").await;
+    reconcile_file_blob_provider(kimi, "kimi").await;
 
     // (a) 收集每个 Provider 的快照。query_quota 失败的账号 fetch_error 带原因。
     let snapshots = build_snapshots(providers).await;
@@ -251,6 +264,22 @@ async fn run_cycle(
     // (c) Claude token 后台保活:对所有 Claude 账号检查 expires_at。
     keep_claude_tokens_alive(claude, data_dir).await;
     Ok(())
+}
+
+/// 文件型共享引擎（Codex/Kimi）的 capture-on-arrival：同步阻塞 IO 包进 spawn_blocking,
+/// best-effort,失败仅 debug 日志,不影响本轮调度。
+async fn reconcile_file_blob_provider<A>(
+    provider: &Arc<subswap_provider_common::FileBlobProvider<A>>,
+    label: &'static str,
+) where
+    A: subswap_provider_common::FileBlobRuntime,
+{
+    let provider = provider.clone();
+    match tokio::task::spawn_blocking(move || provider.reconcile_active_from_live()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::debug!(err = %e, provider = %label, "live-credential reconcile skipped"),
+        Err(e) => tracing::debug!(err = %e, provider = %label, "live-credential reconcile join failed"),
+    }
 }
 
 /// quota 查询期间用户可能手动切换账号；自动切换执行前必须丢弃过期决策。

@@ -154,6 +154,14 @@ fn sync_local_active(ctx: &AppContext) {
         }
         Err(e) => tracing::debug!(err=%e, "skip codex auto-import"),
     }
+    match ctx.kimi.sync_active_metadata(None) {
+        Ok(account) => {
+            if let Err(e) = ctx.registry.set_active("kimi", &account.id) {
+                tracing::debug!(err=%e, "skip kimi active marker");
+            }
+        }
+        Err(e) => tracing::debug!(err=%e, "skip kimi auto-import"),
+    }
 }
 
 fn sync_local_active_metadata(ctx: &AppContext) {
@@ -172,6 +180,14 @@ fn sync_local_active_metadata(ctx: &AppContext) {
             }
         }
         Err(e) => tracing::debug!(err=%e, "skip codex active metadata sync"),
+    }
+    match ctx.kimi.sync_active_metadata(None) {
+        Ok(account) => {
+            if let Err(e) = ctx.registry.set_active("kimi", &account.id) {
+                tracing::debug!(err=%e, "skip kimi active marker");
+            }
+        }
+        Err(e) => tracing::debug!(err=%e, "skip kimi active metadata sync"),
     }
 }
 
