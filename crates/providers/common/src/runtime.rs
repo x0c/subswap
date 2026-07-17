@@ -46,6 +46,10 @@ pub trait FileBlobRuntime: Send + Sync + 'static {
     fn id(&self) -> &'static str;
     /// 人类可读名称。
     fn display_name(&self) -> &'static str;
+    /// store 里存 blob 的字段名。默认 "blob"；Codex 为兼容历史数据返回 "auth_json"。
+    fn store_field(&self) -> &'static str {
+        "blob"
+    }
     /// 解析 provider 工作目录（读 env + 默认目录）。
     fn home(&self) -> PathBuf;
     /// 工作目录内的 live 凭证文件路径。

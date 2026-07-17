@@ -25,8 +25,6 @@ use subswap_core::{
 use crate::json::{extract_access_token, extract_refresh_token};
 use crate::runtime::{BlobMetadata, FileBlobRuntime, IsolationSpec, RefreshOutcome};
 
-/// keyring/FileStore 字段名。整段 blob 存这里。
-const BLOB_FIELD: &str = "blob";
 /// registry.toml `extra` 里存去重键。
 const META_DEDUP: &str = "dedup_key";
 
@@ -131,7 +129,8 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
             .or_else(|| meta.label.clone())
             .unwrap_or_else(|| id.0.clone());
 
-        self.store.set(self.runtime.id(), id.0.as_str(), BLOB_FIELD, &raw)?;
+        self.store
+            .set(self.runtime.id(), id.0.as_str(), self.runtime.store_field(), &raw)?;
 
         let mut extra = meta.extra.clone();
         if let Some(dk) = meta.dedup_key.clone() {
@@ -144,7 +143,9 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
             .or_else(|| self.find_by_dedup(&meta));
         if let Some(ex) = existing.as_ref() {
             if ex.id != id {
-                let _ = self.store.delete(self.runtime.id(), ex.id.0.as_str(), BLOB_FIELD);
+                let _ = self
+                    .store
+                    .delete(self.runtime.id(), ex.id.0.as_str(), self.runtime.store_field());
                 self.registry.remove(self.runtime.id(), &ex.id)?;
             }
         }
@@ -190,7 +191,7 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
             .as_ref()
             .map(|pid| {
                 self.store
-                    .get(self.runtime.id(), pid, BLOB_FIELD)
+                    .get(self.runtime.id(), pid, self.runtime.store_field())
                     .ok()
                     .flatten()
                     .is_some()
@@ -237,21 +238,40 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
 
 impl<A: FileBlobRuntime> FileBlobProvider<A> {
     /// 取账号 blob：active 账号优先读 live（并顺手修复 store 副本），parked 读 store，最后 legacy。
+    ///
+    /// 错误处理顺序与原始 Codex 实现一致：store 读取失败时不立即冒泡，而是先捕获错误、
+    /// 继续尝试 `recover_legacy`；只有 legacy 也拿不到时才把原始 store 错误抛出去。这样即使
+    /// keyring 后端本身故障，仍有机会从 legacy 布局恢复凭证。
     pub fn raw_blob_for_account(&self, account: &Account) -> Result<String> {
         if let Some(raw) = self.read_live_if_matches(account) {
-            let _ = self
-                .store
-                .set(self.runtime.id(), account.id.0.as_str(), BLOB_FIELD, &raw);
+            let _ = self.store.set(
+                self.runtime.id(),
+                account.id.0.as_str(),
+                self.runtime.store_field(),
+                &raw,
+            );
             return Ok(raw);
         }
-        if let Some(raw) = self.store.get(self.runtime.id(), account.id.0.as_str(), BLOB_FIELD)? {
-            return Ok(raw);
-        }
+        let store_error = match self.store.get(
+            self.runtime.id(),
+            account.id.0.as_str(),
+            self.runtime.store_field(),
+        ) {
+            Ok(Some(raw)) => return Ok(raw),
+            Ok(None) => None,
+            Err(e) => Some(e),
+        };
         if let Some(raw) = self.runtime.recover_legacy(&self.home, account) {
-            let _ = self
-                .store
-                .set(self.runtime.id(), account.id.0.as_str(), BLOB_FIELD, &raw);
+            let _ = self.store.set(
+                self.runtime.id(),
+                account.id.0.as_str(),
+                self.runtime.store_field(),
+                &raw,
+            );
             return Ok(raw);
+        }
+        if let Some(e) = store_error {
+            return Err(e);
         }
         Err(Error::Credential(format!(
             "no stored credentials for {}:{}; run `subswap login {}` or re-import",
@@ -301,7 +321,7 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
         let Some(owner) = owner else { return Ok(()) };
 
         if extract_refresh_token(&live_raw).is_none() {
-            if let Some(existing) = store.get(runtime.id(), owner.id.0.as_str(), BLOB_FIELD)? {
+            if let Some(existing) = store.get(runtime.id(), owner.id.0.as_str(), runtime.store_field())? {
                 if extract_refresh_token(&existing).is_some() {
                     tracing::warn!(
                         account = %owner.id,
@@ -311,7 +331,7 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
                 }
             }
         }
-        store.set(runtime.id(), owner.id.0.as_str(), BLOB_FIELD, &live_raw)?;
+        store.set(runtime.id(), owner.id.0.as_str(), runtime.store_field(), &live_raw)?;
         Ok(())
     }
 
@@ -330,7 +350,8 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
     pub fn absorb_blob(&self, id: &AccountId, raw: &str) -> Result<()> {
         serde_json::from_str::<serde_json::Value>(raw)
             .map_err(|e| Error::Provider(format!("isolated credentials not valid JSON: {e}")))?;
-        self.store.set(self.runtime.id(), id.0.as_str(), BLOB_FIELD, raw)?;
+        self.store
+            .set(self.runtime.id(), id.0.as_str(), self.runtime.store_field(), raw)?;
         Ok(())
     }
 }
@@ -425,8 +446,12 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
     async fn refresh_parked_if_needed(&self, account: &Account, raw: &str) -> Result<Option<String>> {
         match self.runtime.refresh(raw).await? {
             RefreshOutcome::Rotated(new_blob) => {
-                self.store
-                    .set(self.runtime.id(), account.id.0.as_str(), BLOB_FIELD, &new_blob)?;
+                self.store.set(
+                    self.runtime.id(),
+                    account.id.0.as_str(),
+                    self.runtime.store_field(),
+                    &new_blob,
+                )?;
                 Ok(Some(new_blob))
             }
             RefreshOutcome::DeadToken => {
@@ -450,7 +475,7 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
 
     pub(crate) fn test_store_get(&self, account_id: &str) -> Option<String> {
         self.store
-            .get(self.runtime.id(), account_id, BLOB_FIELD)
+            .get(self.runtime.id(), account_id, self.runtime.store_field())
             .ok()
             .flatten()
     }
@@ -480,6 +505,7 @@ mod tests {
         refresh_behavior: RefreshBehavior,
         refresh_calls: AtomicUsize,
         last_access_token: Mutex<Option<String>>,
+        legacy_blob: Option<String>,
     }
 
     impl FakeRuntime {
@@ -493,6 +519,14 @@ mod tests {
                 refresh_behavior,
                 refresh_calls: AtomicUsize::new(0),
                 last_access_token: Mutex::new(None),
+                legacy_blob: None,
+            }
+        }
+
+        fn with_legacy(home: PathBuf, legacy_blob: &str) -> Self {
+            Self {
+                legacy_blob: Some(legacy_blob.to_string()),
+                ..Self::new(home)
             }
         }
     }
@@ -542,6 +576,28 @@ mod tests {
             *self.last_access_token.lock().unwrap() = Some(access_token.to_string());
             Ok(vec![])
         }
+        fn recover_legacy(&self, _home: &Path, _account: &Account) -> Option<String> {
+            self.legacy_blob.clone()
+        }
+    }
+
+    /// 包一层 `CredentialStore`，`get` 恒定失败，模拟 keyring 后端故障；`set`/`delete` 照常转发到内层
+    /// `FileStore`。用于验证 [`FileBlobProvider::raw_blob_for_account`] 的错误处理顺序：
+    /// store 错误不应抢先冒泡，必须先尝试 `recover_legacy`。
+    struct FailingGetStore {
+        inner: FileStore,
+    }
+
+    impl subswap_core::CredentialStore for FailingGetStore {
+        fn set(&self, provider: &str, account: &str, field: &str, value: &str) -> Result<()> {
+            self.inner.set(provider, account, field, value)
+        }
+        fn get(&self, _provider: &str, _account: &str, _field: &str) -> Result<Option<String>> {
+            Err(Error::Credential("simulated store failure".into()))
+        }
+        fn delete(&self, provider: &str, account: &str, field: &str) -> Result<()> {
+            self.inner.delete(provider, account, field)
+        }
     }
 
     fn provider(tmp: &Path) -> FileBlobProvider<FakeRuntime> {
@@ -552,6 +608,19 @@ mod tests {
         let store = Arc::new(FileStore::new(tmp.join("creds.json")));
         let registry = Arc::new(AccountRegistry::new(tmp.join("registry.toml")));
         FileBlobProvider::new(runtime, store, registry)
+    }
+
+    fn fake_account(id: &str) -> Account {
+        Account {
+            provider: "fake".into(),
+            id: AccountId(id.into()),
+            label: id.into(),
+            active: false,
+            created_at: chrono::Utc::now(),
+            last_used_at: None,
+            priority: 100,
+            extra: serde_json::Map::new(),
+        }
     }
 
     // --- capture-on-leave 守卫三态 ---
@@ -644,6 +713,53 @@ mod tests {
         assert_eq!(
             p.test_store_get("u1").unwrap(),
             r#"{"uid":"u1","access_token":"NEW"}"#
+        );
+    }
+
+    // --- raw_blob_for_account：store 错误处理顺序（不抢先冒泡，先试 legacy）---
+
+    #[test]
+    fn raw_blob_for_account_falls_back_to_legacy_when_store_get_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = FakeRuntime::with_legacy(
+            tmp.path().join("home"),
+            r#"{"uid":"u1","access_token":"FROM_LEGACY"}"#,
+        );
+        let store = Arc::new(FailingGetStore {
+            inner: FileStore::new(tmp.path().join("creds.json")),
+        });
+        let registry = Arc::new(AccountRegistry::new(tmp.path().join("registry.toml")));
+        let p = FileBlobProvider::new(runtime, store, registry);
+        fs::create_dir_all(p.home()).unwrap();
+
+        let account = fake_account("u1");
+        let raw = p.raw_blob_for_account(&account).unwrap();
+        assert!(
+            raw.contains("FROM_LEGACY"),
+            "store.get 失败时应继续尝试 recover_legacy 而不是直接冒泡错误"
+        );
+        // legacy 命中后应顺手修复 store 副本（即使底层 get 会失败，set 走 FileStore 正常写入）。
+        assert!(std::fs::read_to_string(tmp.path().join("creds.json"))
+            .unwrap()
+            .contains("FROM_LEGACY"));
+    }
+
+    #[test]
+    fn raw_blob_for_account_surfaces_store_error_when_legacy_also_misses() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = FakeRuntime::new(tmp.path().join("home")); // legacy_blob = None
+        let store = Arc::new(FailingGetStore {
+            inner: FileStore::new(tmp.path().join("creds.json")),
+        });
+        let registry = Arc::new(AccountRegistry::new(tmp.path().join("registry.toml")));
+        let p = FileBlobProvider::new(runtime, store, registry);
+        fs::create_dir_all(p.home()).unwrap();
+
+        let account = fake_account("u1");
+        let err = p.raw_blob_for_account(&account).unwrap_err();
+        assert!(
+            err.to_string().contains("simulated store failure"),
+            "legacy 也拿不到时应把原始 store 错误抛出去，而不是泛化成\"未找到凭证\"：{err}"
         );
     }
 
