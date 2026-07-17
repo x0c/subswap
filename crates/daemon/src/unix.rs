@@ -29,7 +29,6 @@ use subswap_core::{
     Provider, ProviderRegistry, ProviderSnapshot, QuotaCache, QuotaFetchState,
 };
 use subswap_provider_claude::ClaudeProvider;
-use subswap_provider_codex::CodexProvider;
 use tokio::signal::unix::{signal, SignalKind};
 
 use state::DaemonState;
@@ -68,7 +67,7 @@ pub async fn run() -> Result<()> {
     let audit = AuditLog::from_default_paths()?;
 
     let claude = Arc::new(ClaudeProvider::new(store.clone(), registry.clone()));
-    let codex = Arc::new(CodexProvider::new(store.clone(), registry.clone()));
+    let codex = Arc::new(subswap_provider_codex::new(store.clone(), registry.clone()));
     let mut providers = ProviderRegistry::new();
     providers.register(claude.clone());
     providers.register(codex.clone());

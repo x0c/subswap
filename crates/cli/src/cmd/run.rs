@@ -15,6 +15,7 @@ use anyhow::{bail, Context, Result};
 use subswap_core::checkout::Checkout;
 use subswap_core::paths::AppPaths;
 use subswap_core::Account;
+use subswap_provider_codex::CodexCompat;
 
 use crate::app::AppContext;
 use crate::cmd::resolve_account;

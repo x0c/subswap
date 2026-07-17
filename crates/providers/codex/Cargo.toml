@@ -12,6 +12,7 @@ categories.workspace = true
 
 [dependencies]
 subswap-core.workspace = true
+subswap-provider-common.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
