@@ -542,6 +542,28 @@ mod tests {
         }
     }
 
+    /// 回归锚点:确认 decide() 对 provider 字符串本身没有白名单/特判——
+    /// Kimi 接入共享引擎后应与 claude/codex 走完全相同的自动切换判定路径。
+    #[test]
+    fn kimi_provider_swaps_identically_to_other_providers() {
+        let snap = ProviderSnapshot {
+            provider: "kimi".into(),
+            accounts: vec![
+                mk_awq("a", true, 99, QuotaStatus::Warn),
+                mk_awq("b", false, 10, QuotaStatus::Ok),
+                mk_awq("c", false, 30, QuotaStatus::Ok),
+            ],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        match d {
+            PolicyDecision::Swap { from, to, .. } => {
+                assert_eq!(from.unwrap().0, "a");
+                assert_eq!(to.0, "b");
+            }
+            other => panic!("expected Swap for kimi provider, got {other:?}"),
+        }
+    }
+
     #[test]
     fn seven_day_threshold_does_not_trigger_auto_swap() {
         let mut active = mk_awq("a", true, 99, QuotaStatus::Warn);
