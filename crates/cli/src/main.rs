@@ -52,7 +52,7 @@ struct Cli {
 enum Cmd {
     /// Add a Claude Code compatible API endpoint without activating it.
     AddApi {
-        /// Preset: deepseek or custom.
+        /// Preset: deepseek, kimi or custom.
         #[arg(long)]
         preset: Option<String>,
 

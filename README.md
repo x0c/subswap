@@ -19,7 +19,7 @@ tracker, or a unified multi-provider subscription swapper.
 ## Features
 
 - **Multi-account swap for Claude Code and Codex CLI**: flip the active account without re-logging-in.
-- **Claude Code custom API endpoints**: add DeepSeek or another Anthropic-compatible endpoint through an interactive terminal wizard, then swap to and from it like any Claude account.
+- **Claude Code custom API endpoints**: add DeepSeek, Kimi, or another Anthropic-compatible endpoint through an interactive terminal wizard, then swap to and from it like any Claude account.
 - **Account-isolated parallel environments**: run different accounts simultaneously in different terminals without touching the global active account — `subswap run`, `shell`, and `env` project credentials into a private directory and set the right env vars for the native CLI.
 - **Quota-aware status**: view provider quota windows such as Claude 5h / 7d usage and Codex / ChatGPT usage data when available.
 - **Automatic account swap**: a background daemon moves away from an account once usage crosses the configured threshold, and re-evaluates on every quota update to always pick the best available account.
@@ -108,7 +108,7 @@ subswap swap alice@example.com
 # disambiguate when the same id exists under multiple providers:
 subswap swap claude/alice@example.com
 
-# interactively add DeepSeek or another Claude Code compatible API endpoint
+# interactively add DeepSeek, Kimi, or another Claude Code compatible API endpoint
 subswap add-api
 # custom API endpoints are manual-only and never participate in auto-swap
 subswap swap deepseek
