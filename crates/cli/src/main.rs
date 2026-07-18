@@ -76,10 +76,6 @@ enum Cmd {
         #[arg(long)]
         auth: Option<String>,
 
-        /// Primary model.
-        #[arg(long)]
-        model: Option<String>,
-
         /// Opus role model.
         #[arg(long)]
         opus_model: Option<String>,
@@ -91,10 +87,6 @@ enum Cmd {
         /// Haiku role model.
         #[arg(long)]
         haiku_model: Option<String>,
-
-        /// Subagent model.
-        #[arg(long)]
-        subagent_model: Option<String>,
 
         /// Claude Code effort level.
         #[arg(long)]
@@ -213,11 +205,9 @@ async fn main() -> Result<()> {
             endpoint,
             api_key,
             auth,
-            model,
             opus_model,
             sonnet_model,
             haiku_model,
-            subagent_model,
             effort,
             billing,
             yes,
@@ -230,11 +220,9 @@ async fn main() -> Result<()> {
                 endpoint,
                 api_key,
                 auth,
-                model,
                 opus_model,
                 sonnet_model,
                 haiku_model,
-                subagent_model,
                 effort,
                 billing,
                 yes,

@@ -16,11 +16,9 @@ pub struct AddApiOptions {
     pub endpoint: Option<String>,
     pub api_key: Option<String>,
     pub auth: Option<String>,
-    pub model: Option<String>,
     pub opus_model: Option<String>,
     pub sonnet_model: Option<String>,
     pub haiku_model: Option<String>,
-    pub subagent_model: Option<String>,
     pub effort: Option<String>,
     /// 计费方式：flat（订阅固定费率）| metered（按量）| unlimited（不限量）。
     /// 决定 OpenConductor 等下游消费者按权重自动切换时的优先级。
@@ -34,11 +32,9 @@ struct Draft {
     endpoint: String,
     api_key: String,
     auth_field: String,
-    model: String,
     opus_model: String,
     sonnet_model: String,
     haiku_model: String,
-    subagent_model: String,
     effort: String,
     billing: BillingKind,
     skip_confirmation: bool,
@@ -72,11 +68,13 @@ pub fn run(ctx: &AppContext, options: AddApiOptions) -> Result<()> {
             ClaudeApiConfig {
                 base_url: draft.endpoint.trim_end_matches('/').to_string(),
                 auth_field: draft.auth_field,
-                model: draft.model,
+                // Claude Code 的默认模型和子任务模型分别跟随 Sonnet、Haiku，
+                // 对用户始终只暴露 Opus / Sonnet / Haiku 三个角色。
+                model: draft.sonnet_model.clone(),
                 opus_model: draft.opus_model,
                 sonnet_model: draft.sonnet_model,
-                haiku_model: draft.haiku_model,
-                subagent_model: draft.subagent_model,
+                haiku_model: draft.haiku_model.clone(),
+                subagent_model: draft.haiku_model,
                 effort_level: draft.effort,
             },
             draft.billing,
@@ -163,74 +161,37 @@ fn build_draft(options: AddApiOptions, interactive: bool) -> Result<Draft> {
         }
         None => bail!("--auth is required for custom preset without an interactive terminal"),
     };
-    // 模型映射：
-    // - Kimi 交互向导让用户选「强 / 快」两档：强档对应 Opus/Sonnet 角色，快档对应 Haiku/Subagent 角色。
-    //   Kimi 的 K3 旗舰模型按会员档位解锁、不会自动路由，需显式指定，故不能像 DeepSeek 那样写死单一默认。
-    // - 其余 preset（DeepSeek/Custom）沿用原有 preset_defaults + 逐项询问逻辑。
-    // - 任何 preset 下显式 `--*-model` 参数都优先于向导选择与默认值。
-    let (model, opus_model, sonnet_model, haiku_model, subagent_model) =
-        if preset == "kimi" && interactive {
-            let (strong, fast) = prompt_kimi_models()?;
-            (
-                flag_or(options.model, &strong),
-                flag_or(options.opus_model, &strong),
-                flag_or(options.sonnet_model, &strong),
-                flag_or(options.haiku_model, &fast),
-                flag_or(options.subagent_model, &fast),
-            )
-        } else {
-            let model = value_or_prompt(
-                options.model,
-                interactive && preset == "custom",
-                "Primary model",
-                if preset == "custom" && !interactive {
-                    ""
-                } else {
-                    defaults.model
-                },
-            )?;
-            let opus_model = value_or_prompt(
-                options.opus_model,
-                interactive && preset == "custom",
-                "Opus model",
-                if defaults.opus_model.is_empty() {
-                    &model
-                } else {
-                    defaults.opus_model
-                },
-            )?;
-            let sonnet_model = value_or_prompt(
-                options.sonnet_model,
-                interactive && preset == "custom",
-                "Sonnet model",
-                if defaults.sonnet_model.is_empty() {
-                    &model
-                } else {
-                    defaults.sonnet_model
-                },
-            )?;
-            let haiku_model = value_or_prompt(
-                options.haiku_model,
-                interactive && preset == "custom",
-                "Haiku model",
-                if defaults.haiku_model.is_empty() {
-                    &model
-                } else {
-                    defaults.haiku_model
-                },
-            )?;
-            let subagent_model = value_or_prompt(
-                options.subagent_model,
-                interactive && preset == "custom",
-                "Subagent model",
-                if defaults.subagent_model.is_empty() {
-                    &haiku_model
-                } else {
-                    defaults.subagent_model
-                },
-            )?;
-            (model, opus_model, sonnet_model, haiku_model, subagent_model)
-        };
+    // 用户只配置 Opus、Sonnet、Haiku 三个 Claude Code 角色。
+    // Kimi 的 K3 旗舰模型按会员档位解锁、不会自动路由，仍由用户对每个角色显式选择。
+    // 任一 `--*-model` 参数都优先于交互选择与预设默认值。
+    let (opus_model, sonnet_model, haiku_model) = if preset == "kimi" && interactive {
+        let (opus, sonnet, haiku) = prompt_kimi_models()?;
+        (
+            flag_or(options.opus_model, &opus),
+            flag_or(options.sonnet_model, &sonnet),
+            flag_or(options.haiku_model, &haiku),
+        )
+    } else {
+        let opus_model = value_or_prompt(
+            options.opus_model,
+            interactive && preset == "custom",
+            "Opus model",
+            defaults.opus_model,
+        )?;
+        let sonnet_model = value_or_prompt(
+            options.sonnet_model,
+            interactive && preset == "custom",
+            "Sonnet model",
+            defaults.sonnet_model,
+        )?;
+        let haiku_model = value_or_prompt(
+            options.haiku_model,
+            interactive && preset == "custom",
+            "Haiku model",
+            defaults.haiku_model,
+        )?;
+        (opus_model, sonnet_model, haiku_model)
+    };
     let effort = value_or_prompt(
         options.effort,
         interactive && preset == "custom",
@@ -271,11 +232,9 @@ fn build_draft(options: AddApiOptions, interactive: bool) -> Result<Draft> {
         } else {
             "ANTHROPIC_AUTH_TOKEN".into()
         },
-        model,
         opus_model,
         sonnet_model,
         haiku_model,
-        subagent_model,
         effort,
         billing,
         skip_confirmation: options.yes,
@@ -285,11 +244,9 @@ fn build_draft(options: AddApiOptions, interactive: bool) -> Result<Draft> {
 struct PresetDefaults {
     name: &'static str,
     endpoint: &'static str,
-    model: &'static str,
     opus_model: &'static str,
     sonnet_model: &'static str,
     haiku_model: &'static str,
-    subagent_model: &'static str,
 }
 
 fn preset_defaults(preset: &str) -> PresetDefaults {
@@ -297,31 +254,25 @@ fn preset_defaults(preset: &str) -> PresetDefaults {
         "deepseek" => PresetDefaults {
             name: "DeepSeek",
             endpoint: "https://api.deepseek.com/anthropic",
-            model: "deepseek-v4-pro[1m]",
             opus_model: "deepseek-v4-pro[1m]",
             sonnet_model: "deepseek-v4-pro[1m]",
             haiku_model: "deepseek-v4-flash",
-            subagent_model: "deepseek-v4-flash",
         },
         // Kimi 官方 Anthropic 兼容编码端点；`kimi-for-coding` 各会员档位通用，
         // 故所有角色统一映射到它，避免高速档模型在低档位账号上不可用。
         "kimi" => PresetDefaults {
             name: "Kimi",
             endpoint: "https://api.kimi.com/coding",
-            model: "kimi-for-coding",
             opus_model: "kimi-for-coding",
             sonnet_model: "kimi-for-coding",
             haiku_model: "kimi-for-coding",
-            subagent_model: "kimi-for-coding",
         },
         _ => PresetDefaults {
             name: "Custom API",
             endpoint: "https://api.example.com",
-            model: "model-id",
             opus_model: "",
             sonnet_model: "",
             haiku_model: "",
-            subagent_model: "",
         },
     }
 }
@@ -334,26 +285,33 @@ fn flag_or(value: Option<String>, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
-/// Kimi 交互向导的两档模型选择器，返回 `(强模型, 快模型)`。
-/// 强档映射到 Opus/Sonnet 角色，快档映射到 Haiku/Subagent 角色；两档默认都选各档位通用的
-/// `kimi-for-coding`，避免低档位账号误选到用不了的 K3 / 高速档模型。
-fn prompt_kimi_models() -> Result<(String, String)> {
-    let strong = select_model(
-        "Primary model (Opus / Sonnet role)",
+/// Kimi 交互向导按 Claude Code 的三个角色独立选择模型。
+/// 每档默认均选全部会员档位可用的 `kimi-for-coding`，避免低档位账号误选到用不了的 K3 或高速档。
+fn prompt_kimi_models() -> Result<(String, String, String)> {
+    let opus = select_model(
+        "Opus model",
         &[
             ("kimi-for-coding", "all tiers"),
             ("k3", "Moderato+"),
             ("k3[1m]", "Allegretto+, 1M context"),
         ],
     )?;
-    let fast = select_model(
-        "Fast model (Haiku / Subagent role)",
+    let sonnet = select_model(
+        "Sonnet model",
+        &[
+            ("kimi-for-coding", "all tiers"),
+            ("k3", "Moderato+"),
+            ("k3[1m]", "Allegretto+, 1M context"),
+        ],
+    )?;
+    let haiku = select_model(
+        "Haiku model",
         &[
             ("kimi-for-coding", "all tiers"),
             ("kimi-for-coding-highspeed", "Allegretto+"),
         ],
     )?;
-    Ok((strong, fast))
+    Ok((opus, sonnet, haiku))
 }
 
 /// 弹一个模型下拉框，条目形如 `模型名  (适用档位说明)`，返回选中的模型名。
@@ -474,11 +432,35 @@ mod tests {
     fn kimi_preset_defaults_use_official_coding_endpoint() {
         let defaults = preset_defaults("kimi");
         assert_eq!(defaults.endpoint, "https://api.kimi.com/coding");
-        // 各会员档位通用的模型，所有角色统一映射，避免高速档在低档位账号上 400。
-        assert_eq!(defaults.model, "kimi-for-coding");
+        // 各会员档位通用的模型是三档的安全默认值，用户可分别替换。
         assert_eq!(defaults.opus_model, "kimi-for-coding");
         assert_eq!(defaults.sonnet_model, "kimi-for-coding");
         assert_eq!(defaults.haiku_model, "kimi-for-coding");
-        assert_eq!(defaults.subagent_model, "kimi-for-coding");
+    }
+
+    #[test]
+    fn custom_models_use_sonnet_as_default_and_haiku_for_subagents() {
+        let draft = build_draft(
+            AddApiOptions {
+                preset: Some("custom".into()),
+                id: Some("test".into()),
+                name: Some("Test".into()),
+                endpoint: Some("https://example.com".into()),
+                api_key: Some("secret".into()),
+                auth: Some("bearer".into()),
+                opus_model: Some("vendor-opus".into()),
+                sonnet_model: Some("vendor-sonnet".into()),
+                haiku_model: Some("vendor-haiku".into()),
+                effort: Some("max".into()),
+                billing: Some("metered".into()),
+                yes: true,
+            },
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(draft.opus_model, "vendor-opus");
+        assert_eq!(draft.sonnet_model, "vendor-sonnet");
+        assert_eq!(draft.haiku_model, "vendor-haiku");
     }
 }

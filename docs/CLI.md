@@ -56,14 +56,16 @@ subswap swap <原 Claude OAuth 账号>
 
 `add-api` 默认打开交互向导：
 
-- DeepSeek 预设自动填充 `https://api.deepseek.com/anthropic`、主模型、三档角色模型、subagent 模型与 effort；
+- DeepSeek 预设自动填充 `https://api.deepseek.com/anthropic`、Opus/Sonnet/Haiku 三档模型与 effort；
   用户只需确认名称并输入隐藏 API Key。
-- Kimi 预设自动填充 `https://api.kimi.com/coding`、effort 与 `ANTHROPIC_API_KEY` 认证；
-  向导会让用户选「强 / 快」两档模型——强档（`kimi-for-coding` / `k3` / `k3[1m]`）映射到 Opus/Sonnet 角色，
-  快档（`kimi-for-coding` / `kimi-for-coding-highspeed`）映射到 Haiku/Subagent 角色，两档默认都用各档位通用的
-  `kimi-for-coding`，避免低档位账号误选到用不了的 K3。非交互（`--yes`）缺省即全部 `kimi-for-coding`，
-  可用 `--model` / `--haiku-model` 等参数逐项覆盖。
-- Custom 模式逐项询问端点、认证方式、模型映射与 effort。
+- Kimi 预设自动填充 `https://api.kimi.com/coding`、effort 与 `ANTHROPIC_API_KEY` 认证；向导会让用户分别选择
+  Opus、Sonnet、Haiku 三档模型。Opus/Sonnet 可选 `kimi-for-coding`、`k3`、`k3[1m]`，Haiku 可选
+  `kimi-for-coding` 或 `kimi-for-coding-highspeed`；三档默认均为全部会员档位可用的 `kimi-for-coding`。
+  非交互（`--yes`）也使用该默认值，可用 `--opus-model`、`--sonnet-model`、`--haiku-model` 分别覆盖。
+- Custom 模式逐项询问端点、认证方式、Opus/Sonnet/Haiku 三档模型与 effort。
+
+为保持 Claude Code 的运行语义，subswap 自动把 Sonnet 作为默认模型、Haiku 作为子任务模型；这两个内部映射
+不再出现在添加向导或参数中。
 - 保存后只进入现有 Claude 账号列表，不自动切换；编号、`swap`、`rm` 与 OAuth 账号一致。
 
 脚本可使用非交互参数：
