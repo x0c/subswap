@@ -166,3 +166,14 @@ jobs:
           TAG: ${{ needs.prepare.outputs.tag }}
         shell: bash
         run: gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false
+
+  # GITHUB_TOKEN 发布 Release 不会触发 update-homebrew.yml 的 release:published（GitHub 递归防护）。
+  # 因此在同一次 run 内直接以 workflow_call 调用，保证 formula 随每次发布自动更新。
+  homebrew:
+    name: update homebrew formula
+    needs: [prepare, publish]
+    if: always() && needs.publish.result == 'success'
+    uses: ./.github/workflows/update-homebrew.yml
+    with:
+      tag: ${{ needs.prepare.outputs.tag }}
+    secrets: inherit

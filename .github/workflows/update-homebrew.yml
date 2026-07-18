@@ -1,6 +1,23 @@
 name: Update Homebrew Formula
 
+# 触发来源三选一：
+# - workflow_call：由 release.yml 发布成功后在同一次 run 内调用（主路径，规避
+#   GITHUB_TOKEN 触发下游 workflow 的递归防护，见 docs/OPERATIONS_GUIDE.md）。
+# - workflow_dispatch：手动补跑某个已发布 tag 的 formula。
+# - release: published：人工在 Release 页面手动发布时兜底（GITHUB_TOKEN 自动发布不触发）。
 on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag, for example v1.2.0"
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v1.2.0"
+        required: true
+        type: string
   release:
     types: [published]
 
@@ -15,7 +32,7 @@ jobs:
       - name: download sha256 files
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
@@ -29,7 +46,7 @@ jobs:
       - name: generate and push formula
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
