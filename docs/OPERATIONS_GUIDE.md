@@ -100,16 +100,21 @@ pgrep -af 'subswap __daemon|subswapd' || true
 
 `x0c/homebrew-tap` 的 `Formula/subswap.rb` 由 `.github/workflows/update-homebrew.yml` 全自动维护，**无需手动操作**。
 
-发布后必须实际确认 `Update Homebrew Formula` 是否运行、tap 里的 formula 是否已升到新版本。若 Release
-由 workflow 内的默认 GitHub token 发布，GitHub 可能不会再触发另一个 release workflow；此时按
-`update-homebrew.yml` 的脚本逻辑，使用 Release 资产里的 `.sha256` 手动更新 `x0c/homebrew-tap`，并读回
-`Formula/subswap.rb` 验证版本号、URL 和 sha256。
+发布后仍建议实际确认 `update homebrew formula` 作业是否运行成功、tap 里的 formula 是否已升到新版本。
 
 ### 工作原理
 
+关键约束：`release.yml` 用默认 GitHub token（`github.token`）发布 Release，而 GitHub 的递归防护
+**不会**让 `GITHUB_TOKEN` 制造的 `release: published` 事件再触发下游 workflow。因此 formula 更新
+**不能**依赖 `release: published`（历史上 v1.1.0 及更早都是发布后手动补跑的）。现在改为在同一次
+release run 内直接调用：
+
 1. `release.yml` 的 `publish` 作业把 draft 切成 published（`gh release edit ... --draft=false`）
-2. GitHub 触发 `release: published` 事件，`update-homebrew.yml` 自动执行
-3. workflow 从 release assets 下载各平台的 `.sha256` 文件，用 Python 渲染新 formula，通过 GitHub API PUT 到 `homebrew-tap` 仓库
+2. `publish` 成功后，`release.yml` 的 `homebrew` 作业以 `workflow_call`（`uses: ./.github/workflows/update-homebrew.yml`、`secrets: inherit`）在同一次 run 内调用 formula 更新，绕开递归防护
+3. `update-homebrew.yml` 从 release assets 下载各平台的 `.sha256` 文件，用 Python 渲染新 formula，通过 GitHub API PUT 到 `homebrew-tap` 仓库
+
+`update-homebrew.yml` 另保留 `workflow_dispatch`（手动补跑某个 tag：`gh workflow run update-homebrew.yml -f tag=vX.Y.Z`）
+与 `release: published`（仅人工在 Release 页面手动发布时兜底）两个入口。
 
 ### 用到的 Secret
 
