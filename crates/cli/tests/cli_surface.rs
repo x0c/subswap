@@ -148,6 +148,23 @@ fn help_shows_only_current_commands() {
 }
 
 #[test]
+fn add_api_help_exposes_exactly_three_model_roles() {
+    let output = subswap().args(["add-api", "--help"]).output().unwrap();
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    for flag in ["--opus-model", "--sonnet-model", "--haiku-model"] {
+        assert!(stdout.contains(flag), "missing {flag} in:\n{stdout}");
+    }
+    for removed in ["--model", "--subagent-model"] {
+        assert!(
+            !stdout.contains(removed),
+            "add-api help must not expose {removed}:\n{stdout}"
+        );
+    }
+}
+
+#[test]
 fn default_with_empty_home_is_quiet_and_does_not_probe_real_accounts() {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("home");
