@@ -163,56 +163,74 @@ fn build_draft(options: AddApiOptions, interactive: bool) -> Result<Draft> {
         }
         None => bail!("--auth is required for custom preset without an interactive terminal"),
     };
-    let model = value_or_prompt(
-        options.model,
-        interactive && preset == "custom",
-        "Primary model",
-        if preset == "custom" && !interactive {
-            ""
+    // 模型映射：
+    // - Kimi 交互向导让用户选「强 / 快」两档：强档对应 Opus/Sonnet 角色，快档对应 Haiku/Subagent 角色。
+    //   Kimi 的 K3 旗舰模型按会员档位解锁、不会自动路由，需显式指定，故不能像 DeepSeek 那样写死单一默认。
+    // - 其余 preset（DeepSeek/Custom）沿用原有 preset_defaults + 逐项询问逻辑。
+    // - 任何 preset 下显式 `--*-model` 参数都优先于向导选择与默认值。
+    let (model, opus_model, sonnet_model, haiku_model, subagent_model) =
+        if preset == "kimi" && interactive {
+            let (strong, fast) = prompt_kimi_models()?;
+            (
+                flag_or(options.model, &strong),
+                flag_or(options.opus_model, &strong),
+                flag_or(options.sonnet_model, &strong),
+                flag_or(options.haiku_model, &fast),
+                flag_or(options.subagent_model, &fast),
+            )
         } else {
-            defaults.model
-        },
-    )?;
-    let opus_model = value_or_prompt(
-        options.opus_model,
-        interactive && preset == "custom",
-        "Opus model",
-        if defaults.opus_model.is_empty() {
-            &model
-        } else {
-            defaults.opus_model
-        },
-    )?;
-    let sonnet_model = value_or_prompt(
-        options.sonnet_model,
-        interactive && preset == "custom",
-        "Sonnet model",
-        if defaults.sonnet_model.is_empty() {
-            &model
-        } else {
-            defaults.sonnet_model
-        },
-    )?;
-    let haiku_model = value_or_prompt(
-        options.haiku_model,
-        interactive && preset == "custom",
-        "Haiku model",
-        if defaults.haiku_model.is_empty() {
-            &model
-        } else {
-            defaults.haiku_model
-        },
-    )?;
-    let subagent_model = value_or_prompt(
-        options.subagent_model,
-        interactive && preset == "custom",
-        "Subagent model",
-        if defaults.subagent_model.is_empty() {
-            &haiku_model
-        } else {
-            defaults.subagent_model
-        },
-    )?;
+            let model = value_or_prompt(
+                options.model,
+                interactive && preset == "custom",
+                "Primary model",
+                if preset == "custom" && !interactive {
+                    ""
+                } else {
+                    defaults.model
+                },
+            )?;
+            let opus_model = value_or_prompt(
+                options.opus_model,
+                interactive && preset == "custom",
+                "Opus model",
+                if defaults.opus_model.is_empty() {
+                    &model
+                } else {
+                    defaults.opus_model
+                },
+            )?;
+            let sonnet_model = value_or_prompt(
+                options.sonnet_model,
+                interactive && preset == "custom",
+                "Sonnet model",
+                if defaults.sonnet_model.is_empty() {
+                    &model
+                } else {
+                    defaults.sonnet_model
+                },
+            )?;
+            let haiku_model = value_or_prompt(
+                options.haiku_model,
+                interactive && preset == "custom",
+                "Haiku model",
+                if defaults.haiku_model.is_empty() {
+                    &model
+                } else {
+                    defaults.haiku_model
+                },
+            )?;
+            let subagent_model = value_or_prompt(
+                options.subagent_model,
+                interactive && preset == "custom",
+                "Subagent model",
+                if defaults.subagent_model.is_empty() {
+                    &haiku_model
+                } else {
+                    defaults.subagent_model
+                },
+            )?;
+            (model, opus_model, sonnet_model, haiku_model, subagent_model)
+        };
     let effort = value_or_prompt(
         options.effort,
         interactive && preset == "custom",
@@ -308,6 +326,50 @@ fn preset_defaults(preset: &str) -> PresetDefaults {
     }
 }
 
+/// 显式参数优先：非空则用它，否则回退到 `fallback`。用于 Kimi 向导已选好模型后，
+/// 仍让 `--*-model` 参数覆盖向导结果。
+fn flag_or(value: Option<String>, fallback: &str) -> String {
+    value
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// Kimi 交互向导的两档模型选择器，返回 `(强模型, 快模型)`。
+/// 强档映射到 Opus/Sonnet 角色，快档映射到 Haiku/Subagent 角色；两档默认都选各档位通用的
+/// `kimi-for-coding`，避免低档位账号误选到用不了的 K3 / 高速档模型。
+fn prompt_kimi_models() -> Result<(String, String)> {
+    let strong = select_model(
+        "Primary model (Opus / Sonnet role)",
+        &[
+            ("kimi-for-coding", "all tiers"),
+            ("k3", "Moderato+"),
+            ("k3[1m]", "Allegretto+, 1M context"),
+        ],
+    )?;
+    let fast = select_model(
+        "Fast model (Haiku / Subagent role)",
+        &[
+            ("kimi-for-coding", "all tiers"),
+            ("kimi-for-coding-highspeed", "Allegretto+"),
+        ],
+    )?;
+    Ok((strong, fast))
+}
+
+/// 弹一个模型下拉框，条目形如 `模型名  (适用档位说明)`，返回选中的模型名。
+fn select_model(prompt: &str, choices: &[(&str, &str)]) -> Result<String> {
+    let labels: Vec<String> = choices
+        .iter()
+        .map(|(model, note)| format!("{model}  ({note})"))
+        .collect();
+    let idx = Select::new()
+        .with_prompt(prompt)
+        .items(&labels)
+        .default(0)
+        .interact()?;
+    Ok(choices[idx].0.to_string())
+}
+
 fn value_or_prompt(
     value: Option<String>,
     interactive: bool,
@@ -396,6 +458,16 @@ mod tests {
     fn kimi_preset_is_recognized() {
         assert_eq!(normalize_preset("Kimi").unwrap(), "kimi");
         assert_eq!(normalize_preset(" kimi ").unwrap(), "kimi");
+    }
+
+    #[test]
+    fn flag_or_prefers_explicit_non_empty_value() {
+        assert_eq!(flag_or(Some("k3[1m]".into()), "kimi-for-coding"), "k3[1m]");
+        assert_eq!(
+            flag_or(Some("  ".into()), "kimi-for-coding"),
+            "kimi-for-coding"
+        );
+        assert_eq!(flag_or(None, "kimi-for-coding"), "kimi-for-coding");
     }
 
     #[test]
