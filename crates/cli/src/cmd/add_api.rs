@@ -96,7 +96,7 @@ fn build_draft(options: AddApiOptions, interactive: bool) -> Result<Draft> {
     let preset = match options.preset {
         Some(value) => normalize_preset(&value)?,
         None if interactive => {
-            let choices = ["DeepSeek", "Custom"];
+            let choices = ["DeepSeek", "Kimi", "Custom"];
             let selected = Select::new()
                 .with_prompt("Provider preset")
                 .items(&choices)
@@ -109,10 +109,10 @@ fn build_draft(options: AddApiOptions, interactive: bool) -> Result<Draft> {
 
     let defaults = preset_defaults(&preset);
     let name = value_or_prompt(options.name, interactive, "Name", defaults.name)?;
-    let id_default = if preset == "deepseek" {
-        "deepseek".to_string()
-    } else {
-        slugify(&name)
+    let id_default = match preset.as_str() {
+        "deepseek" => "deepseek".to_string(),
+        "kimi" => "kimi".to_string(),
+        _ => slugify(&name),
     };
     let id = value_or_prompt(
         options.id,
@@ -148,6 +148,7 @@ fn build_draft(options: AddApiOptions, interactive: bool) -> Result<Draft> {
     let auth = match options.auth {
         Some(value) => normalize_auth(&value)?,
         None if preset == "deepseek" => "bearer".into(),
+        None if preset == "kimi" => "api-key".into(),
         None if interactive => {
             let choices = ["Authorization Bearer", "X-Api-Key"];
             match Select::new()
@@ -284,6 +285,17 @@ fn preset_defaults(preset: &str) -> PresetDefaults {
             haiku_model: "deepseek-v4-flash",
             subagent_model: "deepseek-v4-flash",
         },
+        // Kimi 官方 Anthropic 兼容编码端点；`kimi-for-coding` 各会员档位通用，
+        // 故所有角色统一映射到它，避免高速档模型在低档位账号上不可用。
+        "kimi" => PresetDefaults {
+            name: "Kimi",
+            endpoint: "https://api.kimi.com/coding",
+            model: "kimi-for-coding",
+            opus_model: "kimi-for-coding",
+            sonnet_model: "kimi-for-coding",
+            haiku_model: "kimi-for-coding",
+            subagent_model: "kimi-for-coding",
+        },
         _ => PresetDefaults {
             name: "Custom API",
             endpoint: "https://api.example.com",
@@ -321,8 +333,9 @@ fn value_or_prompt(
 fn normalize_preset(value: &str) -> Result<String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "deepseek" => Ok("deepseek".into()),
+        "kimi" => Ok("kimi".into()),
         "custom" => Ok("custom".into()),
-        other => bail!("unknown preset: {other} (expected deepseek or custom)"),
+        other => bail!("unknown preset: {other} (expected deepseek, kimi or custom)"),
     }
 }
 
@@ -377,5 +390,23 @@ mod tests {
     fn slugify_creates_stable_account_id() {
         assert_eq!(slugify("My API Endpoint"), "my-api-endpoint");
         assert_eq!(slugify("  "), "custom-api");
+    }
+
+    #[test]
+    fn kimi_preset_is_recognized() {
+        assert_eq!(normalize_preset("Kimi").unwrap(), "kimi");
+        assert_eq!(normalize_preset(" kimi ").unwrap(), "kimi");
+    }
+
+    #[test]
+    fn kimi_preset_defaults_use_official_coding_endpoint() {
+        let defaults = preset_defaults("kimi");
+        assert_eq!(defaults.endpoint, "https://api.kimi.com/coding");
+        // 各会员档位通用的模型，所有角色统一映射，避免高速档在低档位账号上 400。
+        assert_eq!(defaults.model, "kimi-for-coding");
+        assert_eq!(defaults.opus_model, "kimi-for-coding");
+        assert_eq!(defaults.sonnet_model, "kimi-for-coding");
+        assert_eq!(defaults.haiku_model, "kimi-for-coding");
+        assert_eq!(defaults.subagent_model, "kimi-for-coding");
     }
 }

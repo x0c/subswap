@@ -11,7 +11,7 @@ subswap 是一个 Rust CLI，用于管理 Claude Code、Anthropic Claude、OpenA
 ## 功能
 
 - **Claude Code 和 Codex CLI 多账号切换**：无需重新登录即可切换当前账号。
-- **Claude Code 自定义 API 端点**：通过终端交互向导添加 DeepSeek 或其他 Anthropic 兼容端点，并像 Claude 账号一样双向切换。
+- **Claude Code 自定义 API 端点**：通过终端交互向导添加 DeepSeek、Kimi 或其他 Anthropic 兼容端点，并像 Claude 账号一样双向切换。
 - **账号隔离的并行环境**：通过 `subswap run`、`shell`、`env` 在不同终端同时使用不同账号，互不干扰，不改全局活账号——凭证投影到私有目录，原生 CLI 通过环境变量指向该目录。
 - **额度感知状态**：在可用时查看 Provider 额度窗口，例如 Claude 5h / 7d 用量，以及 Codex / ChatGPT 使用数据。
 - **自动账号切换**：后台 daemon 在用量超过配置阈值后切走当前账号，并在每次额度更新后重判，始终选出最佳可用账号。

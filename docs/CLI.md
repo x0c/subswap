@@ -3,7 +3,7 @@
 | 命令 | 说明 |
 |---|---|
 | `subswap` | 默认入口：扫本地自动 import → 立即显示账号骨架 → quota 渐进刷新 → 单 Provider 就绪即做 AutoSwap 决策 → 最终状态；同时 best-effort 拉起 `subswapd`（用户无感） |
-| `subswap add-api` | 交互式登记 Claude Code 兼容 API；DeepSeek 预设只需输入名称与隐藏 API Key；保存后不自动激活 |
+| `subswap add-api` | 交互式登记 Claude Code 兼容 API；DeepSeek / Kimi 预设只需输入名称与隐藏 API Key；保存后不自动激活 |
 | `subswap login <claude\|codex>` | 调用官方 CLI 登录流程，完成后导入/覆盖当前登录账号并标记为 active |
 | `subswap login kimi` | **不驱动登录**：约定用户已自行用 `kimi` 原生 TUI 登录过，本命令只导入当前 `~/.kimi-code` 凭证并标记为 active |
 | `subswap swap [<id\|N>]` | 手动切换；`<id>` 用 id/label/`<provider>/<id>`，`<N>` 用默认入口列出的全局序号。无参打印编号清单 |
@@ -58,6 +58,8 @@ subswap swap <原 Claude OAuth 账号>
 
 - DeepSeek 预设自动填充 `https://api.deepseek.com/anthropic`、主模型、三档角色模型、subagent 模型与 effort；
   用户只需确认名称并输入隐藏 API Key。
+- Kimi 预设自动填充 `https://api.kimi.com/coding`、`kimi-for-coding`（各会员档位通用，故所有角色统一映射到它）、
+  effort 与 `ANTHROPIC_API_KEY` 认证；用户只需确认名称并输入隐藏 API Key。
 - Custom 模式逐项询问端点、认证方式、模型映射与 effort。
 - 保存后只进入现有 Claude 账号列表，不自动切换；编号、`swap`、`rm` 与 OAuth 账号一致。
 
@@ -65,6 +67,7 @@ subswap swap <原 Claude OAuth 账号>
 
 ```bash
 subswap add-api --preset deepseek --api-key "$DEEPSEEK_API_KEY" --yes
+subswap add-api --preset kimi --api-key "$KIMI_API_KEY" --yes
 ```
 
 自定义 API 账号没有 quota，统一标记为 `manual_only`：不能被自动选中；处于 active 时自动换号完全停用。
