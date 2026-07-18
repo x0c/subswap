@@ -58,8 +58,11 @@ subswap swap <原 Claude OAuth 账号>
 
 - DeepSeek 预设自动填充 `https://api.deepseek.com/anthropic`、主模型、三档角色模型、subagent 模型与 effort；
   用户只需确认名称并输入隐藏 API Key。
-- Kimi 预设自动填充 `https://api.kimi.com/coding`、`kimi-for-coding`（各会员档位通用，故所有角色统一映射到它）、
-  effort 与 `ANTHROPIC_API_KEY` 认证；用户只需确认名称并输入隐藏 API Key。
+- Kimi 预设自动填充 `https://api.kimi.com/coding`、effort 与 `ANTHROPIC_API_KEY` 认证；
+  向导会让用户选「强 / 快」两档模型——强档（`kimi-for-coding` / `k3` / `k3[1m]`）映射到 Opus/Sonnet 角色，
+  快档（`kimi-for-coding` / `kimi-for-coding-highspeed`）映射到 Haiku/Subagent 角色，两档默认都用各档位通用的
+  `kimi-for-coding`，避免低档位账号误选到用不了的 K3。非交互（`--yes`）缺省即全部 `kimi-for-coding`，
+  可用 `--model` / `--haiku-model` 等参数逐项覆盖。
 - Custom 模式逐项询问端点、认证方式、模型映射与 effort。
 - 保存后只进入现有 Claude 账号列表，不自动切换；编号、`swap`、`rm` 与 OAuth 账号一致。
 
