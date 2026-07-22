@@ -1007,7 +1007,7 @@ fn acquire_bounded_lock(path: &Path, timeout_message: &str) -> Result<std::fs::F
     loop {
         match file.try_lock_exclusive() {
             Ok(()) => return Ok(file),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(error) if is_lock_contended(&error) => {
                 if Instant::now() >= deadline {
                     return Err(Error::Provider(timeout_message.into()));
                 }
@@ -1015,6 +1015,23 @@ fn acquire_bounded_lock(path: &Path, timeout_message: &str) -> Result<std::fs::F
             }
             Err(error) => return Err(error.into()),
         }
+    }
+}
+
+fn is_lock_contended(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        return true;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // LockFileEx 的 FAIL_IMMEDIATELY 路径通常返回 ERROR_LOCK_VIOLATION (33)；
+        // 某些文件系统/Windows 版本会返回 ERROR_IO_PENDING (997)。两者都表示
+        // 锁正在被其他句柄持有，应进入同一有界等待，而不是当作永久 IO 故障。
+        matches!(error.raw_os_error(), Some(33 | 997))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
     }
 }
 
