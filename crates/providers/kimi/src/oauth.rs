@@ -619,7 +619,9 @@ fn refresh_fingerprint(refresh_token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(windows))]
     use chrono::Utc;
+    #[cfg(not(windows))]
     use subswap_core::AccountId;
 
     #[test]
@@ -932,14 +934,17 @@ mod tests {
         server.join().unwrap();
     }
 
+    #[cfg(not(windows))]
     fn jwt(suffix: &str) -> String {
         format!("header.eyJ1c2VyX2lkIjoidS0xMjMiLCJjbGllbnRfaWQiOiJjLTEifQ.{suffix}")
     }
 
+    #[cfg(not(windows))]
     fn blob(access: &str, refresh: &str) -> String {
         format!(r#"{{"access_token":"{access}","refresh_token":"{refresh}"}}"#)
     }
 
+    #[cfg(not(windows))]
     fn active_account() -> Account {
         Account {
             provider: "kimi".into(),
