@@ -1,4 +1,8 @@
-//! Cursor Provider：从 Cursor 的 `state.vscdb` 导入与切换账号，并查询官方用量。
+//! Cursor Provider：导入与切换 Cursor 账号并查询官方用量。
+//! 支持两种凭证来源：桌面版 Electron 的 `state.vscdb`（SQLite），以及命令行
+//! agent（cursor-agent）的 `~/.config/cursor/auth.json`（accessToken / refreshToken）
+//! 配合 `~/.cursor/cli-config.json` 的 `authInfo`（邮箱等元数据）。两种来源共用同一套
+//! 额度查询与 refresh token 轮换逻辑。
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -26,6 +30,13 @@ const STORE_FIELD: &str = "blob";
 const USAGE_URL: &str = "https://cursor.com/api/usage-summary";
 const TOKEN_URL: &str = "https://api2.cursor.sh/oauth/token";
 const CLIENT_ID: &str = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB";
+
+/// 桌面版 state.vscdb 路径覆盖（绝对路径），主要给测试与非标准安装用。
+const STATE_DB_ENV: &str = "SUBSWAP_CURSOR_STATE_DB_PATH";
+/// 命令行 agent 的 auth.json 路径覆盖（绝对路径）。
+const AGENT_AUTH_ENV: &str = "SUBSWAP_CURSOR_AGENT_AUTH_PATH";
+/// 命令行 agent 的 cli-config.json 路径覆盖（绝对路径）。
+const AGENT_CONFIG_ENV: &str = "SUBSWAP_CURSOR_AGENT_CONFIG_PATH";
 
 const ACCESS_KEY: &str = "cursorAuth/accessToken";
 const REFRESH_KEY: &str = "cursorAuth/refreshToken";
@@ -64,6 +75,40 @@ struct CursorBlob {
     sign_up_type: Option<String>,
 }
 
+/// Cursor 凭证来源。桌面版与命令行 agent 的存储布局不同，但对上层是同一套账号语义。
+#[derive(Clone, Debug)]
+enum CredentialSource {
+    /// 桌面版 Electron：凭证在 `state.vscdb`（SQLite ItemTable）。
+    Desktop { state_db: PathBuf },
+    /// 命令行 agent：accessToken / refreshToken 在 `auth.json`，
+    /// 邮箱等元数据在 `cli-config.json` 的 `authInfo`。
+    Agent {
+        auth_json: PathBuf,
+        cli_config: PathBuf,
+    },
+}
+
+impl CredentialSource {
+    /// 读取当前登录的活跃凭证。
+    fn read_live(&self) -> Result<CursorBlob> {
+        match self {
+            CredentialSource::Desktop { state_db } => read_live_blob(state_db),
+            CredentialSource::Agent {
+                auth_json,
+                cli_config,
+            } => read_agent_blob(auth_json, cli_config),
+        }
+    }
+
+    /// 对外暴露的凭证探针路径（用于 client target 与快照标签）。
+    fn probe_path(&self) -> PathBuf {
+        match self {
+            CredentialSource::Desktop { state_db } => state_db.clone(),
+            CredentialSource::Agent { auth_json, .. } => auth_json.clone(),
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct CursorStateSnapshot {
     state_db: String,
@@ -84,7 +129,7 @@ struct RefreshResponse {
 pub struct CursorProvider {
     store: Arc<dyn CredentialStore>,
     registry: Arc<AccountRegistry>,
-    state_db: PathBuf,
+    source: CredentialSource,
     usage_url: String,
     token_url: String,
     client: reqwest::Client,
@@ -94,7 +139,7 @@ pub struct CursorProvider {
 }
 
 struct CursorProviderConfig {
-    state_db: PathBuf,
+    source: CredentialSource,
     usage_url: String,
     token_url: String,
     process_control: Arc<dyn CursorProcessControl>,
@@ -116,7 +161,7 @@ impl CursorProvider {
             store,
             registry,
             CursorProviderConfig {
-                state_db: default_state_db_path()?,
+                source: default_credential_source()?,
                 usage_url: USAGE_URL.to_string(),
                 token_url: TOKEN_URL.to_string(),
                 process_control: Arc::new(SystemCursorProcessControl),
@@ -138,7 +183,7 @@ impl CursorProvider {
         Self {
             store,
             registry,
-            state_db: config.state_db,
+            source: config.source,
             usage_url: config.usage_url,
             token_url: config.token_url,
             client,
@@ -165,7 +210,7 @@ impl CursorProvider {
     pub async fn reconcile_active_from_live(&self) -> Result<()> {
         let this = self.clone();
         tokio::task::spawn_blocking(move || {
-            let live = read_live_blob(&this.state_db)?;
+            let live = this.source.read_live()?;
             let owner = this.find_owner(&live)?;
             this.capture_live_into_store(&live)?;
             // 只对已导入账号对齐 active；未知账号不由 daemon 擅自新增。
@@ -179,7 +224,7 @@ impl CursorProvider {
     }
 
     fn import_active_blocking(&self, label_hint: Option<String>) -> Result<Account> {
-        let blob = read_live_blob(&self.state_db)?;
+        let blob = self.source.read_live()?;
         self.upsert_blob(blob, label_hint, true)
     }
 
@@ -280,6 +325,16 @@ impl CursorProvider {
     }
 
     fn activate_blocking(&self, id: &AccountId) -> Result<()> {
+        match self.source.clone() {
+            CredentialSource::Desktop { state_db } => self.activate_desktop_blocking(id, &state_db),
+            CredentialSource::Agent { auth_json, .. } => {
+                self.activate_agent_blocking(id, &auth_json)
+            }
+        }
+    }
+
+    /// 桌面版切换：停 Cursor → 写 SQLite → 标记 active，任一步失败按序回滚并重开原会话。
+    fn activate_desktop_blocking(&self, id: &AccountId, state_db: &Path) -> Result<()> {
         let _switch_lock = self.acquire_switch_lock()?;
         let account = self.require_account(id)?;
 
@@ -293,7 +348,7 @@ impl CursorProvider {
             Ok(accounts) => accounts,
             Err(error) => return Err(self.restart_old_after_failure(cursor_was_running, error)),
         };
-        let mut conn = match Connection::open(&self.state_db)
+        let mut conn = match Connection::open(state_db)
             .map_err(sql_error("open Cursor state database"))
         {
             Ok(conn) => conn,
@@ -378,6 +433,53 @@ impl CursorProvider {
         Ok(())
     }
 
+    /// 命令行 agent 切换：把目标账号凭证写回 auth.json 并标记 active。
+    /// agent 无 GUI 进程生命周期需协调，写文件后 cursor-agent 下次读取即生效。
+    fn activate_agent_blocking(&self, id: &AccountId, auth_json: &Path) -> Result<()> {
+        let _switch_lock = self.acquire_switch_lock()?;
+        let account = self.require_account(id)?;
+
+        // 覆盖前先把当前 agent 登录凭证回灌其 owner 账号，避免丢失客户端刚轮换的 token。
+        if let Ok(live) = self.source.read_live() {
+            self.capture_live_into_store(&live)?;
+        }
+        let target = self.stored_blob(&account)?;
+        validate_blob(&target)?;
+
+        // 快照旧 auth.json 与 registry，便于失败回滚与手工恢复。
+        let previous = std::fs::read(auth_json).ok();
+        self.persist_pre_swap_agent_snapshot(previous.as_deref())?;
+        let registry_before = self.registry.load()?;
+
+        write_agent_blob(auth_json, &target)?;
+        if let Err(error) = self.registry.set_active(PROVIDER_ID, id) {
+            let file_rollback = restore_agent_auth(auth_json, previous.as_deref());
+            let registry_rollback = self.registry.save(&registry_before);
+            return Err(Error::Provider(format!(
+                "mark Cursor account active failed: {error}; auth.json rollback: {}; registry rollback: {}",
+                rollback_result(file_rollback),
+                rollback_result(registry_rollback)
+            )));
+        }
+        Ok(())
+    }
+
+    fn persist_pre_swap_agent_snapshot(&self, previous: Option<&[u8]>) -> Result<()> {
+        let registry = std::fs::read(self.registry.path())?;
+        let mut entries = vec![SnapshotEntry {
+            name: "registry.toml".into(),
+            content: registry,
+        }];
+        if let Some(previous) = previous {
+            entries.push(SnapshotEntry {
+                name: "cursor-auth.json".into(),
+                content: previous.to_vec(),
+            });
+        }
+        persist_pre_swap_snapshot_in(PROVIDER_ID, &self.snapshots_dir, entries)?;
+        Ok(())
+    }
+
     fn restart_old_after_failure(&self, cursor_was_running: bool, error: Error) -> Error {
         if !cursor_was_running {
             return error;
@@ -392,7 +494,7 @@ impl CursorProvider {
 
     fn persist_pre_swap_snapshot(&self, state: &[(&'static str, Option<String>)]) -> Result<()> {
         let cursor_state = CursorStateSnapshot {
-            state_db: self.state_db.display().to_string(),
+            state_db: self.source.probe_path().display().to_string(),
             values: state.iter().cloned().collect(),
         };
         let registry = std::fs::read(self.registry.path())?;
@@ -426,7 +528,7 @@ impl CursorProvider {
                 let this = self.clone();
                 let account_again = account.clone();
                 let fresh = tokio::task::spawn_blocking(move || {
-                    let live = read_live_blob(&this.state_db)?;
+                    let live = this.source.read_live()?;
                     if account_matches_blob(&account_again, &live) {
                         this.capture_live_into_store(&live)?;
                         Ok::<Option<CursorBlob>, Error>(Some(live))
@@ -464,7 +566,7 @@ impl CursorProvider {
 
     async fn blob_for_query(&self, account: Account) -> Result<(CursorBlob, QuerySource)> {
         let this = self.clone();
-        tokio::task::spawn_blocking(move || match read_live_blob(&this.state_db) {
+        tokio::task::spawn_blocking(move || match this.source.read_live() {
             Ok(live) if account_matches_blob(&account, &live) => {
                 this.capture_live_into_store(&live)?;
                 Ok((live, QuerySource::LiveOwner))
@@ -627,10 +729,16 @@ impl Provider for CursorProvider {
     }
 
     fn client_targets(&self) -> Vec<ClientTarget> {
+        let (id, display_name) = match &self.source {
+            CredentialSource::Desktop { .. } => {
+                ("cursor_desktop", "Cursor desktop credentials")
+            }
+            CredentialSource::Agent { .. } => ("cursor_agent", "Cursor CLI agent credentials"),
+        };
         vec![ClientTarget {
-            id: "cursor_desktop".into(),
-            display_name: "Cursor desktop credentials".into(),
-            probe_path: self.state_db.clone(),
+            id: id.into(),
+            display_name: display_name.into(),
+            probe_path: self.source.probe_path(),
         }]
     }
 
@@ -654,8 +762,56 @@ impl Provider for CursorProvider {
     }
 }
 
+/// 解析默认凭证来源：显式覆盖优先，其次按「桌面版数据库存在 → 桌面版；否则 agent auth.json
+/// 存在 → agent」自动探测；两者都不存在时回退桌面路径，读取时给出「请先登录」提示。
+fn default_credential_source() -> Result<CredentialSource> {
+    if std::env::var_os(STATE_DB_ENV).is_none() {
+        if let Some(auth) = std::env::var_os(AGENT_AUTH_ENV) {
+            let auth_json = require_absolute(PathBuf::from(auth), AGENT_AUTH_ENV)?;
+            let cli_config = match std::env::var_os(AGENT_CONFIG_ENV) {
+                Some(path) => require_absolute(PathBuf::from(path), AGENT_CONFIG_ENV)?,
+                None => default_agent_config_path()
+                    .unwrap_or_else(|| auth_json.with_file_name("cli-config.json")),
+            };
+            return Ok(CredentialSource::Agent {
+                auth_json,
+                cli_config,
+            });
+        }
+    }
+    let desktop = default_state_db_path()?;
+    // 显式指定桌面数据库路径时始终走桌面版。
+    if std::env::var_os(STATE_DB_ENV).is_some() {
+        return Ok(CredentialSource::Desktop { state_db: desktop });
+    }
+    if desktop.exists() {
+        return Ok(CredentialSource::Desktop { state_db: desktop });
+    }
+    if let Some(auth_json) = default_agent_auth_path() {
+        if auth_json.exists() {
+            let cli_config = default_agent_config_path()
+                .unwrap_or_else(|| auth_json.with_file_name("cli-config.json"));
+            return Ok(CredentialSource::Agent {
+                auth_json,
+                cli_config,
+            });
+        }
+    }
+    Ok(CredentialSource::Desktop { state_db: desktop })
+}
+
+/// cursor-agent 的 auth.json 默认路径：`~/.config/cursor/auth.json`。
+fn default_agent_auth_path() -> Option<PathBuf> {
+    directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config/cursor/auth.json"))
+}
+
+/// cursor-agent 的 cli-config.json 默认路径：`~/.cursor/cli-config.json`。
+fn default_agent_config_path() -> Option<PathBuf> {
+    directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".cursor/cli-config.json"))
+}
+
 fn default_state_db_path() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("SUBSWAP_CURSOR_STATE_DB_PATH") {
+    if let Some(path) = std::env::var_os(STATE_DB_ENV) {
         return validate_state_db_override(PathBuf::from(path));
     }
     #[cfg(target_os = "macos")]
@@ -680,12 +836,122 @@ fn default_state_db_path() -> Result<PathBuf> {
 }
 
 fn validate_state_db_override(path: PathBuf) -> Result<PathBuf> {
+    require_absolute(path, STATE_DB_ENV)
+}
+
+fn require_absolute(path: PathBuf, env: &str) -> Result<PathBuf> {
     if !path.is_absolute() {
-        return Err(Error::Config(
-            "SUBSWAP_CURSOR_STATE_DB_PATH must be an absolute path".into(),
-        ));
+        return Err(Error::Config(format!("{env} must be an absolute path")));
     }
     Ok(path)
+}
+
+/// 从 cursor-agent 的 auth.json（token）与 cli-config.json（authInfo 元数据）拼出账号凭证。
+fn read_agent_blob(auth_json: &Path, cli_config: &Path) -> Result<CursorBlob> {
+    if !auth_json.exists() {
+        return Err(Error::Provider(format!(
+            "Cursor CLI agent is not signed in ({} not found); run `cursor-agent login` first",
+            auth_json.display()
+        )));
+    }
+    let raw = std::fs::read_to_string(auth_json)
+        .map_err(|error| Error::Provider(format!("read Cursor agent auth.json: {error}")))?;
+    let auth: Value = serde_json::from_str(&raw)
+        .map_err(|error| Error::Provider(format!("parse Cursor agent auth.json: {error}")))?;
+    let access_token = auth
+        .get("accessToken")
+        .and_then(Value::as_str)
+        .and_then(|token| non_empty(Some(token.to_string())))
+        .ok_or_else(|| Error::Provider("Cursor agent auth.json is missing accessToken".into()))?;
+    let refresh_token = auth
+        .get("refreshToken")
+        .and_then(Value::as_str)
+        .and_then(|token| non_empty(Some(token.to_string())));
+
+    // 邮箱、authId 等元数据在 cli-config.json 的 authInfo；缺失时回退到 access token 的 JWT sub。
+    let config = std::fs::read_to_string(cli_config)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+    let auth_info = config.as_ref().and_then(|value| value.get("authInfo"));
+    let email = auth_info
+        .and_then(|value| value.get("email"))
+        .and_then(Value::as_str)
+        .and_then(|email| non_empty(Some(email.to_string())))
+        .or_else(|| jwt_subject(&access_token))
+        .ok_or_else(|| {
+            Error::Provider("cannot resolve Cursor agent account email or identity".into())
+        })?;
+    let auth_id = auth_info
+        .and_then(|value| value.get("authId"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| jwt_subject(&access_token));
+    let membership_type = auth_info
+        .and_then(|value| {
+            value
+                .get("membershipType")
+                .or_else(|| value.get("stripeMembershipType"))
+        })
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let blob = CursorBlob {
+        access_token,
+        refresh_token,
+        email,
+        auth_id,
+        membership_type,
+        subscription_status: None,
+        sign_up_type: None,
+    };
+    validate_blob(&blob)?;
+    Ok(blob)
+}
+
+/// 把账号凭证写回 cursor-agent 的 auth.json，保留文件中的其他字段。
+fn write_agent_blob(auth_json: &Path, blob: &CursorBlob) -> Result<()> {
+    let mut root = std::fs::read_to_string(auth_json)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Map<String, Value>>(&raw).ok())
+        .unwrap_or_default();
+    root.insert(
+        "accessToken".into(),
+        Value::String(blob.access_token.clone()),
+    );
+    match &blob.refresh_token {
+        Some(refresh) => {
+            root.insert("refreshToken".into(), Value::String(refresh.clone()));
+        }
+        None => {
+            root.remove("refreshToken");
+        }
+    }
+    if let Some(parent) = auth_json.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = open_private_file(auth_json)?;
+    file.set_len(0)?;
+    file.write_all(serde_json::to_string_pretty(&root)?.as_bytes())?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// 回滚 auth.json：有旧内容则还原，原本不存在则删除。
+fn restore_agent_auth(auth_json: &Path, previous: Option<&[u8]>) -> Result<()> {
+    match previous {
+        Some(bytes) => {
+            let mut file = open_private_file(auth_json)?;
+            file.set_len(0)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            Ok(())
+        }
+        None => match std::fs::remove_file(auth_json) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        },
+    }
 }
 
 fn read_live_blob(path: &Path) -> Result<CursorBlob> {

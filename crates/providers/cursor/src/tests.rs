@@ -27,7 +27,9 @@ fn setup() -> (tempfile::TempDir, CursorProvider, PathBuf) {
         store,
         registry,
         CursorProviderConfig {
-            state_db: db.clone(),
+            source: CredentialSource::Desktop {
+                state_db: db.clone(),
+            },
             usage_url: "http://127.0.0.1:9/usage".into(),
             token_url: "http://127.0.0.1:9/token".into(),
             process_control: Arc::new(NoopProcessControl),
@@ -49,7 +51,7 @@ fn configured(
         base.store.clone(),
         base.registry.clone(),
         CursorProviderConfig {
-            state_db,
+            source: CredentialSource::Desktop { state_db },
             usage_url,
             token_url,
             process_control,
@@ -705,6 +707,123 @@ async fn inactive_registry_account_that_owns_live_db_only_rereads_live_on_401() 
     assert!(requests
         .iter()
         .all(|request| request.starts_with("GET /usage")));
+}
+
+fn agent_provider(
+    temp: &Path,
+    auth_json: PathBuf,
+    cli_config: PathBuf,
+    usage_url: String,
+    token_url: String,
+) -> CursorProvider {
+    let store = Arc::new(FileStore::new(temp.join("credentials.json")));
+    let registry = Arc::new(AccountRegistry::new(temp.join("registry.toml")));
+    CursorProvider::with_config(
+        store,
+        registry,
+        CursorProviderConfig {
+            source: CredentialSource::Agent {
+                auth_json,
+                cli_config,
+            },
+            usage_url,
+            token_url,
+            process_control: Arc::new(NoopProcessControl),
+            refresh_lock_dir: temp.join("refresh-locks"),
+            snapshots_dir: temp.join("snapshots"),
+        },
+    )
+}
+
+fn write_agent_auth(auth_json: &Path, access: &str, refresh: &str) {
+    std::fs::write(
+        auth_json,
+        serde_json::json!({ "accessToken": access, "refreshToken": refresh }).to_string(),
+    )
+    .unwrap();
+}
+
+fn write_agent_config(cli_config: &Path, email: &str, auth_id: &str) {
+    std::fs::write(
+        cli_config,
+        serde_json::json!({ "authInfo": { "email": email, "authId": auth_id } }).to_string(),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn imports_and_queries_cursor_cli_agent_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    let auth_json = temp.path().join("auth.json");
+    let cli_config = temp.path().join("cli-config.json");
+    let access = jwt("auth0|user_agent", "a");
+    write_agent_auth(&auth_json, &access, "r-agent");
+    write_agent_config(&cli_config, "agent@example.com", "auth0|user_agent");
+
+    let server = MockServer::start(vec![(
+        "200 OK",
+        r#"{"individualUsage":{"plan":{"autoPercentUsed":59,"apiPercentUsed":57}}}"#,
+    )]);
+    let provider = agent_provider(
+        temp.path(),
+        auth_json,
+        cli_config,
+        format!("{}/usage", server.base),
+        format!("{}/token", server.base),
+    );
+
+    let account = provider.import_active(None).await.unwrap();
+    assert_eq!(account.label, "agent@example.com");
+    assert!(provider
+        .list_accounts()
+        .await
+        .unwrap()
+        .iter()
+        .any(|listed| listed.id == account.id));
+
+    let quotas = provider.query_quota(&account.id).await.unwrap();
+    assert_eq!(quotas.len(), 2);
+    assert_eq!(quotas[0].window, QuotaWindow::FirstPartyModels);
+    assert_eq!(quotas[0].used, 59);
+    assert_eq!(quotas[1].window, QuotaWindow::Api);
+    assert_eq!(quotas[1].used, 57);
+
+    let requests = server.finish();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("GET /usage"));
+}
+
+#[tokio::test]
+async fn agent_activate_writes_target_credentials_back_to_auth_json() {
+    let temp = tempfile::tempdir().unwrap();
+    let auth_json = temp.path().join("auth.json");
+    let cli_config = temp.path().join("cli-config.json");
+
+    let access_a = jwt("auth0|user_a", "a");
+    write_agent_auth(&auth_json, &access_a, "refresh-a");
+    write_agent_config(&cli_config, "a@example.com", "auth0|user_a");
+    let provider = agent_provider(
+        temp.path(),
+        auth_json.clone(),
+        cli_config.clone(),
+        "http://127.0.0.1:9/usage".into(),
+        "http://127.0.0.1:9/token".into(),
+    );
+    let a = provider.import_active(None).await.unwrap();
+
+    let access_b = jwt("auth0|user_b", "b");
+    write_agent_auth(&auth_json, &access_b, "refresh-b");
+    write_agent_config(&cli_config, "b@example.com", "auth0|user_b");
+    let b = provider.import_active(None).await.unwrap();
+
+    provider.activate(&a.id).await.unwrap();
+
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&auth_json).unwrap()).unwrap();
+    assert_eq!(written.get("accessToken").and_then(|v| v.as_str()), Some(access_a.as_str()));
+    assert_eq!(written.get("refreshToken").and_then(|v| v.as_str()), Some("refresh-a"));
+    assert!(provider.require_account(&a.id).unwrap().active);
+    assert!(!provider.require_account(&b.id).unwrap().active);
 }
 
 #[tokio::test]

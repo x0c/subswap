@@ -454,30 +454,50 @@ Kimi 没有官方 CLI 子命令可供 subswap 像 `codex login` / `claude auth l
 
 ## Cursor
 
-Cursor 不是文件型 JSON Provider：登录状态位于桌面应用的 SQLite 数据库，切换时还必须协调 GUI 退出与重启，
+Cursor 不是文件型 JSON Provider：登录状态位于本地客户端存储，切换时还可能需要协调 GUI 退出与重启，
 因此独立实现 `Provider`，不接 `crates/providers/common`，也不支持 `subswap run/shell/env` 隔离运行。
+
+Cursor 有两种客户端，凭证存储布局不同，subswap 用 `CredentialSource` 枚举统一抽象，两者共用同一套额度查询
+与 refresh token 轮换逻辑（代码见 `crates/providers/cursor/src/lib.rs::CredentialSource`）：
+
+- **桌面版（Electron IDE）**：凭证在 SQLite 数据库 `state.vscdb` 的 `ItemTable`。
+- **命令行 agent（`cursor-agent`）**：`accessToken` / `refreshToken` 在 `~/.config/cursor/auth.json`（纯 JSON），
+  邮箱等元数据在 `~/.cursor/cli-config.json` 的 `authInfo`。**无 GUI 生命周期，纯文件读写**，适用于服务器等无桌面环境。
+
+来源自动探测顺序：桌面版 `state.vscdb` 存在则用桌面版；否则 agent 的 `auth.json` 存在则用 agent；两者都不存在时
+回退桌面路径，读取时给出「请先登录」提示。
 
 ### 本地状态与跨平台路径
 
-| 平台 | `state.vscdb` 默认路径 |
+桌面版 `state.vscdb`：
+
+| 平台 | 默认路径 |
 |---|---|
 | macOS | `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` |
 | Linux | `~/.config/Cursor/User/globalStorage/state.vscdb` |
 | Windows | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` |
 
-测试可用 `SUBSWAP_CURSOR_STATE_DB_PATH` 重定向到绝对临时路径；相对路径会直接报错，完整隔离契约见
-[OPERATIONS_GUIDE.md](OPERATIONS_GUIDE.md) 的「三平台测试隔离」。subswap 只读写 `ItemTable` 中与身份有关的键：
+命令行 agent：`~/.config/cursor/auth.json` + `~/.cursor/cli-config.json`。
+
+测试用 `SUBSWAP_CURSOR_STATE_DB_PATH`（桌面版）或 `SUBSWAP_CURSOR_AGENT_AUTH_PATH` /
+`SUBSWAP_CURSOR_AGENT_CONFIG_PATH`（agent）重定向到绝对临时路径；相对路径会直接报错，完整隔离契约见
+[OPERATIONS_GUIDE.md](OPERATIONS_GUIDE.md) 的「三平台测试隔离」。桌面版只读写 `ItemTable` 中与身份有关的键：
 `cursorAuth/accessToken`、`cursorAuth/refreshToken`、`cursorAuth/cachedEmail`、`cursorAuth/authId`，并同步
-兼容键 `cursor.accessToken` / `cursor.email`；其余 Cursor 设置、扩展和工作区状态不动。CredentialStore 中
-保存的是这四项组成的私有 JSON blob，registry 只存邮箱、稳定身份与展示元数据。
+兼容键 `cursor.accessToken` / `cursor.email`；其余 Cursor 设置、扩展和工作区状态不动。agent 写回 `auth.json` 时
+只覆盖 `accessToken` / `refreshToken`，保留文件里的其他字段。两种来源在 CredentialStore 中都保存同构的私有
+JSON blob，registry 只存邮箱、稳定身份与展示元数据。
 
 ### 登录、导入与切换事务
 
-`subswap login cursor` 不复制 Cursor OAuth，也不驱动网页登录：用户先在 Cursor 桌面端登录，命令只读取
-`state.vscdb`、导入/覆盖账号并标记 active。默认入口也会同步当前 live 账号。
+`subswap login cursor` 不复制 Cursor OAuth，也不驱动网页登录：用户先在 Cursor 客户端登录（桌面端登录，
+或 `cursor-agent login`），命令只读取本地凭证、导入/覆盖账号并标记 active。默认入口也会同步当前 live 账号。
 
-Cursor 进程存活时不能直接改 SQLite：Electron 退出阶段可能把内存中的旧 token 写回数据库，覆盖 subswap
-刚写的账号。切换固定遵守以下顺序：
+**agent 来源的切换**是纯文件操作：capture-on-leave 回灌当前 agent 登录 → 快照旧 `auth.json` 与 registry →
+把目标账号凭证写回 `auth.json` → 标记 registry active；失败则回滚文件与 registry。无进程协调，写文件后
+`cursor-agent` 下次读取即生效。
+
+**桌面版来源**的 Cursor 进程存活时不能直接改 SQLite：Electron 退出阶段可能把内存中的旧 token 写回数据库，
+覆盖 subswap 刚写的账号。切换固定遵守以下顺序：
 
 1. 检测 Cursor 是否运行；运行中则请求正常退出，并等待进程完全结束，超时则不做切换。
 2. 读取 live 凭证并 capture-on-leave；若 live 缺 refresh token，绝不能覆盖仓库中有 refresh 的副本。
