@@ -148,6 +148,77 @@ fn help_shows_only_current_commands() {
 }
 
 #[test]
+fn add_api_help_exposes_exactly_three_model_roles() {
+    let output = subswap().args(["add-api", "--help"]).output().unwrap();
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    for flag in ["--opus-model", "--sonnet-model", "--haiku-model"] {
+        assert!(stdout.contains(flag), "missing {flag} in:\n{stdout}");
+    }
+    for removed in ["--model", "--subagent-model"] {
+        assert!(
+            !stdout.contains(removed),
+            "add-api help must not expose {removed}:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn add_api_accepts_legacy_model_as_the_only_model_flag() {
+    let tmp = tempfile::tempdir().unwrap();
+    setup_test_keychain(&tmp);
+    let claude = tmp.path().join("claude");
+
+    let stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args([
+                "add-api",
+                "--preset",
+                "custom",
+                "--id",
+                "legacy",
+                "--name",
+                "Legacy",
+                "--endpoint",
+                "https://example.com",
+                "--api-key",
+                "secret",
+                "--auth",
+                "bearer",
+                "--model",
+                "legacy-main",
+                "--yes",
+            ])
+            .output()
+            .unwrap(),
+    );
+    assert!(stdout.contains("added → claude/legacy"), "{stdout}");
+
+    assert_success(
+        isolated_subswap(&tmp)
+            .args(["swap", "legacy"])
+            .output()
+            .unwrap(),
+    );
+    let active: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(claude.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(active["env"]["ANTHROPIC_MODEL"], "legacy-main");
+    assert_eq!(active["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"], "legacy-main");
+    assert_eq!(
+        active["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"],
+        "legacy-main"
+    );
+    assert_eq!(
+        active["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"],
+        "legacy-main"
+    );
+    assert_eq!(active["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "legacy-main");
+
+    teardown_test_keychain(&tmp);
+}
+
+#[test]
 fn default_with_empty_home_is_quiet_and_does_not_probe_real_accounts() {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("home");
@@ -175,7 +246,7 @@ fn default_with_empty_home_is_quiet_and_does_not_probe_real_accounts() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert_eq!(
         stdout.trim(),
-        "No accounts. Log in to Claude Code or Codex CLI, then re-run `subswap`."
+        "No accounts. Sign in to a supported client, then run `subswap login <provider>`."
     );
     assert!(
         !stdout.contains("[degraded]"),

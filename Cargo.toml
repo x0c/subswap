@@ -8,17 +8,18 @@ members = [
     "crates/providers/codex",
     "crates/providers/claude",
     "crates/providers/kimi",
+    "crates/providers/cursor",
 ]
 
 [workspace.package]
-version = "1.3.0"
+version = "1.4.0"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
 authors = ["subswap contributors"]
 repository = "https://github.com/x0c/subswap"
 homepage = "https://github.com/x0c/subswap"
-keywords = ["claude", "codex", "chatgpt", "quota", "keyring"]
+keywords = ["claude", "codex", "kimi", "cursor", "quota"]
 categories = ["command-line-utilities", "authentication"]
 
 [workspace.dependencies]
@@ -60,6 +61,7 @@ subswap-provider-common = { path = "crates/providers/common" }
 subswap-provider-codex = { path = "crates/providers/codex" }
 subswap-provider-claude = { path = "crates/providers/claude" }
 subswap-provider-kimi = { path = "crates/providers/kimi" }
+subswap-provider-cursor = { path = "crates/providers/cursor" }
 subswap-daemon = { path = "crates/daemon" }
 
 [profile.release]

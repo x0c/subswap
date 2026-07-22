@@ -1,0 +1,30 @@
+[package]
+name = "subswap-provider-cursor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Cursor provider for subswap"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+subswap-core.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+base64 = "0.22"
+chrono.workspace = true
+directories.workspace = true
+fs2.workspace = true
+reqwest.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

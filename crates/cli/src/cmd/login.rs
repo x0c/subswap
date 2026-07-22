@@ -92,7 +92,24 @@ pub async fn run(
             println!("login → kimi/{}", account_ref(&account.id.0));
             Ok(())
         }
-        other => bail!("unknown provider: {other} (expected claude, codex or kimi)"),
+        "cursor" => {
+            if email.is_some() || sso || device_auth || !extra_args.is_empty() {
+                bail!("login options are not supported for cursor login");
+            }
+            let account = ctx
+                .cursor
+                .import_active(None)
+                .await
+                .context("import Cursor login; sign in to Cursor first")?;
+            ctx.audit.append(AuditEvent::ok(
+                "login",
+                "cursor",
+                Some(account.id.0.as_str()),
+            ));
+            println!("login → cursor/{}", account_ref(&account.id.0));
+            Ok(())
+        }
+        other => bail!("unknown provider: {other} (expected claude, codex, kimi or cursor)"),
     }
 }
 

@@ -66,7 +66,7 @@ jobs:
                   return f.read().split()[0]
 
           formula = f'''class Subswap < Formula
-            desc "Claude, Codex and ChatGPT account switcher with quota-aware auto-swap"
+            desc "Claude, Codex, Kimi and Cursor account switcher with quota-aware auto-swap"
             homepage "https://github.com/x0c/subswap"
             version "{ver}"
             license "MIT"

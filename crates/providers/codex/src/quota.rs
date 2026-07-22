@@ -12,7 +12,7 @@ use subswap_core::settings;
 use subswap_core::time::{epoch_to_datetime, epoch_to_millis};
 use subswap_core::{Account, Quota, QuotaStatus, QuotaWindow};
 
-use crate::openai_usage;
+use crate::{app_server, openai_usage};
 use crate::{META_AUTH_METADATA, META_CHATGPT_ACCOUNT_ID, PROVIDER_ID};
 
 /// 查询一个 Codex 账号的额度。`access_token` 已由调用方（共享引擎）从 auth blob 中抽好。
@@ -30,8 +30,28 @@ pub async fn fetch_codex_quota(access_token: &str, account: &Account) -> Result<
         })?
         .to_string();
 
-    // 2. 调端点；响应字段无法识别时回退到最近一次成功缓存的用量。
-    let raw_resp = openai_usage::fetch_usage_raw(access_token, &chatgpt_account_id).await?;
+    // 2. 当前账号优先复用官方 app-server 的认证状态。parked 账号没有可安全物化的完整
+    // auth blob，继续走旧端点，避免只复制 access token 后遗失 refresh token 轮换结果。
+    let raw_resp = if account.active {
+        match app_server::fetch_usage().await {
+            Ok(usage) => usage,
+            Err(error) if app_server::allows_compat_fallback(&error) => {
+                tracing::debug!(
+                    account = %account.id,
+                    error = %error,
+                    "Codex 官方额度通道不可用，回退到兼容查询"
+                );
+                openai_usage::fetch_usage_raw(access_token, &chatgpt_account_id).await?
+            }
+            Err(error) => {
+                return Err(Error::QuotaFetch(format!(
+                    "Codex app-server rate-limit query failed: {error}"
+                )));
+            }
+        }
+    } else {
+        openai_usage::fetch_usage_raw(access_token, &chatgpt_account_id).await?
+    };
     let mut normalized = openai_usage::normalize_all(&raw_resp);
     if normalized.iter().all(usage_has_unknown_quota) {
         tracing::debug!(

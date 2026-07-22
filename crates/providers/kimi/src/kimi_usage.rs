@@ -105,9 +105,58 @@ pub fn parse_usages(body: &str, provider: &str, id: &AccountId) -> Vec<Quota> {
     out
 }
 
-/// 调 /usages 端点。
-pub async fn fetch_quota(access_token: &str, account: &Account) -> Result<Vec<Quota>> {
-    let url = format!("{}/usages", base_url());
+/// active 账号查询 401 时，按官方锁协议恢复一次令牌后只重试一次。
+pub async fn fetch_quota_with_active_recovery(
+    access_token: &str,
+    account: &Account,
+) -> Result<Vec<Quota>> {
+    let api_base = base_url();
+    fetch_quota_with_active_recovery_at(
+        access_token,
+        account,
+        &api_base,
+        &crate::paths::kimi_home(),
+        None,
+    )
+    .await
+}
+
+async fn fetch_quota_with_active_recovery_at(
+    access_token: &str,
+    account: &Account,
+    api_base: &str,
+    home: &std::path::Path,
+    test_recovery: Option<(&str, crate::oauth::RefreshLockProtocol)>,
+) -> Result<Vec<Quota>> {
+    match fetch_quota_at(access_token, account, api_base).await {
+        Err(error) if account.active && is_unauthorized(&error) => {
+            let recovered = if let Some((oauth_base, protocol)) = test_recovery {
+                crate::oauth::recover_active_401_at(
+                    access_token,
+                    account,
+                    home,
+                    oauth_base,
+                    protocol,
+                )
+                .await?
+            } else {
+                crate::oauth::recover_active_401(access_token, account).await?
+            };
+            let Some(fresh_access) = recovered else {
+                return Err(error);
+            };
+            fetch_quota_at(&fresh_access, account, api_base).await
+        }
+        result => result,
+    }
+}
+
+async fn fetch_quota_at(
+    access_token: &str,
+    account: &Account,
+    api_base: &str,
+) -> Result<Vec<Quota>> {
+    let url = format!("{}/usages", api_base.trim_end_matches('/'));
     let resp = reqwest::Client::new()
         .get(&url)
         .header("Authorization", format!("Bearer {access_token}"))
@@ -125,9 +174,16 @@ pub async fn fetch_quota(access_token: &str, account: &Account) -> Result<Vec<Qu
     Ok(parse_usages(&body, "kimi", &account.id))
 }
 
+fn is_unauthorized(error: &Error) -> bool {
+    matches!(error, Error::QuotaFetch(message) if message.starts_with("kimi usages HTTP 401 "))
+}
+
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
+
     use super::*;
+    use crate::test_support::MockServer;
 
     const REAL: &str = r#"{
       "usage": {"limit":"100","used":"4","remaining":"96","resetTime":"2026-07-24T07:52:15Z"},
@@ -152,5 +208,105 @@ mod tests {
             r#"{"usage":{"limit":"100","remaining":"70","resetTime":"2026-07-24T07:52:15Z"}}"#;
         let q = parse_usages(body, "kimi", &AccountId("u1".into()));
         assert_eq!((q[0].used, q[0].limit), (30, 100));
+    }
+
+    #[tokio::test]
+    async fn active_401_refreshes_once_persists_and_retries_usage_once() {
+        let temporary = tempfile::tempdir().unwrap();
+        let credentials = crate::paths::active_cred_path(temporary.path());
+        std::fs::create_dir_all(credentials.parent().unwrap()).unwrap();
+        let old = credential_blob("OLD", "R1");
+        let old_access = extract_json_string(&old, "access_token");
+        std::fs::write(&credentials, &old).unwrap();
+        let server = MockServer::start(vec![
+            ("401 Unauthorized", r#"{"error":"expired"}"#),
+            (
+                "200 OK",
+                r#"{"access_token":"NEW","refresh_token":"R2","expires_in":3600,"scope":"kimi-code","token_type":"Bearer"}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"usage":{"limit":"100","used":"7","remaining":"93","resetTime":"2026-07-24T07:52:15Z"}}"#,
+            ),
+        ]);
+        let quotas = fetch_quota_with_active_recovery_at(
+            &old_access,
+            &active_account(),
+            server.base_url(),
+            temporary.path(),
+            Some((
+                server.base_url(),
+                crate::oauth::RefreshLockProtocol::TypeScriptDirectory,
+            )),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(quotas[0].used, 7);
+        let saved = std::fs::read_to_string(credentials).unwrap();
+        assert_eq!(extract_json_string(&saved, "access_token"), "NEW");
+        assert_eq!(extract_json_string(&saved, "refresh_token"), "R2");
+        assert_eq!(
+            server.finish(),
+            vec![
+                "GET /usages HTTP/1.1",
+                "POST /api/oauth/token HTTP/1.1",
+                "GET /usages HTTP/1.1"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_refresh_does_not_overwrite_live_credentials() {
+        let temporary = tempfile::tempdir().unwrap();
+        let credentials = crate::paths::active_cred_path(temporary.path());
+        std::fs::create_dir_all(credentials.parent().unwrap()).unwrap();
+        let old = credential_blob("OLD", "R1");
+        let old_access = extract_json_string(&old, "access_token");
+        std::fs::write(&credentials, &old).unwrap();
+        let server = MockServer::start(vec![
+            ("401 Unauthorized", r#"{"error":"expired"}"#),
+            ("401 Unauthorized", r#"{"error":"invalid_grant"}"#),
+        ]);
+
+        let result = fetch_quota_with_active_recovery_at(
+            &old_access,
+            &active_account(),
+            server.base_url(),
+            temporary.path(),
+            Some((
+                server.base_url(),
+                crate::oauth::RefreshLockProtocol::TypeScriptDirectory,
+            )),
+        )
+        .await;
+
+        assert!(result.unwrap_err().to_string().contains("usages HTTP 401"));
+        assert_eq!(std::fs::read_to_string(credentials).unwrap(), old);
+        assert_eq!(server.finish().len(), 2);
+    }
+
+    fn credential_blob(access: &str, refresh: &str) -> String {
+        // payload = {"user_id":"u-123","client_id":"c-1"}
+        let jwt = format!("header.eyJ1c2VyX2lkIjoidS0xMjMiLCJjbGllbnRfaWQiOiJjLTEifQ.sig-{access}");
+        format!(r#"{{"access_token":"{jwt}","refresh_token":"{refresh}","expires_at":0}}"#)
+    }
+
+    fn active_account() -> Account {
+        Account {
+            provider: "kimi".into(),
+            id: AccountId("u-123".into()),
+            label: "u-123".into(),
+            active: true,
+            created_at: Utc::now(),
+            last_used_at: None,
+            priority: 100,
+            extra: serde_json::Map::new(),
+        }
+    }
+
+    fn extract_json_string(raw: &str, field: &str) -> String {
+        let value: serde_json::Value = serde_json::from_str(raw).unwrap();
+        value.get(field).unwrap().as_str().unwrap().to_string()
     }
 }

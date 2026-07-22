@@ -76,10 +76,6 @@ enum Cmd {
         #[arg(long)]
         auth: Option<String>,
 
-        /// Primary model.
-        #[arg(long)]
-        model: Option<String>,
-
         /// Opus role model.
         #[arg(long)]
         opus_model: Option<String>,
@@ -92,8 +88,12 @@ enum Cmd {
         #[arg(long)]
         haiku_model: Option<String>,
 
-        /// Subagent model.
-        #[arg(long)]
+        /// Deprecated compatibility alias for --sonnet-model.
+        #[arg(long, hide = true)]
+        model: Option<String>,
+
+        /// Deprecated compatibility alias for --haiku-model.
+        #[arg(long, hide = true)]
         subagent_model: Option<String>,
 
         /// Claude Code effort level.
@@ -113,7 +113,7 @@ enum Cmd {
 
     /// Log in through the native provider CLI, then import and activate that account.
     Login {
-        /// Provider to log in: claude or codex.
+        /// Provider to log in: claude, codex, kimi, or cursor.
         provider: String,
 
         /// Pre-populate Claude login email.
@@ -213,10 +213,10 @@ async fn main() -> Result<()> {
             endpoint,
             api_key,
             auth,
-            model,
             opus_model,
             sonnet_model,
             haiku_model,
+            model,
             subagent_model,
             effort,
             billing,
@@ -230,10 +230,10 @@ async fn main() -> Result<()> {
                 endpoint,
                 api_key,
                 auth,
-                model,
                 opus_model,
                 sonnet_model,
                 haiku_model,
+                model,
                 subagent_model,
                 effort,
                 billing,

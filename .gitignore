@@ -21,6 +21,7 @@ state.json
 # gitnexus 代码索引工具的本地缓存目录
 .gitnexus/
 .codegraph/
+.codebase-memory/
 .doc-init-*.json
 
 # 隔离开发用的本地 git worktree

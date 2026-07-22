@@ -28,9 +28,9 @@ OAuth 的 refresh token 是一次性轮换：刷新一次旧的立即作废。su
 
 ## 修复（永久）
 
-确立不变量：**原生客户端是 active 账号 live token 的唯一轮换者**。subswap 对 active 账号
-只读不刷，只对停泊（parked）账号刷新/恢复，并在「离开某账号前」先把 live 凭证回灌进该账号
-store。两个机制：
+当时确立的不变量是：**不能让 subswap 与原生客户端各自独立轮换 active 账号 token**。Claude active
+仍只读不刷；当前 Codex/Kimi 的后续增强只通过官方 app-server / 官方跨进程锁协调，不改变这条根因约束。
+停泊（parked）账号由 subswap 刷新/恢复，并在「离开某账号前」先把 live 凭证回灌进账号 store。
 
 1. **Capture-on-leave（Codex + Claude）**：`Provider::activate` 覆盖 live 文件前，读当前
    live 凭证 → 找受管 owner 账号 → 回写其 store。所有 swap（手动 + 自动）唯一经过 `activate`，

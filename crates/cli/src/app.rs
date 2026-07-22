@@ -11,6 +11,7 @@ use subswap_core::{
 use subswap_provider_claude::ClaudeProvider;
 use subswap_provider_codex::CodexProvider;
 use subswap_provider_common::IsolatedProvider;
+use subswap_provider_cursor::CursorProvider;
 use subswap_provider_kimi::KimiProvider;
 
 pub struct AppContext {
@@ -19,6 +20,7 @@ pub struct AppContext {
     pub claude: Arc<ClaudeProvider>,
     pub codex: Arc<CodexProvider>,
     pub kimi: Arc<KimiProvider>,
+    pub cursor: Arc<CursorProvider>,
     pub providers: ProviderRegistry,
     /// 隔离运行（`run`/`shell`/`env`）查表：provider id → 通用隔离抽象。
     /// Claude 不在此表中，走 `run.rs` 里的专用分支（macOS 钥匙串 / API 账号逻辑不适配此通用形状）。
@@ -40,11 +42,13 @@ impl AppContext {
         let claude = Arc::new(ClaudeProvider::new(store.clone(), registry.clone()));
         let codex = Arc::new(subswap_provider_codex::new(store.clone(), registry.clone()));
         let kimi = Arc::new(subswap_provider_kimi::new(store.clone(), registry.clone()));
+        let cursor = Arc::new(CursorProvider::new(store.clone(), registry.clone()));
 
         let mut providers = ProviderRegistry::new();
         providers.register(claude.clone());
         providers.register(codex.clone());
         providers.register(kimi.clone());
+        providers.register(cursor.clone());
 
         let mut isolated: HashMap<&'static str, Arc<dyn IsolatedProvider>> = HashMap::new();
         isolated.insert("codex", codex.clone());
@@ -58,6 +62,7 @@ impl AppContext {
             claude,
             codex,
             kimi,
+            cursor,
             providers,
             isolated,
             audit,

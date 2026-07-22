@@ -22,7 +22,5 @@ reqwest.workspace = true
 tracing.workspace = true
 directories.workspace = true
 chrono.workspace = true
-tokio = { workspace = true }
-
-[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "process"] }
 tempfile = "3"
