@@ -35,6 +35,20 @@
 - 真实账号隔离：新增会触发 Claude OAuth 或 Codex 登录状态的集成测试时，必须沿用 `crates/cli/tests/cli_surface.rs::isolated_subswap` 的隔离环境，特别是 `SUBSWAP_CLAUDE_KEYCHAIN_PATH`。
 - macOS 钥匙串：测试用一次性 keychain，不得触碰真实 `Claude Code-credentials` 登录钥匙串。
 
+## 三平台测试隔离
+
+CLI 集成测试统一经 `isolated_subswap` 构造临时环境，不能只改 `HOME` 或 XDG 目录：Windows 的系统目录解析不遵循 XDG 覆盖，而且 Cursor 的平台默认数据库路径也不受 `HOME` 或 `SUBSWAP_HOME` 控制。
+
+| 隔离对象 | 覆盖方式 | 约束 |
+|---|---|---|
+| subswap 配置、数据、状态、缓存 | `SUBSWAP_HOME` | 指向每个测试独占的绝对临时目录；相对路径直接报错 |
+| Claude、Codex、Kimi 原生目录 | `CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`KIMI_CODE_HOME` | 全部指向同一个测试临时根下的不同子目录 |
+| Cursor 原生状态数据库 | `SUBSWAP_CURSOR_STATE_DB_PATH` | 指向绝对临时路径下的 `state.vscdb`；文件可以尚不存在，禁止回退探测真实用户数据库 |
+| macOS Claude 登录钥匙串 | `SUBSWAP_CLAUDE_KEYCHAIN_PATH` | 使用一次性 keychain，禁止读取或写入真实登录钥匙串 |
+| 后台进程 | `SUBSWAP_NO_DAEMON=1` | 普通集成测试不留下 daemon；专门冒烟时再显式开启 |
+
+`SUBSWAP_HOME` 的目录映射和便携运行边界以 [CONFIG.md](CONFIG.md) 为准。新增任何会探测原生客户端登录状态的 CLI 测试时，必须复用统一 helper，不得手工拼一套不完整的覆盖。
+
 ## 启动命令
 
 常规开发验证：
@@ -93,9 +107,14 @@ pgrep -af 'subswap __daemon|subswapd' || true
 |---|---|---|---|---|
 | `cargo build --locked` 提示 lock file 需要更新 | 升版本或依赖后没有同步 `Cargo.lock` | 看错误里是否出现 cannot update lock file | 先跑 `cargo update --workspace --offline` 再重试 locked build | AGENTS |
 | Linux CI 编译 keyring 相关依赖失败 | 缺少 D-Bus 开发包和 pkg-config | 对比 `.github/workflows/ci.yml` | 安装 `libdbus-1-dev pkg-config` | CI |
+| Linux Release 安装依赖时 APT 镜像瞬态失败 | 镜像正在同步或包列表暂时不可用 | release 日志会提示清理包列表并在 10s、20s 后重试 | 等待内置 3 次有界重试；第 3 次仍失败时按真实基础设施故障排查，不继续无限重跑 | release workflow |
 | 集成测试弹 macOS 钥匙串授权框 | 测试触碰真实登录钥匙串 | 检查是否设置 `SUBSWAP_CLAUDE_KEYCHAIN_PATH` | 改用 `isolated_subswap` 或补齐隔离环境变量 | `cli_surface.rs` |
 | 本地默认入口留下后台进程 | 没有设置 `SUBSWAP_NO_DAEMON=1` | `pgrep -af 'subswap __daemon|subswapd'` | 测试场景设置 `SUBSWAP_NO_DAEMON=1`，需要冒烟时再显式启动 | README/测试 |
 | daemon 冒烟后版本仍旧 | `~/.local/bin` 未覆盖或 shell 命中旧路径 | `command -v subswap`、`subswap --version`、哈希对比 | 重新安装 release 产物并确认 PATH | AGENTS |
+
+### Linux Release 的 APT 有界重试
+
+Release workflow 在 Linux runner 上把 `apt-get update` 与 `libdbus-1-dev pkg-config` 安装视为一次完整尝试，最多执行 3 次。前两次失败后分别等待 10 秒、20 秒，并清理包列表与 APT 缓存再试；第 3 次仍失败则立即让构建失败。该机制只吸收镜像同步、网络抖动等瞬态故障，不掩盖包名错误、权限问题或持续性基础设施故障。
 
 ## Homebrew Tap 自动更新
 
@@ -155,6 +174,7 @@ Windows release 只有 CLI，文档和安装脚本都不得暗示包含后台 da
 - 改自动切换策略：跑 `cargo test --workspace`，重点关注 `crates/core/tests/auto_policy_integration.rs`；同步 `docs/design/AUTO_SWAP_DESIGN.md`。
 - 改 Provider 凭证、额度或激活逻辑：跑全 workspace 测试；涉及 Claude/Codex live capture、refresh token、quota 429 时同步 `docs/PROVIDER_KNOWLEDGE_BASE.md` 和对应故障索引。
 - 改隔离运行：跑 CLI 集成测试；macOS 钥匙串相关验证必须使用一次性 keychain；同步 `docs/design/ACCOUNT_ISOLATION_DESIGN.md`。
+- 改应用目录解析或原生客户端路径探测：跑三平台 CLI 集成测试，确认 `SUBSWAP_HOME` 与各客户端专属覆盖仍完整隔离真实用户状态；同步 `docs/CONFIG.md` 和本 Guide。
 - 改配置字段或默认值：同步 `docs/CONFIG.md`；确认默认值只从 `crates/core/src/defaults.rs` 或 settings 入口读取。
 - 改 release 产物或版本：跑 locked release build，安装到本机，验证版本与哈希，再走 tag 和 GitHub Release。
 

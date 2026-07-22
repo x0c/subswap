@@ -42,7 +42,7 @@ impl AppContext {
         let claude = Arc::new(ClaudeProvider::new(store.clone(), registry.clone()));
         let codex = Arc::new(subswap_provider_codex::new(store.clone(), registry.clone()));
         let kimi = Arc::new(subswap_provider_kimi::new(store.clone(), registry.clone()));
-        let cursor = Arc::new(CursorProvider::new(store.clone(), registry.clone()));
+        let cursor = Arc::new(CursorProvider::new(store.clone(), registry.clone())?);
 
         let mut providers = ProviderRegistry::new();
         providers.register(claude.clone());

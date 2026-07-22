@@ -11,6 +11,21 @@ Windows: %APPDATA%\subswap\subswap\config\config.toml
 文件**可以不存在**：缺则使用编译期默认值（`crates/core/src/defaults.rs`）。
 文件**可以只写部分字段**：未写的字段沿用默认。
 
+## 应用目录覆盖（高级）
+
+`SUBSWAP_HOME` 可以把 subswap 自身的配置、账号仓库、运行状态和缓存统一收口到一个目录，主要用于三平台集成测试和便携运行。它不是 `config.toml` 字段，进程启动时读取；值必须是绝对路径，否则启动失败。
+
+| 逻辑目录 | 设置后的实际位置 | 主要内容 |
+|---|---|---|
+| 配置 | `<SUBSWAP_HOME>/config/` | `config.toml`、`registry.toml` |
+| 数据 | `<SUBSWAP_HOME>/data/` | `credentials.json`、审计与 daemon 日志、隔离运行目录 |
+| 状态 | `<SUBSWAP_HOME>/data/state/` | 切换快照、daemon PID、Provider 跨进程协调状态 |
+| 缓存 | `<SUBSWAP_HOME>/cache/` | `quota_cache.json` |
+
+这些目录不存在时会自动创建。同一套账号状态下，CLI 与独立启动的 daemon 必须使用相同的 `SUBSWAP_HOME`；由 CLI 拉起的 daemon 会自然继承当前值。
+
+这个覆盖**只管理 subswap 自己的目录**，不会搬迁 Codex、Claude、Kimi 或 Cursor 的原生登录位置。完整测试隔离还要分别重定向各原生客户端目录、Cursor 数据库和 macOS Claude 测试钥匙串，统一要求见 [OPERATIONS_GUIDE.md](OPERATIONS_GUIDE.md) 的「三平台测试隔离」。特别地，Cursor 可用 `SUBSWAP_CURSOR_STATE_DB_PATH` 指向临时 `state.vscdb`，且同样只接受绝对路径；它是测试/便携覆盖，不是普通运行时调优项。
+
 ## 热加载
 
 - `subswapd` 每轮循环开头读一次；改了文件下一轮（≤ 60s）就生效。

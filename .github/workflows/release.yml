@@ -96,8 +96,24 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libdbus-1-dev pkg-config
+          set -euo pipefail
+
+          for attempt in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config; then
+              exit 0
+            fi
+
+            if [[ "${attempt}" -eq 3 ]]; then
+              echo "Linux dependency installation failed after ${attempt} attempts." >&2
+              exit 1
+            fi
+
+            delay=$((attempt * 10))
+            echo "APT mirror may be syncing; clearing package lists and retrying in ${delay}s..." >&2
+            sudo rm -rf /var/lib/apt/lists/*
+            sudo apt-get clean
+            sleep "${delay}"
+          done
 
       - name: build cli
         run: cargo build --locked --release -p subswap-cli --target ${{ matrix.target }}
