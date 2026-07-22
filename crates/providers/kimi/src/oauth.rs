@@ -651,6 +651,7 @@ mod tests {
         assert_eq!(lock_protocol_for_version((0, 28, 1)), None);
     }
 
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn waits_for_official_lock_then_reuses_rotated_credentials() {
         let temporary = tempfile::tempdir().unwrap();
@@ -707,6 +708,13 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_typescript_client_has_no_active_refresh_lock_protocol() {
+        assert_eq!(lock_protocol_from_version_output("0.28.1"), None);
+        assert_eq!(lock_protocol_for_version((0, 99, 0)), None);
     }
 
     #[cfg(not(windows))]
