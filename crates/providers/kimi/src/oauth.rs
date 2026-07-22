@@ -619,7 +619,6 @@ fn refresh_fingerprint(refresh_token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::MockServer;
     use chrono::Utc;
     use subswap_core::AccountId;
 
@@ -832,6 +831,8 @@ mod tests {
     #[cfg(not(windows))]
     #[tokio::test]
     async fn dead_refresh_fingerprint_prevents_repeated_http_requests() {
+        use crate::test_support::MockServer;
+
         let temporary = tempfile::tempdir().unwrap();
         let credential_path = paths::active_cred_path(temporary.path());
         std::fs::create_dir_all(credential_path.parent().unwrap()).unwrap();

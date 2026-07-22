@@ -395,6 +395,7 @@ fn window_to_usage(window: RateLimitWindow) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::fs;
 
     #[test]
