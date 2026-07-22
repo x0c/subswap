@@ -820,8 +820,14 @@ async fn agent_activate_writes_target_credentials_back_to_auth_json() {
 
     let written: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&auth_json).unwrap()).unwrap();
-    assert_eq!(written.get("accessToken").and_then(|v| v.as_str()), Some(access_a.as_str()));
-    assert_eq!(written.get("refreshToken").and_then(|v| v.as_str()), Some("refresh-a"));
+    assert_eq!(
+        written.get("accessToken").and_then(|v| v.as_str()),
+        Some(access_a.as_str())
+    );
+    assert_eq!(
+        written.get("refreshToken").and_then(|v| v.as_str()),
+        Some("refresh-a")
+    );
     assert!(provider.require_account(&a.id).unwrap().active);
     assert!(!provider.require_account(&b.id).unwrap().active);
 }

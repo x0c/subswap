@@ -348,12 +348,11 @@ impl CursorProvider {
             Ok(accounts) => accounts,
             Err(error) => return Err(self.restart_old_after_failure(cursor_was_running, error)),
         };
-        let mut conn = match Connection::open(state_db)
-            .map_err(sql_error("open Cursor state database"))
-        {
-            Ok(conn) => conn,
-            Err(error) => return Err(self.restart_old_after_failure(cursor_was_running, error)),
-        };
+        let mut conn =
+            match Connection::open(state_db).map_err(sql_error("open Cursor state database")) {
+                Ok(conn) => conn,
+                Err(error) => return Err(self.restart_old_after_failure(cursor_was_running, error)),
+            };
         let live = match read_blob_from_connection(&conn) {
             Ok(live) => live,
             Err(error) => return Err(self.restart_old_after_failure(cursor_was_running, error)),
@@ -730,9 +729,7 @@ impl Provider for CursorProvider {
 
     fn client_targets(&self) -> Vec<ClientTarget> {
         let (id, display_name) = match &self.source {
-            CredentialSource::Desktop { .. } => {
-                ("cursor_desktop", "Cursor desktop credentials")
-            }
+            CredentialSource::Desktop { .. } => ("cursor_desktop", "Cursor desktop credentials"),
             CredentialSource::Agent { .. } => ("cursor_agent", "Cursor CLI agent credentials"),
         };
         vec![ClientTarget {
