@@ -103,7 +103,7 @@ struct CursorProviderConfig {
 }
 
 impl CursorProvider {
-    pub fn new(store: Arc<dyn CredentialStore>, registry: Arc<AccountRegistry>) -> Self {
+    pub fn new(store: Arc<dyn CredentialStore>, registry: Arc<AccountRegistry>) -> Result<Self> {
         let paths = subswap_core::paths::AppPaths::resolve().ok();
         let refresh_lock_dir = paths
             .as_ref()
@@ -112,18 +112,18 @@ impl CursorProvider {
         let snapshots_dir = paths
             .map(|paths| paths.snapshots_dir())
             .unwrap_or_else(|| std::env::temp_dir().join("subswap-snapshots"));
-        Self::with_config(
+        Ok(Self::with_config(
             store,
             registry,
             CursorProviderConfig {
-                state_db: default_state_db_path(),
+                state_db: default_state_db_path()?,
                 usage_url: USAGE_URL.to_string(),
                 token_url: TOKEN_URL.to_string(),
                 process_control: Arc::new(SystemCursorProcessControl),
                 refresh_lock_dir,
                 snapshots_dir,
             },
-        )
+        ))
     }
 
     fn with_config(
@@ -654,27 +654,38 @@ impl Provider for CursorProvider {
     }
 }
 
-fn default_state_db_path() -> PathBuf {
+fn default_state_db_path() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("SUBSWAP_CURSOR_STATE_DB_PATH") {
-        return PathBuf::from(path);
+        return validate_state_db_override(PathBuf::from(path));
     }
     #[cfg(target_os = "macos")]
     if let Some(home) = directories::BaseDirs::new() {
-        return home
+        return Ok(home
             .home_dir()
-            .join("Library/Application Support/Cursor/User/globalStorage/state.vscdb");
+            .join("Library/Application Support/Cursor/User/globalStorage/state.vscdb"));
     }
     #[cfg(target_os = "windows")]
     if let Some(appdata) = std::env::var_os("APPDATA") {
-        return PathBuf::from(appdata).join("Cursor/User/globalStorage/state.vscdb");
+        return Ok(PathBuf::from(appdata).join("Cursor/User/globalStorage/state.vscdb"));
     }
     #[cfg(target_os = "linux")]
     if let Some(home) = directories::BaseDirs::new() {
-        return home
+        return Ok(home
             .home_dir()
-            .join(".config/Cursor/User/globalStorage/state.vscdb");
+            .join(".config/Cursor/User/globalStorage/state.vscdb"));
     }
-    PathBuf::from("state.vscdb")
+    Err(Error::Config(
+        "cannot resolve the Cursor state database path".into(),
+    ))
+}
+
+fn validate_state_db_override(path: PathBuf) -> Result<PathBuf> {
+    if !path.is_absolute() {
+        return Err(Error::Config(
+            "SUBSWAP_CURSOR_STATE_DB_PATH must be an absolute path".into(),
+        ));
+    }
+    Ok(path)
 }
 
 fn read_live_blob(path: &Path) -> Result<CursorBlob> {

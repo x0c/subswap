@@ -20,13 +20,30 @@ pub struct AppPaths {
 
 impl AppPaths {
     /// 解析默认路径；目录不存在时会自动创建。
+    ///
+    /// 设置 `SUBSWAP_HOME` 时，配置、数据、状态与缓存会全部收口到该绝对路径下。
+    /// 该入口用于跨平台隔离运行与测试，避免 Windows 系统目录无法由 XDG 变量重定向。
     pub fn resolve() -> Result<Self> {
-        let dirs = ProjectDirs::from("dev", "subswap", "subswap")
-            .ok_or_else(|| Error::Config("cannot resolve user directories".into()))?;
-
-        let config_dir = dirs.config_dir().to_path_buf();
-        let data_dir = dirs.data_dir().to_path_buf();
-        let cache_dir = dirs.cache_dir().to_path_buf();
+        let (config_dir, data_dir, cache_dir) = match std::env::var_os("SUBSWAP_HOME") {
+            Some(root) => {
+                let root = PathBuf::from(root);
+                if !root.is_absolute() {
+                    return Err(Error::Config(
+                        "SUBSWAP_HOME must be an absolute path".into(),
+                    ));
+                }
+                (root.join("config"), root.join("data"), root.join("cache"))
+            }
+            None => {
+                let dirs = ProjectDirs::from("dev", "subswap", "subswap")
+                    .ok_or_else(|| Error::Config("cannot resolve user directories".into()))?;
+                (
+                    dirs.config_dir().to_path_buf(),
+                    dirs.data_dir().to_path_buf(),
+                    dirs.cache_dir().to_path_buf(),
+                )
+            }
+        };
         // ProjectDirs 没有 state_dir 抽象，按平台约定挂在 data_dir 下。
         let state_dir = data_dir.join("state");
 

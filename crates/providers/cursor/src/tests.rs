@@ -186,6 +186,16 @@ fn parses_first_party_and_api_as_used_percentages() {
     assert!(quotas.iter().all(|quota| quota.reset_at.is_some()));
 }
 
+#[test]
+fn cursor_state_db_override_requires_an_absolute_path() {
+    assert!(validate_state_db_override(PathBuf::from("relative/state.vscdb")).is_err());
+    let absolute = std::env::temp_dir().join("cursor-state.vscdb");
+    assert_eq!(
+        validate_state_db_override(absolute.clone()).unwrap(),
+        absolute
+    );
+}
+
 struct MockServer {
     base: String,
     requests: Arc<Mutex<Vec<String>>>,

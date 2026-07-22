@@ -13,10 +13,18 @@ fn isolated_subswap(tmp: &tempfile::TempDir) -> Command {
         .env("XDG_DATA_HOME", tmp.path().join("data"))
         .env("XDG_STATE_HOME", tmp.path().join("state"))
         .env("XDG_CACHE_HOME", tmp.path().join("cache"))
+        // Windows 的系统目录解析不接受 XDG 覆盖；统一根目录确保三端都不触碰真实用户状态，
+        // 且每个 TempDir 天然隔离并行测试。
+        .env("SUBSWAP_HOME", tmp.path().join("subswap"))
         .env("CLAUDE_CONFIG_DIR", tmp.path().join("claude"))
         .env("CODEX_HOME", tmp.path().join("codex"))
         // 隔离测试专用一次性目录，绝不碰真实 `~/.kimi-code`。
         .env("KIMI_CODE_HOME", tmp.path().join("kimi"))
+        // Cursor 的平台默认路径不受 HOME/SUBSWAP_HOME 统一覆盖，必须显式指向临时目录。
+        .env(
+            "SUBSWAP_CURSOR_STATE_DB_PATH",
+            tmp.path().join("cursor").join("state.vscdb"),
+        )
         // macOS：把 Claude Code 钥匙串读写重定向到一次性 keychain，绝不碰用户真实登录钥匙串
         // （否则集成测试会弹授权框并污染本机凭证）。
         .env("SUBSWAP_CLAUDE_KEYCHAIN_PATH", test_keychain_path(tmp))
@@ -103,20 +111,11 @@ fn write(path: &Path, contents: &str) {
 }
 
 fn app_config_dir(tmp: &tempfile::TempDir) -> std::path::PathBuf {
-    if cfg!(target_os = "macos") {
-        tmp.path()
-            .join("home/Library/Application Support/dev.subswap.subswap")
-    } else {
-        tmp.path().join("config/subswap")
-    }
+    tmp.path().join("subswap").join("config")
 }
 
 fn app_data_dir(tmp: &tempfile::TempDir) -> std::path::PathBuf {
-    if cfg!(target_os = "macos") {
-        app_config_dir(tmp)
-    } else {
-        tmp.path().join("data/subswap")
-    }
+    tmp.path().join("subswap").join("data")
 }
 
 #[test]
@@ -221,26 +220,7 @@ fn add_api_accepts_legacy_model_as_the_only_model_flag() {
 #[test]
 fn default_with_empty_home_is_quiet_and_does_not_probe_real_accounts() {
     let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().join("home");
-    let config = tmp.path().join("config");
-    let data = tmp.path().join("data");
-    let state = tmp.path().join("state");
-    let cache = tmp.path().join("cache");
-    let claude = tmp.path().join("claude");
-    let codex = tmp.path().join("codex");
-
-    let output = subswap()
-        .env("HOME", &home)
-        .env("XDG_CONFIG_HOME", &config)
-        .env("XDG_DATA_HOME", &data)
-        .env("XDG_STATE_HOME", &state)
-        .env("XDG_CACHE_HOME", &cache)
-        .env("CLAUDE_CONFIG_DIR", &claude)
-        .env("CODEX_HOME", &codex)
-        // 避免测试副作用:别拉起后台 daemon。
-        .env("SUBSWAP_NO_DAEMON", "1")
-        .output()
-        .unwrap();
+    let output = isolated_subswap(&tmp).output().unwrap();
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();

@@ -221,7 +221,9 @@ Linux 的 keyutils 后端按**内核 session keyring** 隔离。`subswapd` 由 C
 背景见 [troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md](../troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md)。
 推论：token 自愈仍不只依赖 daemon；查询/切换路径也能 best-effort 刷新。
 
-### 4.2 配置目录（元数据，明文）
+### 4.2 subswap 应用目录
+
+以下平台路径只是未覆盖时的默认**配置目录**；数据、状态和缓存使用各平台对应的应用目录。`SUBSWAP_HOME` 的统一覆盖、精确目录映射及 Cursor 原生数据库不随之迁移的边界，以 [CONFIG.md](../CONFIG.md) 的「应用目录覆盖（高级）」为唯一来源。
 
 | 平台 | 路径 |
 |---|---|
@@ -229,11 +231,11 @@ Linux 的 keyutils 后端按**内核 session keyring** 隔离。`subswapd` 由 C
 | macOS | `~/Library/Application Support/dev.subswap.subswap/` |
 | Windows | `%APPDATA%\subswap\subswap\config\` |
 
-文件：
-- `registry.toml`：账号元数据列表（label、created_at、priority、provider extra）。
-- `state/snapshots/<ts>/`：切换前快照。
-- `state/state.json`：当前激活账号、daemon 状态、冷却计时。
-- `audit.log`：切换审计。
+目录职责：
+- 配置目录：`config.toml` 与 `registry.toml` 等明文配置、账号元数据。
+- 数据目录：受本机文件权限保护的账号凭证仓库、切换审计、daemon 日志和隔离运行目录。
+- 状态目录：切换快照、daemon PID 与 Provider 跨进程协调状态；当前实现位于数据目录的 `state/` 子目录。
+- 缓存目录：共享的额度查询缓存。
 
 ### 4.3 Provider 私有目录（沿用上游）
 

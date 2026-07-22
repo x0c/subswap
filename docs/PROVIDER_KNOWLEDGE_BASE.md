@@ -465,7 +465,8 @@ Cursor 不是文件型 JSON Provider：登录状态位于桌面应用的 SQLite 
 | Linux | `~/.config/Cursor/User/globalStorage/state.vscdb` |
 | Windows | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` |
 
-测试可用 `SUBSWAP_CURSOR_STATE_DB_PATH` 重定向。subswap 只读写 `ItemTable` 中与身份有关的键：
+测试可用 `SUBSWAP_CURSOR_STATE_DB_PATH` 重定向到绝对临时路径；相对路径会直接报错，完整隔离契约见
+[OPERATIONS_GUIDE.md](OPERATIONS_GUIDE.md) 的「三平台测试隔离」。subswap 只读写 `ItemTable` 中与身份有关的键：
 `cursorAuth/accessToken`、`cursorAuth/refreshToken`、`cursorAuth/cachedEmail`、`cursorAuth/authId`，并同步
 兼容键 `cursor.accessToken` / `cursor.email`；其余 Cursor 设置、扩展和工作区状态不动。CredentialStore 中
 保存的是这四项组成的私有 JSON blob，registry 只存邮箱、稳定身份与展示元数据。
