@@ -196,6 +196,14 @@ fn cursor_state_db_override_requires_an_absolute_path() {
     );
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_lock_violation_is_treated_as_contention() {
+    assert!(is_lock_contended(&std::io::Error::from_raw_os_error(33)));
+    assert!(is_lock_contended(&std::io::Error::from_raw_os_error(997)));
+    assert!(!is_lock_contended(&std::io::Error::from_raw_os_error(5)));
+}
+
 struct MockServer {
     base: String,
     requests: Arc<Mutex<Vec<String>>>,
