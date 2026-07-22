@@ -21,7 +21,7 @@ use crate::render::{compact_error, compact_policy_reason, AutoLine, AutoLineKind
 
 pub async fn run(ctx: &AppContext, json: bool) -> Result<()> {
     // 1. 自动 import 本地激活账号（如果没记录过）。
-    sync_local_active(ctx);
+    sync_local_active(ctx).await;
 
     // 2. 先输出账号骨架，再随 quota 请求完成原地刷新。
     // JSON 模式强制走非交互路径（不渲染 ANSI 骨架），最后统一以 JSON 输出。
@@ -133,9 +133,9 @@ fn auto_swap_success_text(snap: &ProviderSnapshot, to: &AccountId) -> String {
 
 /// 扫本地 ~/.claude / ~/.codex；如果有当前激活账号则 import 到 registry（已存在时 upsert）。
 /// 任一 provider 失败（用户没登录过）静默跳过。
-fn sync_local_active(ctx: &AppContext) {
+async fn sync_local_active(ctx: &AppContext) {
     if default_entry_avoids_keychain_sync() {
-        sync_local_active_metadata(ctx);
+        sync_local_active_metadata(ctx).await;
         return;
     }
     match ctx.claude.import_active(None) {
@@ -162,9 +162,17 @@ fn sync_local_active(ctx: &AppContext) {
         }
         Err(e) => tracing::debug!(err=%e, "skip kimi auto-import"),
     }
+    match ctx.cursor.sync_active_metadata(None).await {
+        Ok(account) => {
+            if let Err(e) = ctx.registry.set_active("cursor", &account.id) {
+                tracing::debug!(err=%e, "skip cursor active marker");
+            }
+        }
+        Err(e) => tracing::debug!(err=%e, "skip cursor auto-import"),
+    }
 }
 
-fn sync_local_active_metadata(ctx: &AppContext) {
+async fn sync_local_active_metadata(ctx: &AppContext) {
     match ctx.claude.sync_active_metadata(None) {
         Ok(account) => {
             if let Err(e) = ctx.registry.set_active("claude", &account.id) {
@@ -188,6 +196,14 @@ fn sync_local_active_metadata(ctx: &AppContext) {
             }
         }
         Err(e) => tracing::debug!(err=%e, "skip kimi active metadata sync"),
+    }
+    match ctx.cursor.sync_active_metadata(None).await {
+        Ok(account) => {
+            if let Err(e) = ctx.registry.set_active("cursor", &account.id) {
+                tracing::debug!(err=%e, "skip cursor active marker");
+            }
+        }
+        Err(e) => tracing::debug!(err=%e, "skip cursor active metadata sync"),
     }
 }
 

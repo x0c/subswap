@@ -20,6 +20,51 @@ use fs2::FileExt;
 use crate::error::{Error, Result};
 use crate::paths::AppPaths;
 
+/// Provider 自定义切换目标的持久化快照条目。
+pub struct SnapshotEntry {
+    pub name: String,
+    pub content: Vec<u8>,
+}
+
+/// 为无法直接套用 [`SwapTarget`] 的目标（例如 SQLite 内的多键事务）保存切换前快照。
+pub fn persist_pre_swap_snapshot(
+    provider_id: &str,
+    entries: Vec<SnapshotEntry>,
+) -> Result<PathBuf> {
+    let root = AppPaths::resolve()?.snapshots_dir();
+    persist_pre_swap_snapshot_in(provider_id, &root, entries)
+}
+
+/// 同 [`persist_pre_swap_snapshot`]，但允许调用方指定快照根目录，供隔离测试使用。
+pub fn persist_pre_swap_snapshot_in(
+    provider_id: &str,
+    root: &Path,
+    entries: Vec<SnapshotEntry>,
+) -> Result<PathBuf> {
+    let ts = Utc::now().format("%Y%m%dT%H%M%S%.6fZ").to_string();
+    let snap_dir = root.join(format!("{provider_id}-{ts}"));
+    fs::create_dir_all(&snap_dir)?;
+    for entry in entries {
+        let name = Path::new(&entry.name);
+        if name.components().count() != 1
+            || !matches!(
+                name.components().next(),
+                Some(std::path::Component::Normal(_))
+            )
+        {
+            return Err(Error::Provider(format!(
+                "invalid snapshot entry name: {}",
+                entry.name
+            )));
+        }
+        let path = snap_dir.join(name);
+        fs::write(&path, entry.content)?;
+        restrict_snapshot_permissions(&path)?;
+    }
+    tracing::info!(snapshot = %snap_dir.display(), "pre-swap snapshot saved");
+    Ok(snap_dir)
+}
+
 /// 写入新内容到目标路径的函数对象。各 Provider 用 [`Box::new`] 自己造，
 /// 把序列化、权限设置等细节封进去。
 pub type SwapWriter<'a> = Box<dyn FnOnce(&Path) -> Result<()> + Send + 'a>;

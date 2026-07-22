@@ -48,7 +48,9 @@ pub async fn run(ctx: &AppContext, id_input: Option<&str>) -> Result<()> {
 fn print_listing(ctx: &AppContext) -> Result<()> {
     let ordered = ctx.list_ordered()?;
     if ordered.is_empty() {
-        println!("No accounts. Log in to Claude Code or Codex CLI, then re-run `subswap`.");
+        println!(
+            "No accounts. Sign in to a supported client, then run `subswap login <provider>`."
+        );
         return Ok(());
     }
 

@@ -20,6 +20,7 @@ subswap-provider-common.workspace = true
 subswap-provider-codex.workspace = true
 subswap-provider-claude.workspace = true
 subswap-provider-kimi.workspace = true
+subswap-provider-cursor.workspace = true
 subswap-daemon.workspace = true
 
 anyhow.workspace = true

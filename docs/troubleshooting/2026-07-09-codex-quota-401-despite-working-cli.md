@@ -2,66 +2,62 @@
 
 ## 现象
 
-`subswap` 默认入口里某个 **active** 的 Codex 账号，用量一列显示
-`(cached ~Xh ago · 401 auth failed)`，只挂着上次成功查询时的旧缓存。但用户当时**正在用同一个
-账号直接跑 `codex` CLI**，对话完全正常，没有任何登录失效提示。
+`subswap` 默认入口里某个 **active** Codex 账号只显示旧缓存与 `401 auth failed`，但同一账号在 Codex CLI、
+VS Code 扩展或桌面端仍能正常对话；退出 Codex 后再查，额度又恢复。
 
 ## 一句话结论
 
-不是 subswap 的 bug，也不是 [troubleshooting/2026-06-18](2026-06-18-live-capture-clobbers-refresh-token.md)
-那种 refresh token 被覆盖写死的情况。根因是：**codex-cli 不保证每次真正对话请求之后都把刷新后的
-access_token 落盘写回 `~/.codex/auth.json`**——它可能在内存里刷新/沿用了服务端能接受的 token 完成对话，
-但磁盘上这份文件仍是旧的、按 JWT `exp` claim 早已过期的那份。而 subswap 查用量走的是完全独立的一条
-HTTP 请求（见下），直接读磁盘上这份"过期"凭证去打 `wham/usage`，天然拿 401——跟 codex-cli 自己的对话
-请求是否成功没有必然关系。
+账号通常没有失效。旧版 subswap 只读 `~/.codex/auth.json` 里的 access token 直连 `wham/usage`，而官方
+Codex 进程可能已在内存中持有更新认证状态，磁盘副本却暂未落盘；退出客户端后落盘，所以查询看似自愈。
+现已改为 active 账号优先通过官方 app-server 读取额度，并只在官方安全边界内刷新一次。
 
-## 排查方法（确认是不是这种情况，而不是账号真失效）
+## 根因
 
-1. 解出 `~/.codex/auth.json`（或该账号在 FileStore 里的 `codex:<id>:auth_json` 快照）里
-   `tokens.access_token` 这段 JWT 的 `exp` claim（base64url 解 payload 即可），跟当前时间比：
-   - `exp` 已过 → 和 subswap 显示的 `cached ~Xh ago` 时长基本吻合，说明确实是这份文件里的
-     token 过期了，不是查询逻辑本身出错。
-2. 看 `~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl` 有没有**最近时间点**的会话文件——
-   有，说明 codex-cli 用同一份 `CODEX_HOME` 目录，确实刚跑通过真实对话。
-3. 对比这次最近会话的时间戳和 `auth.json` 的 mtime：如果会话时间**晚于** `auth.json` 最后修改时间，
-   说明这次对话没有触发 codex-cli 往这份文件里写回新 token——命中本问题。
-4. 排除项：如果 FileStore 里这个账号的 `refresh_token` 字段本身是空的，或者切走过账号导致
-   `capture_live_into_store` 覆盖，那是 [2026-06-18](2026-06-18-live-capture-clobbers-refresh-token.md)
-   那个问题，走那边的排查路径，不是本条。
+对话与旧用量查询不是同一条认证路径：
 
-## 为什么会这样（技术细节）
+- Codex 原生客户端负责 OAuth 与一次性 refresh token 轮换，运行中的进程可能比磁盘 `auth.json` 更新；
+- 旧 subswap 另起 HTTP 请求，把磁盘 access token 发给 `wham/usage`；这枚 token 过期就会 401；
+- 强行让 subswap 自己调用 OAuth token 端点，或简单启动/关闭另一个 Codex 进程，都无法证明不会与用户正在运行的
+  客户端同时消耗同一枚一次性 refresh token，可能把账号写成必须重登。
 
-subswap 查 Codex 用量的实现（`crates/providers/codex/src/openai_usage.rs::fetch_usage_raw`）：
+因此「客户端能对话」与「旧 subswap 能查额度」并不矛盾；退出后恢复，通常只是官方进程终于把状态同步回磁盘。
 
-```
-GET https://chatgpt.com/backend-api/wham/usage
-Authorization: Bearer <access_token>
-ChatGPT-Account-Id: <id>
-```
+## 当前修复
 
-这是 subswap 自己发起的独立请求，跟 codex-cli 内部怎么维护它自己的会话 token 完全无关。
-`crates/providers/codex/src/lib.rs::query_quota` → `raw_auth_for_account` → `read_active_auth_if_matches`
-拿到的就是 `~/.codex/auth.json` 磁盘上当前那份原文，subswap **不会**、也没法自己刷新它
-（Codex OAuth client_id 不公开，见下方「Codex Token 刷新（subswap 不做）」章节）。
+active 账号按以下顺序查询：
 
-本次实测确认：codex-cli 0.142.3 在磁盘上这份 token 的 JWT `exp` 已过期约 33 小时之后，
-仍然用同一个 `CODEX_HOME` 正常完成了对话，且完成后 `auth.json` 的 mtime 没有变化。说明 ChatGPT
-后端对「聊天/对话」接口的 token 校验，和对 `wham/usage` 这类用量查询接口的校验，**不是同一套
-严格程度**——或者 codex-cli 本身做了内存态的刷新但没有持久化。两种可能哪个是真相无法从 subswap
-这一侧确认，但结论一致：**只要 codex-cli 这次没有把新 token 写回磁盘，subswap 的用量查询就会拿到
-一份"看起来过期"的凭证，查 401 是预期内的行为，不代表账号真的失效。**
+1. `<CODEX_HOME>/app-server-control/app-server-control.sock` 存在时，运行
+   `codex app-server proxy --sock <socket>`，经官方 JSONL RPC 调 `account/rateLimits/read`，直接复用运行中
+   官方进程的最新认证状态。
+2. 没有控制 socket、且确认没有普通 Codex 进程时，短暂启动 `codex app-server --stdio`。若额度请求明确
+   认证失败，调 `account/read {refreshToken:true}` 让官方客户端强刷一次，再重试一次额度。
+3. 没有控制 socket、但普通 Codex 正在运行时，仍用临时 app-server 查询，不过给它一个 `0600` 临时
+   `CODEX_HOME`：复制 live `auth.json` 后把 refresh token 清空。这样可以尝试现有 access token，却不可能
+   抢刷或覆盖真实凭证。
+4. 官方通道不可用、认证失败或方法不兼容时才回退旧 `wham/usage`；官方返回 429 或其他服务错误时直接返回，
+   **不再 fallback 发第二条请求**，避免扩大限流。
 
-## 结论 / 处理
+parked 账号仍走 `wham/usage`。原因不是功能遗漏：共享引擎此处只有 access token，无法把官方刷新后轮换出的
+完整凭证安全吸收回账号仓库；临时拼装残缺 `auth.json` 会制造 refresh token 分叉。
 
-- 无需改代码。等 codex-cli 下一次真正触发落盘刷新（或用户手动 `codex login` 重新登录一次），
-  `auth.json` 更新后 subswap 下次查询就会恢复正常。
-- 排查时不要一看到 `401 auth failed` 就当账号失效处理——先按上面的步骤确认是不是这种
-  「客户端能用、但没落盘」的情况，避免误导用户去重新登录一个其实还活着的账号。
+## 排查方法
+
+1. 先确认账号是 active 还是 parked。只有 active 会使用官方 app-server；parked 的 401 仍可能要求重登。
+2. active 仍异常时检查本机 `codex` 是否足够新、是否支持 `app-server`、`app-server proxy` 和
+   `account/rateLimits/read`；不支持时会走兼容回退。
+3. 若显示 429，不要重登或连续重试：这是官方额度服务限流，当前实现不会再切换通道放大请求。
+4. 若官方刷新也明确拒绝认证，再在 Codex 中重新登录，然后运行 `subswap` 重新导入。
+5. 若账号仓库里的 refresh token 本身缺失，或曾被 live 不完整快照覆盖，走
+   [2026-06-18 live capture 覆写 refresh token](2026-06-18-live-capture-clobbers-refresh-token.md)，不是本条。
+
+## 不采用的方案
+
+- **subswap 直连 OAuth token 端点**：复制非公开 OAuth 细节，且无法与官方进程共享锁。
+- **后台启动 Codex，等刷新后再关掉**：启动不保证触发刷新或落盘；并发时还可能抢刷，且会干扰用户会话。
+- **照搬其他账号工具的私有锁**：该锁只约束使用同一工具的进程，官方 Codex 不认识，不能解决跨工具竞争。
 
 ## 关联
 
-- [PROVIDER_KNOWLEDGE_BASE.md](../PROVIDER_KNOWLEDGE_BASE.md) 的「Codex Token 刷新（subswap 不做）」：
-  subswap 依赖 codex-cli 自己刷新并落盘这一假设的由来；本条是这个假设不总是成立的一个实测案例。
-- [2026-06-18 live capture 覆盖 refresh token](2026-06-18-live-capture-clobbers-refresh-token.md)：
-  同样表现为 Codex 账号查询异常，但根因是 subswap 自己把 refresh token 覆盖写死，跟本条要先
-  分清楚。
+- [PROVIDER_KNOWLEDGE_BASE.md](../PROVIDER_KNOWLEDGE_BASE.md)「Codex 官方额度通道与刷新边界」。
+- [2026-06-08 refresh token already used](2026-06-08-codex-refresh-token-already-used.md)：为什么不能带外抢刷。
+- [2026-06-18 live capture 覆写 refresh token](2026-06-18-live-capture-clobbers-refresh-token.md)：相似表现、不同根因。

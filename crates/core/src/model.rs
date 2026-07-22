@@ -127,6 +127,10 @@ pub enum QuotaWindow {
     SevenDay,
     /// 月度窗口（Codex 等）。
     Month,
+    /// Cursor 官方模型用量。
+    FirstPartyModels,
+    /// Cursor API 用量。
+    Api,
     /// 其他自定义窗口。
     Custom,
 }

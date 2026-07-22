@@ -21,7 +21,7 @@
 
 | 启动对象 | 命令 | 入口 | 端口 | 外部依赖 | 本地可关闭项 | 置信度 |
 |---|---|---|---|---|---|---|
-| CLI 默认入口 | `subswap` | `crates/cli/src/main.rs` | 无 | 本机 Claude/Codex 登录文件、subswap 配置目录 | 可设 `SUBSWAP_NO_DAEMON=1` 禁止默认入口拉起 daemon | 已验证来源：README/AGENTS/源码 |
+| CLI 默认入口 | `subswap` | `crates/cli/src/main.rs` | 无 | 本机 Claude/Codex/Kimi/Cursor 登录状态、subswap 配置目录 | 可设 `SUBSWAP_NO_DAEMON=1` 禁止默认入口拉起 daemon；Windows 本就无 daemon | 已验证来源：README/AGENTS/源码 |
 | CLI 子命令 | `subswap --help`、`subswap swap`、`subswap run`、`subswap doctor` | `crates/cli/src/main.rs` | 无 | 视子命令读取本地账号文件或钥匙串 | 测试中使用临时 HOME、临时客户端目录和一次性 keychain | 已验证来源：CLI 集成测试 |
 | daemon | `subswap __daemon` 或 `subswapd` | `crates/daemon/src/main.rs`、`crates/daemon/src/unix.rs` | 无 | 本地账号 store、Provider usage API、配置文件 | macOS 默认不自动拉起；可用 `SUBSWAP_NO_DAEMON=1` 禁止 | 已验证来源：README/AGENTS/源码 |
 | release 二进制 | `target/release/subswap`、`target/release/subswapd` | release profile | 无 | Rust target、Linux 需 `libdbus-1-dev pkg-config` | 本机安装前可只跑 release build | 已验证来源：release workflow |
@@ -31,6 +31,7 @@
 - Rust 工具链：workspace 声明 `rust-version = "1.80"`，CI 使用 stable。
 - Linux 依赖：CI 在 Linux 安装 `libdbus-1-dev pkg-config`，否则 keyring 相关依赖可能链接失败。
 - daemon 副作用：本地运行默认入口时如只做测试，优先设置 `SUBSWAP_NO_DAEMON=1`，避免留下后台进程。
+- Windows 只发布 `subswap.exe`，不构建 Unix-only 的 `subswapd`；CLI 与四个 Provider 由 Windows CI 实测。
 - 真实账号隔离：新增会触发 Claude OAuth 或 Codex 登录状态的集成测试时，必须沿用 `crates/cli/tests/cli_surface.rs::isolated_subswap` 的隔离环境，特别是 `SUBSWAP_CLAUDE_KEYCHAIN_PATH`。
 - macOS 钥匙串：测试用一次性 keychain，不得触碰真实 `Claude Code-credentials` 登录钥匙串。
 
@@ -136,6 +137,18 @@ brew tap x0c/tap && brew install subswap
 brew upgrade subswap
 ```
 
+## Windows 一键安装
+
+公开安装入口：
+
+```powershell
+irm https://raw.githubusercontent.com/x0c/subswap/main/install.ps1 | iex
+```
+
+脚本从最新 GitHub Release 下载 Windows zip，安装到当前用户的 LocalAppData 程序目录并更新用户 `PATH`。
+改脚本后必须在 Windows CI 的临时安装目录真实跑一遍，再执行 `subswap --version`；仅做 PowerShell 语法检查不算验收。
+Windows release 只有 CLI，文档和安装脚本都不得暗示包含后台 daemon。
+
 ## 通用改动验证套路
 
 - 改 CLI 命令面：先跑 `cargo test --workspace`，再看 `subswap --help` 输出；删除或新增命令时同步 `docs/CLI.md`。
@@ -148,6 +161,6 @@ brew upgrade subswap
 ## 未确认项
 
 - 本次 doc-init 未真实执行 release 构建、本机覆盖安装或 daemon 冒烟；本次文档改动已用文档 lint、`cargo check --workspace` 和 `cargo test --workspace` 验证。
-- Windows release 由 workflow 打包，但项目 README 明确 Windows 未测试；不要把 Windows 视为本地高置信支持平台。
+- Windows 的本机手工冒烟仍依赖 CI 环境；当前支持结论来自三平台测试矩阵、Windows release 构建与一键安装链路，daemon 明确不在 Windows 支持范围内。
 
 <!-- 该文档由 doc-init 生成于 2026-06-20；定位：AI 修改 subswap 运行、验证、发布流程前的快速参考文档 -->

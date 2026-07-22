@@ -30,6 +30,7 @@ use subswap_core::{
 };
 use subswap_provider_claude::ClaudeProvider;
 use subswap_provider_codex::CodexProvider;
+use subswap_provider_cursor::CursorProvider;
 use subswap_provider_kimi::KimiProvider;
 use tokio::signal::unix::{signal, SignalKind};
 
@@ -71,10 +72,12 @@ pub async fn run() -> Result<()> {
     let claude = Arc::new(ClaudeProvider::new(store.clone(), registry.clone()));
     let codex = Arc::new(subswap_provider_codex::new(store.clone(), registry.clone()));
     let kimi = Arc::new(subswap_provider_kimi::new(store.clone(), registry.clone()));
+    let cursor = Arc::new(CursorProvider::new(store.clone(), registry.clone()));
     let mut providers = ProviderRegistry::new();
     providers.register(claude.clone());
     providers.register(codex.clone());
     providers.register(kimi.clone());
+    providers.register(cursor.clone());
 
     let mut state = DaemonState::new();
 
@@ -100,6 +103,7 @@ pub async fn run() -> Result<()> {
             &claude,
             &codex,
             &kimi,
+            &cursor,
             &audit,
             &mut state,
             &policy,
@@ -144,6 +148,7 @@ async fn run_cycle(
     claude: &Arc<ClaudeProvider>,
     codex: &Arc<CodexProvider>,
     kimi: &Arc<KimiProvider>,
+    cursor: &Arc<CursorProvider>,
     audit: &AuditLog,
     state: &mut DaemonState,
     policy: &PolicyConfig,
@@ -160,6 +165,9 @@ async fn run_cycle(
     // current-thread runtime 上会直接 panic,此处沿用同一取舍)。
     reconcile_file_blob_provider(codex, "codex").await;
     reconcile_file_blob_provider(kimi, "kimi").await;
+    if let Err(e) = cursor.reconcile_active_from_live().await {
+        tracing::debug!(err = %e, "cursor live-credential reconcile skipped");
+    }
 
     // (a) 收集每个 Provider 的快照。query_quota 失败的账号 fetch_error 带原因。
     let snapshots = build_snapshots(providers).await;

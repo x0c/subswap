@@ -153,7 +153,9 @@ pub fn render_to_string(
     let mut out = String::new();
     let has_any = snapshots.iter().any(|s| !s.accounts.is_empty());
     if !has_any {
-        out.push_str("No accounts. Log in to Claude Code or Codex CLI, then re-run `subswap`.\n");
+        out.push_str(
+            "No accounts. Sign in to a supported client, then run `subswap login <provider>`.\n",
+        );
         return out;
     }
 
@@ -382,11 +384,16 @@ pub fn format_quota_compact(q: &Quota, color: bool) -> String {
         QuotaWindow::FiveHour => "5h",
         QuotaWindow::SevenDay => "7d",
         QuotaWindow::Month => "mo",
+        QuotaWindow::FirstPartyModels => "First-Party Models",
+        QuotaWindow::Api => "API",
         QuotaWindow::Custom => "--",
     };
-    // 显示「余量」而非用量：q.used 是已用百分比(limit=100)，余量 = limit - used。
-    // 不再打印 ok/warn/full 文字块——严重程度由余量数字本身 + 颜色(warn 黄 / full 红)传达。
-    let usage_plain = if q.limit > 0 {
+    // Cursor 的两个套餐桶由官方直接定义为「已用百分比」，保留原语义展示；
+    // 其他 Provider 延续 subswap 的统一「余量」视图。
+    let shows_used = matches!(q.window, QuotaWindow::FirstPartyModels | QuotaWindow::Api);
+    let usage_plain = if q.limit > 0 && shows_used {
+        format!("{:>3}% used", q.used)
+    } else if q.limit > 0 {
         format!("{:>3}% left", q.limit.saturating_sub(q.used))
     } else {
         "--".into()
@@ -428,7 +435,9 @@ fn window_display_order(window: QuotaWindow) -> u8 {
         QuotaWindow::FiveHour => 0,
         QuotaWindow::SevenDay => 1,
         QuotaWindow::Month => 2,
-        QuotaWindow::Custom => 3,
+        QuotaWindow::FirstPartyModels => 3,
+        QuotaWindow::Api => 4,
+        QuotaWindow::Custom => 5,
     }
 }
 
@@ -524,6 +533,19 @@ mod tests {
         assert!(text.contains("reset in 2h"));
         assert!(!text.contains("ok"), "status text block must be gone");
         assert!(!text.contains('\x1b'), "plain mode must not emit escapes");
+    }
+
+    #[test]
+    fn cursor_quota_keeps_official_used_percentage_labels() {
+        let first_party = format_quota_compact(
+            &quota(QuotaWindow::FirstPartyModels, 59, 100, QuotaStatus::Ok),
+            false,
+        );
+        let api = format_quota_compact(&quota(QuotaWindow::Api, 57, 100, QuotaStatus::Ok), false);
+        assert!(first_party.starts_with("First-Party Models [ 59% used"));
+        assert!(api.starts_with("API [ 57% used"));
+        assert!(!first_party.contains("left"));
+        assert!(!api.contains("left"));
     }
 
     #[test]

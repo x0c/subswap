@@ -115,7 +115,7 @@ fn window_ttl(window: QuotaWindow) -> Duration {
     match window {
         QuotaWindow::FiveHour | QuotaWindow::Custom => Duration::hours(5),
         QuotaWindow::SevenDay => Duration::days(7),
-        QuotaWindow::Month => Duration::days(30),
+        QuotaWindow::Month | QuotaWindow::FirstPartyModels | QuotaWindow::Api => Duration::days(30),
     }
 }
 

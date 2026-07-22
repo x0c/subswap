@@ -5,6 +5,7 @@
 //! - 整段 `~/.codex/auth.json` 作为 opaque blob 进 store，subswap 不假设 schema 稳定。
 //! - 切换 = flock → snapshot 旧文件 → 原子写新 auth.json → 任一步失败回滚。
 
+mod app_server;
 mod codex_files;
 mod legacy;
 mod openai_usage;

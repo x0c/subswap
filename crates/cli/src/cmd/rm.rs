@@ -23,6 +23,7 @@ pub async fn run(ctx: &AppContext, id_input: &str) -> Result<()> {
     let fields: &[&str] = match acc.provider.as_str() {
         "claude" => &["credentials_json", "api_key"],
         "codex" => &["auth_json"],
+        "cursor" | "kimi" => &["blob"],
         _ => &[],
     };
     for f in fields {

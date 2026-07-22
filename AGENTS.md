@@ -37,16 +37,23 @@
   由 `materialize_isolated` 调 `mark_onboarding_complete` 写入；改隔离物化流程时不得删除该调用。
   详见 [docs/design/ACCOUNT_ISOLATION_DESIGN.md](docs/design/ACCOUNT_ISOLATION_DESIGN.md) §2.3。
 - `Provider::activate` 必须先写快照，任一目标写失败要回滚。
-- refresh token 是一次性轮换：subswap 对 active 账号只读不刷，由原生客户端唯一轮换。
+- refresh token 是一次性轮换，active 账号默认只读不刷；允许自愈的唯一例外是**复用原生客户端官方协调机制**，
+  绝不能由 subswap 自创一套互不相认的锁或并行抢刷：Codex 通过官方 app-server 查询/刷新，Kimi 只在能
+  识别并持有当前版本官方跨进程锁时刷新，Cursor active 账号只重读 live、不刷新。
   `activate` 覆盖 live 文件前先 capture-on-leave 回灌 live 凭证进 owner 账号 store；
-  daemon keepalive / `query_quota` 401 自愈只对 parked 账号刷新。daemon 每轮还做 capture-on-arrival
-  (`reconcile_active_from_live`，只 live→store) 补「绕过 swap 离开」的缺口；refresh 回 `invalid_grant`
-  时死 token 守卫止住反复刷的风暴并显示 `needs re-login`。细节见
+  parked 账号按各 Provider 的串行化边界刷新；Cursor 必须使用 subswap 跨进程锁。daemon 每轮还做 capture-on-arrival
+  (`reconcile_active_from_live`，只 live→store) 补「绕过 swap 离开」的缺口；refresh 被上游拒绝时必须有
+  死 token 守卫止住反复刷的风暴并显示 `needs re-login`，Kimi/Cursor 的跨进程守卫只保存 refresh token
+  SHA-256 指纹、不保存 secret。细节见
   [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) 的「Refresh token 轮换」。
   **`capture_live_into_store` 绝不能用缺 refresh 的 live 快照覆盖 store 里有 refresh 的副本**（会把账号静默写死），
-  两个 provider 各有守卫，改此逻辑前见
+  各 Provider 都必须保留守卫，改此逻辑前见
   [docs/troubleshooting/2026-06-18-live-capture-clobbers-refresh-token.md](docs/troubleshooting/2026-06-18-live-capture-clobbers-refresh-token.md)。
 - 新 Provider 只能放在 `crates/providers/<id>`，再到 `AppContext::build()` 注册，并在默认入口同步本地 active。
+  Cursor 这类凭证位于 SQLite、切换还要协调 GUI 生命周期的 Provider 必须独立实现 `Provider`，不能硬塞进
+  文件型 JSON 共享引擎；Cursor 也不支持 `subswap run/shell/env` 隔离运行。细节见
+  [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) 的「Cursor」与
+  [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) 的「扩展新 Provider」。
 - 文件型（凭证是本地一个 JSON blob、靠覆盖文件切换）provider 的切换机制统一在 `crates/providers/common`
   （`FileBlobProvider<A>` 引擎）。新增此类 provider（如未来第三个）**只写一个 `FileBlobRuntime` 实现**
   （路径、元数据解析、刷新、usage 查询等差异点），在 `AppContext::build()` 的 provider 列表注册一行，
@@ -122,6 +129,7 @@ crates/providers/common/  文件型 OAuth 账号切换共享引擎（FileBlobPro
 crates/providers/codex/   Codex / ChatGPT Provider（adapter，跑在 common 引擎上）
 crates/providers/claude/  Claude / Anthropic Provider（keychain 特化，独立于 common 引擎）
 crates/providers/kimi/    Kimi / Moonshot Provider（adapter，跑在 common 引擎上）
+crates/providers/cursor/  Cursor Provider（SQLite + GUI 生命周期特化，独立于 common 引擎）
 docs/                     中文项目文档
 ```
 
@@ -129,13 +137,13 @@ docs/                     中文项目文档
 
 | 文档 | 用途 |
 |---|---|
-| [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) | 改、评审、分析或排查 Provider 切换、认证、额度、refresh token、自定义 API、Claude/Codex/Kimi 本地激活文件、或文件型 OAuth 切换共享引擎（`crates/providers/common`）前必读 |
+| [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) | 改、评审、分析或排查 Provider 切换、认证、额度、refresh token、自定义 API、Claude/Codex/Kimi/Cursor 本地激活状态、原生客户端并发协调、或文件型 OAuth 切换共享引擎（`crates/providers/common`）前必读 |
 | [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) | 改、评审或分析 workspace 分层、Provider 抽象、核心数据流、凭证文件布局、新 Provider 接入前必读 |
 | [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md) | 改、评审或排查自动切换候选筛选、阈值、manual_only、防抖/振荡刹车、daemon token 保活，或排查「默认入口渐进式重判 / 一次 subswap 多次切换 / 连跑结果不同 / 卡在耗尽号 / 账号间无限横跳(A→B→A 振荡)」前必读 |
 | [docs/design/PREWARM_DESIGN.md](docs/design/PREWARM_DESIGN.md) | 设计、评审或实现窗口预热、预热阈值、预热通知与自动切换协同时必读 |
 | [docs/design/ACCOUNT_ISOLATION_DESIGN.md](docs/design/ACCOUNT_ISOLATION_DESIGN.md) | 改、评审、分析或排查 `subswap run`/`shell`/`env` 账号环境隔离、checkout 锁、daemon 避让、macOS 钥匙串命名空间、Claude resume 会话共享前必读 |
 | [docs/CONFIG.md](docs/CONFIG.md) | 改、评审或排查 `config.toml` 字段、热加载、默认阈值、轮询间隔、quota 查询节流和配置生效问题前必读 |
-| [docs/CLI.md](docs/CLI.md) | 改、评审、分析或排查 CLI 命令面、交互向导、默认入口输出、`subswapd` 辅助进程、账号环境隔离命令前必读 |
+| [docs/CLI.md](docs/CLI.md) | 改、评审、分析或排查 CLI 命令面、Provider 登录/导入语义、默认入口额度输出、`subswapd` 辅助进程、账号环境隔离命令或 Cursor 不支持隔离运行的边界前必读 |
 | [docs/OPERATIONS_GUIDE.md](docs/OPERATIONS_GUIDE.md) | 改、评审或排查本地构建、测试、release 构建、本机覆盖安装、daemon 冒烟、CI/Release 发布流程、Homebrew tap formula 更新机制或 `HOMEBREW_TAP_TOKEN` 配置前必读 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 规划、评审或同步里程碑范围、已完成能力和后续功能优先级前必读 |
 | [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（10 篇记录：keychain ACL 中毒、refresh token 覆写、429 vs invalid_grant、TOML null、Codex 用量 401 但 CLI 能正常用等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
