@@ -388,12 +388,8 @@ pub fn format_quota_compact(q: &Quota, color: bool) -> String {
         QuotaWindow::Api => "API",
         QuotaWindow::Custom => "--",
     };
-    // Cursor 的两个套餐桶由官方直接定义为「已用百分比」，保留原语义展示；
-    // 其他 Provider 延续 subswap 的统一「余量」视图。
-    let shows_used = matches!(q.window, QuotaWindow::FirstPartyModels | QuotaWindow::Api);
-    let usage_plain = if q.limit > 0 && shows_used {
-        format!("{:>3}% used", q.used)
-    } else if q.limit > 0 {
+    // 所有 Provider 统一显示余量；数据层 `Quota.used` 仍是已用百分比，仅在展示层翻转。
+    let usage_plain = if q.limit > 0 {
         format!("{:>3}% left", q.limit.saturating_sub(q.used))
     } else {
         "--".into()
@@ -536,16 +532,16 @@ mod tests {
     }
 
     #[test]
-    fn cursor_quota_keeps_official_used_percentage_labels() {
+    fn cursor_quota_shows_remaining_like_other_providers() {
         let first_party = format_quota_compact(
             &quota(QuotaWindow::FirstPartyModels, 59, 100, QuotaStatus::Ok),
             false,
         );
         let api = format_quota_compact(&quota(QuotaWindow::Api, 57, 100, QuotaStatus::Ok), false);
-        assert!(first_party.starts_with("First-Party Models [ 59% used"));
-        assert!(api.starts_with("API [ 57% used"));
-        assert!(!first_party.contains("left"));
-        assert!(!api.contains("left"));
+        assert!(first_party.starts_with("First-Party Models [ 41% left"));
+        assert!(api.starts_with("API [ 43% left"));
+        assert!(!first_party.contains("used"));
+        assert!(!api.contains("used"));
     }
 
     #[test]

@@ -53,9 +53,8 @@ eval "$(subswap env codex/bob@x.com)"   # 临时把当前 shell 指向某 codex 
 账号。之后可用通用编号或 `cursor/<邮箱>` 执行 `swap` / `rm`。
 
 Cursor 正在运行时，`swap` 会先请求它正常退出，等待进程完全结束后再切换账号，成功后自动重新打开；任一步失败
-都会恢复原账号状态，避免 Cursor 退出时把内存中的旧凭证写回磁盘。默认入口按上游口径显示两个**已用百分比**：
-`First-Party Models [ 59% used ]` 与 `API [ 57% used ]`，并显示同一账单周期的重置时间。这两个窗口是官方命名，
-特意不转换成其他 Provider 默认使用的 `% left`。
+都会恢复原账号状态，避免 Cursor 退出时把内存中的旧凭证写回磁盘。默认入口对两个官方窗口统一显示**余量**：
+`First-Party Models [ 41% left ]` 与 `API [ 43% left ]`（上游仍是已用百分比，展示层翻转），并显示同一账单周期的重置时间。
 
 ## Claude 自定义 API
 

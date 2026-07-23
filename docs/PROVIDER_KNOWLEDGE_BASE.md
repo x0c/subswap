@@ -15,14 +15,14 @@
 | 上游字段 | **已用 %**（0~100） | Claude `utilization`（`oauth.rs::WindowUsage`）；Codex `used_percent` / `percent`（`openai_usage.rs`，注释原文「已用百分比」） |
 | `Quota` 模型 | **已用**：`used`(0~100) + `limit`(固定 100) | `make_quota`（claude）/ `query_quota`（codex）都把已用% 写进 `Quota.used` |
 | 状态判定 | 基于**已用%**：`used ≥ quota.warn_pct`(默认 90)→Warn，`≥ quota.exhausted_pct`(默认 100)→Exhausted | `QuotaStatus::from_percent` |
-| CLI 展示 | Claude/Codex/Kimi 默认显示**余量** `{limit - used}% left`；Cursor 的两个官方窗口保留**已用** `{used}% used` | `render.rs::format_quota_compact` |
+| CLI 展示 | 所有 Provider 统一显示**余量** `{limit - used}% left`（含 Cursor 的 `First-Party Models` / `API`） | `render.rs::format_quota_compact` |
 
-记忆点：**所有 Provider 的数据语义都是已用**，不同的只是展示口径。Claude/Codex/Kimi 的默认窗口面向
-「还有多少可用」显示余量；Cursor 上游本身把 `First-Party Models` / `API` 定义成用量占比，界面保留
-`59% used` 这种官方口径，方便与 Cursor 设置页逐项对照。改展示格式时**不要翻转 `Quota.used` 的语义**。
+记忆点：**所有 Provider 的数据语义都是已用**，CLI 展示层统一翻成余量。Cursor 上游字段仍是
+`autoPercentUsed` / `apiPercentUsed`，写入 `Quota.used` 后展示时再算 `{100 - used}% left`，与
+Claude/Codex/Kimi 口径一致。改展示格式时**不要翻转 `Quota.used` 的语义**。
 
-**既定 UX 约定（勿改回）**：除 Cursor 两个官方窗口外，CLI 默认显示**余量** `{N}% left`，不打印
-ok/warn/full 文字；Cursor 固定显示 `{N}% used`。两者的严重程度都由数字 + 颜色传达，状态文字块冗余。
+**既定 UX 约定（勿改回）**：CLI 默认统一显示**余量** `{N}% left`，不打印 ok/warn/full 文字；
+严重程度由数字 + 颜色传达，状态文字块冗余。
 
 ---
 
@@ -518,11 +518,11 @@ macOS 用系统退出事件，Linux 用 TERM，Windows 用不强杀的 `taskkill
 usage 查询从 access token 的 WorkOS subject 生成官方 session cookie，不使用 Bearer header。解析
 `individualUsage.plan`（兼容 snake_case / `planUsage`）里的：
 
-- `autoPercentUsed` → `First-Party Models`，按 `{N}% used` 展示；
-- `apiPercentUsed` → `API`，按 `{N}% used` 展示；
+- `autoPercentUsed` → `First-Party Models`，写入 `Quota.used` 后 CLI 按 `{100-N}% left` 展示；
+- `apiPercentUsed` → `API`，写入 `Quota.used` 后 CLI 按 `{100-N}% left` 展示；
 - `billingCycleEnd` → 两个窗口共同的 reset 时间。
 
-这两个百分比写入统一 `Quota.used`，没有额外翻转；CLI 只为 Cursor 保留官方「已用」口径。
+这两个百分比写入统一 `Quota.used`，没有额外翻转；CLI 展示层与其他 Provider 一样转成余量。
 
 active 查询 401 时**绝不刷新**：只重读 live 数据库。若 Cursor 已经自行轮换 access token，则 capture 回仓库并
 用新 token 重试一次；否则返回认证错误。parked 账号没有原生客户端维护，允许在 subswap 自己的跨进程文件锁
