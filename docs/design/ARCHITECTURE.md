@@ -107,8 +107,8 @@ parked-only 刷新、隔离导出/吸收），各自只实现 `FileBlobRuntime` 
 
 默认入口的交互要求：
 - 不能等所有网络请求结束后才第一次输出；账号列表必须先出现。
-- quota 行使用稳定、面向人读的块状字段；Claude/Codex/Kimi 显示余量（如 `5h [ 41% left ]`），
-  Cursor 的官方窗口显示用量（如 `First-Party Models [ 59% used ]`）。
+- quota 行使用稳定、面向人读的块状字段；所有 Provider 统一显示余量（如 `5h [ 41% left ]`、
+  `First-Party Models [ 41% left ]`）。
 - 没有有效数据的窗口不显示；例如 Claude `extra_usage` 缺 utilization 时不输出 `mo=?`。
 - reset 默认显示相对时间（`in 69m` / `in 4h` / `in 3d`），避免绝对时间列挤压。
 
