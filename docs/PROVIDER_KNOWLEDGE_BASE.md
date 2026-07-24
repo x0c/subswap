@@ -259,6 +259,10 @@ subswap **不实现 OpenAI OAuth**、不硬编码 OAuth client id，也不直接
 parked 账号仍只走兼容查询：共享引擎传给额度适配器的只有 access token，若为调用官方服务临时拼一个残缺
 `auth.json`，刷新后的完整 token 对无法安全吸收回账号仓库，反而会制造一次性 refresh token 分叉。
 
+外层 `quota.fetch_timeout_ms`（默认 20s）必须盖住本会话上限：过短会把尚在跑的 app-server 查询取消成
+可重试的 `quota fetch timeout`，默认入口最终显示 `timeout after N attempts` 并回落旧缓存。Kimi active
+401 自愈（探测官方锁协议 + 持锁刷新）同样受该超时约束。
+
 这解决了「Codex 对话正常但磁盘 token 滞后，subswap 查询 401」的大多数 active 场景；若官方刷新也拒绝，
 才需要在 Codex 中重新登录。完整排查与方案演进见
 [troubleshooting/2026-07-09](troubleshooting/2026-07-09-codex-quota-401-despite-working-cli.md)。

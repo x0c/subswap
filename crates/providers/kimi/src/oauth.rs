@@ -5,6 +5,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Sender};
+use std::sync::OnceLock;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -147,7 +148,13 @@ pub async fn recover_active_401(
 }
 
 async fn installed_kimi_refresh_lock_protocol() -> Option<RefreshLockProtocol> {
-    tokio::task::spawn_blocking(|| {
+    // `kimi --version` 实测可到数秒；同一进程内协议不会变，缓存避免每次 401 自愈都再付一次代价，
+    // 也降低被外层 quota fetch timeout 中途取消的概率。
+    static CACHED: OnceLock<Option<RefreshLockProtocol>> = OnceLock::new();
+    if let Some(cached) = CACHED.get() {
+        return *cached;
+    }
+    let probed = tokio::task::spawn_blocking(|| {
         Command::new("kimi")
             .arg("--version")
             .output()
@@ -167,7 +174,8 @@ async fn installed_kimi_refresh_lock_protocol() -> Option<RefreshLockProtocol> {
             })
     })
     .await
-    .unwrap_or(None)
+    .unwrap_or(None);
+    *CACHED.get_or_init(|| probed)
 }
 
 fn protocol_with_lock_setting(

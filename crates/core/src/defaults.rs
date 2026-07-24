@@ -57,12 +57,17 @@ pub const CODEX_USAGE_CACHE_MAX_AGE_MS: i64 = 10 * 60 * 1000;
 ///
 /// CLI 与 daemon 都通过统一重试包装查询 quota。单次 attempt 超过此值会被取消，并按
 /// [`QUOTA_FETCH_RETRIES`] 决定是否重试。
-pub const QUOTA_FETCH_TIMEOUT_MS: u64 = 3000;
+///
+/// 必须盖住 Codex active 的官方 app-server 会话上限（20s），以及 Kimi active 401 自愈
+/// （`kimi --version` + 持锁刷新 + 重查）。过短会把慢但正常的查询取消成可重试 timeout，
+/// 最终显示 `timeout after N attempts` 并回落旧缓存。
+pub const QUOTA_FETCH_TIMEOUT_MS: u64 = 20_000;
 
 /// quota 查询失败后的重试次数。
 ///
-/// 这里表示「首次请求之外」额外再试几次。默认 5 次；401/403 不会重试。
-pub const QUOTA_FETCH_RETRIES: u32 = 5;
+/// 这里表示「首次请求之外」额外再试几次。默认 1 次；401/403/429 不会重试。
+/// 单次 attempt 已按慢路径（Codex app-server / Kimi 自愈）拉到 20s，不宜再叠多次重试。
+pub const QUOTA_FETCH_RETRIES: u32 = 1;
 
 /// quota 查询首次重试前等待多久（毫秒）。
 ///
@@ -104,3 +109,30 @@ pub const DAEMON_IDLE_THRESHOLD_MS: i64 = 30 * 60 * 1000;
 /// 由 [`DAEMON_IDLE_THRESHOLD_MS`] 判定空闲后启用；一旦 probe 文件再次变动，
 /// 下一轮立刻回到 [`DAEMON_POLL_INTERVAL_MS`]。
 pub const DAEMON_IDLE_POLL_INTERVAL_MS: u64 = 30 * 60 * 1000;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Codex active 走官方 app-server（内部 SESSION_TIMEOUT=20s）；Kimi active 401 自愈还要
+    /// 先跑 `kimi --version`（实测数秒）再持锁刷新。外层 per-attempt 超时若短于这条路径，
+    /// 会把尚在进行的查询取消成可重试的 timeout，最终刷出 `timeout after N attempts` + 旧缓存。
+    #[test]
+    fn quota_fetch_timeout_covers_codex_app_server_and_kimi_recovery() {
+        const CODEX_APP_SERVER_SESSION_TIMEOUT_MS: u64 = 20_000;
+        assert!(
+            QUOTA_FETCH_TIMEOUT_MS >= CODEX_APP_SERVER_SESSION_TIMEOUT_MS,
+            "QUOTA_FETCH_TIMEOUT_MS={} must be >= Codex app-server session timeout {}ms",
+            QUOTA_FETCH_TIMEOUT_MS,
+            CODEX_APP_SERVER_SESSION_TIMEOUT_MS
+        );
+        // 单次 attempt 已拉长后，不宜再叠默认 5 次重试（最坏会拖到两分钟以上，且 Codex
+        // 会反复拉起 app-server）。
+        assert!(
+            QUOTA_FETCH_RETRIES <= 2,
+            "QUOTA_FETCH_RETRIES={} too high for a {}ms attempt timeout",
+            QUOTA_FETCH_RETRIES,
+            QUOTA_FETCH_TIMEOUT_MS
+        );
+    }
+}
