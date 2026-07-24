@@ -20,7 +20,8 @@
 //! idle_poll_interval_ms = 900000
 //!
 //! [quota]
-//! fetch_retries = 5
+//! fetch_timeout_ms = 20000
+//! fetch_retries = 1
 //! ```
 
 use std::path::Path;
