@@ -265,7 +265,9 @@ async fn fill_quotas_progressively(
         return Ok(());
     }
     let mut cache = QuotaCache::load(cache_path);
-    let min_refresh = Duration::from_millis(settings::current().quota.min_refresh_interval_ms);
+    let quota_cfg = settings::current().quota.clone();
+    let min_refresh = Duration::from_millis(quota_cfg.min_refresh_interval_ms);
+    let backoff_cap = Duration::from_millis(quota_cfg.failure_backoff_max_ms);
 
     let mut jobs = Vec::new();
     for snap in snapshots.iter_mut() {
@@ -276,6 +278,15 @@ async fn fill_quotas_progressively(
             if let Some(entry) = cache.fresh(&provider, &awq.account.id.0, min_refresh) {
                 awq.quotas = entry.quotas;
                 awq.fetch_state = QuotaFetchState::Ready;
+                continue;
+            }
+            // 失败退避：连续查不出的账号在退避窗口内不再重打端点，直接沿用上次的失败呈现。
+            if let Some(failure) =
+                cache.in_failure_backoff(&provider, &awq.account.id.0, min_refresh, backoff_cap)
+            {
+                let error = failure.error.clone();
+                let account_id = awq.account.id.0.clone();
+                apply_quota_failure(awq, &cache, &provider, &account_id, error);
                 continue;
             }
             // 凭证已走明文 FileStore，查任何账号都不再弹钥匙串，激活/非激活一律查额度。
@@ -457,17 +468,30 @@ fn apply_quota_update(
             awq.fetch_state = QuotaFetchState::Ready;
         }
         Err(err) => {
-            if let Some(entry) = cache.get(&update.provider, &update.account_id.0) {
-                awq.quotas = entry.quotas.clone();
-                awq.fetch_state = QuotaFetchState::Stale {
-                    cached_at: entry.cached_at,
-                    error: err,
-                };
-            } else {
-                awq.quotas.clear();
-                awq.fetch_state = QuotaFetchState::Failed(err);
-            }
+            cache.record_failure(&update.provider, &update.account_id.0, &err);
+            apply_quota_failure(awq, cache, &update.provider, &update.account_id.0, err);
         }
+    }
+}
+
+/// 查询失败时的展示回落：有旧缓存就挂 `Stale`（附带错误），否则 `Failed`。
+/// 失败退避期间跳过真实查询后也走这里，保证「跳过」和「刚失败」呈现一致。
+fn apply_quota_failure(
+    awq: &mut AccountWithQuotas,
+    cache: &QuotaCache,
+    provider: &str,
+    account_id: &str,
+    err: String,
+) {
+    if let Some(entry) = cache.get(provider, account_id) {
+        awq.quotas = entry.quotas;
+        awq.fetch_state = QuotaFetchState::Stale {
+            cached_at: entry.cached_at,
+            error: err,
+        };
+    } else {
+        awq.quotas.clear();
+        awq.fetch_state = QuotaFetchState::Failed(err);
     }
 }
 

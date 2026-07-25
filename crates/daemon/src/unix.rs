@@ -317,8 +317,9 @@ async fn build_snapshots(providers: &ProviderRegistry) -> Vec<ProviderSnapshot> 
         .as_ref()
         .map(|p| QuotaCache::load(p))
         .unwrap_or_default();
-    let min_refresh =
-        std::time::Duration::from_millis(settings::current().quota.min_refresh_interval_ms);
+    let quota_cfg = settings::current().quota.clone();
+    let min_refresh = std::time::Duration::from_millis(quota_cfg.min_refresh_interval_ms);
+    let backoff_cap = std::time::Duration::from_millis(quota_cfg.failure_backoff_max_ms);
 
     let mut out = Vec::new();
     for p in providers.all() {
@@ -342,12 +343,28 @@ async fn build_snapshots(providers: &ProviderRegistry) -> Vec<ProviderSnapshot> 
                 });
                 continue;
             }
+            // 失败退避:连续查不出的账号不再每轮重查——失败结果不进缓存,没有退避就会被
+            // 无节制地重打,反而比健康账号更高频,把 usage 端点限流桶打空并殃及其他账号。
+            if let Some(failure) =
+                cache.in_failure_backoff(&provider_id, &id.0, min_refresh, backoff_cap)
+            {
+                let error = failure.error.clone();
+                awqs.push(AccountWithQuotas {
+                    account,
+                    quotas: Vec::new(),
+                    fetch_state: QuotaFetchState::Failed(error),
+                });
+                continue;
+            }
             let (quotas, fetch_state) = match query_quota_with_retry(p.as_ref(), &id).await {
                 Ok(q) => {
                     cache.set(&provider_id, &id.0, q.clone());
                     (q, QuotaFetchState::Ready)
                 }
-                Err(e) => (Vec::new(), QuotaFetchState::Failed(e.to_string())),
+                Err(e) => {
+                    cache.record_failure(&provider_id, &id.0, &e.to_string());
+                    (Vec::new(), QuotaFetchState::Failed(e.to_string()))
+                }
             };
             awqs.push(AccountWithQuotas {
                 account,

@@ -64,6 +64,16 @@ Token 刷新请求体：
 `utilization` 固定按 0~100 的已用百分比解析。小于 1 的值仍表示不到 1% 已用，不能当成 0~1 比例放大，
 否则会把 `0.97%` 错误解析为 `97%`。
 
+**这是未公开接口，字段类型会在 Claude Code 版本间漂移，必须逐字段宽容解析。**
+`oauth.rs::lenient` 让任一字段解不出时只退化成 `None`，绝不能让一个字段把整份响应解崩。
+`Option<T>` 只容忍「字段缺失」，容忍不了「类型变化」——别再指望它兜底。
+已知漂移：2026-07 `extra_usage.used_credits` 从整数变成小数（伴随新增 `currency` /
+`decimal_places`，金额已是小数语义，故 `monthly_limit` / `used_credits` 一律用 `f64`）；
+同期 `extra_usage` 不再返回 `resets_at`，并新增一批全为 null 的代号窗口（`tangelo`、
+`omelette` 等）——未知字段本就被忽略，真正致命的只有**已知字段的类型变化**。
+实测响应全文与判别手法见
+[troubleshooting/2026-07-26](troubleshooting/2026-07-26-claude-usage-schema-drift-bad-response.md)。
+
 ### Usage 接口异常状态码的真实含义（429 ≠ token 失效，别再误判）
 
 > 2026-06-14 修正：旧版本这里写「429 是鉴权失败的伪装」，是**误判**。实测拿一个**确认有效**的
@@ -79,12 +89,20 @@ Token 刷新请求体：
 | `429 rate_limit_error` | usage `/api/oauth/usage` 429 + `retry-after` | usage 端点限流极严，约**每账号每分钟才放 1 次** | 缓存节流(见下)，**不是**重登 |
 | `invalid_grant` | refresh `/v1/oauth/token` 400 | parked 账号存的 refresh token 已死 | 死 token 守卫 + 重登(见「Refresh token 轮换」) |
 | `401` | usage 401 | active 账号 live token 过期、Claude Code 未刷 | 开一次 Claude Code 让它刷；subswap 不刷 active |
+| `bad response` | usage **200** 但 parse 失败 | 上游响应结构漂移（见「Usage 响应字段」） | 补宽容解析；**能走到 parse 就说明鉴权和限流都没问题** |
 
 **缓存节流（治 429，`crates/cli/src/cmd/default.rs` + `crates/daemon/src/unix.rs::build_snapshots`）**：
 subswap 每次 CLI 运行 + daemon 每轮都把所有账号一起查，极易并发打爆 usage 端点 → 全员 429。
 对策：daemon 与 CLI **共用** `quota_cache.json`，查询前先看缓存——`QuotaCache::fresh()` 判定缓存
 比 `settings.quota.min_refresh_interval_ms`(默认 90s，> daemon 60s 轮询) 新就**直接复用、不打端点**。
 谁先查到谁刷新 `cached_at`，另一方据此跳过，把每账号请求频率稳定压到 ~90s 一次。
+
+**失败退避（治「坏账号反噬」，`QuotaCache::record_failure` / `in_failure_backoff`）**：
+上面的缓存节流**只覆盖成功路径**——失败结果不写 `entries`，等于失败路径完全没有节流，
+一个必然查不出的账号会被 daemon 每轮（60s）重打，频率反而高于健康账号，把限流桶打空后
+429 蔓延到同账户下的其他账号。对策：失败单独记在 `failures` 表，按
+`min_refresh × 2^(连续失败次数-1)`（封顶 `settings.quota.failure_backoff_max_ms`，默认 15 分钟）
+退避，查成功一次即清零。**新增任何 quota 查询路径都必须同时接失败退避**，只接成功缓存是不够的。
 
 - **排查雷区**：别手动 `curl` usage 端点连发几次去"复现"——会自己把限流桶打空、污染判断（我就踩了）。
 - subswap 不把 429 翻译成 401：`oauth.rs::fetch_usage` 保留原始状态码；CLI 压成 `429 rate limited`
@@ -106,12 +124,21 @@ subswap 每次 CLI 运行 + daemon 每轮都把所有账号一起查，极易并
     "accessToken": "...",
     "refreshToken": "...",
     "expiresAt": <epoch_ms>,
+    "refreshTokenExpiresAt": <epoch_ms>,
     "scopes": ["user:inference"]
   }
 }
 ```
 
 其他字段通过 `#[serde(flatten)]` 透传保留，避免上游加字段时丢失。
+
+**`refreshTokenExpiresAt`（Claude Code 2026-07-09 起写入，实测约 30 天）**：refresh token 现在会
+**自然过期**，不再是「只要没被轮换作废就一直能刷」。到期后再刷只会拿回 `invalid_grant`，
+所以 `refresh_token_expired()` 会提前判掉、不发这次请求，并直接透出 `needs re-login`。
+字段缺失（老版本客户端）时保持原有行为不判过期。**后果**：长期停泊不用的账号到期后必须去
+Claude Code 重新登录，这不是 subswap 把凭证写坏了——与
+[live capture 覆盖 refresh token](troubleshooting/2026-06-18-live-capture-clobbers-refresh-token.md)
+是两个不同的重登原因，排查时先看该字段有没有到期再怀疑覆写。
 
 `oauthAccount` 子树（subswap 关心的字段）：
 

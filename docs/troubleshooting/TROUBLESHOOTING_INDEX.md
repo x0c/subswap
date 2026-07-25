@@ -4,6 +4,7 @@
 
 | 文档 | 排查场景 |
 |---|---|
+| [2026-07-26 Claude 额度 `bad response` / usage 响应字段漂移](2026-07-26-claude-usage-schema-drift-bad-response.md) | Claude 账号额度长期查不出并显示 `bad response`、另一个号连带 429、账号频繁横跳；改 usage 响应解析、quota 失败退避或 `refreshTokenExpiresAt` 处理前必读；排查「上游响应结构变了没」时也查此（含 2026-07 实测响应与判别手法） |
 | [2026-07-09 Codex 用量 401 但 CLI 能正常用](2026-07-09-codex-quota-401-despite-working-cli.md) | Codex 账号明明在正常对话、`subswap` 却显示 `401 auth failed`，或改/排查官方 app-server 额度查询、control socket、并发时安全刷新与 429 fallback 边界时必读 |
 | [2026-06-18 live capture 覆盖 refresh token](2026-06-18-live-capture-clobbers-refresh-token.md) | 切换后 Claude Code 要求重新登录、日志打 `refreshToken is empty in store`；改 capture-on-leave / capture-on-arrival 逻辑前必读；排查「账号明明在、切过去却被踢下线」或 Codex 账号凭证无故丢失 refresh 时查此 |
 | [2026-06-14 429 vs invalid_grant](2026-06-14-claude-quota-unqueryable-429-vs-invalid-grant.md) | Claude 账号用量忽好忽坏、全员 cached、账号反复横跳；改缓存节流或死 token 守卫前必读；排查「到底是限流还是 token 失效」时查此 |

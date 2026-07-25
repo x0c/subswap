@@ -27,9 +27,23 @@ pub struct ValidEntry {
     pub cached_at: DateTime<Utc>,
 }
 
+/// 连续查询失败的记录，用于失败退避。只存错误摘要，不含任何凭证。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailureEntry {
+    /// 最近一次失败时间。
+    pub failed_at: DateTime<Utc>,
+    /// 连续失败次数（成功一次即清零）。
+    pub consecutive: u32,
+    /// 最近一次失败的错误文本，退避期间原样复用给展示层。
+    pub error: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct QuotaCache {
     entries: HashMap<String, CachedEntry>,
+    /// 失败退避表。老版本缓存文件没有该字段，`default` 保证可平滑升级。
+    #[serde(default)]
+    failures: HashMap<String, FailureEntry>,
 }
 
 impl QuotaCache {
@@ -85,16 +99,68 @@ impl QuotaCache {
         self.get(provider, account_id)
     }
 
-    /// 更新或插入缓存条目。
+    /// 更新或插入缓存条目；同时清掉该账号的失败退避记录。
     pub fn set(&mut self, provider: &str, account_id: &str, quotas: Vec<Quota>) {
+        let key = cache_key(provider, account_id);
+        self.failures.remove(&key);
         self.entries.insert(
-            cache_key(provider, account_id),
+            key,
             CachedEntry {
                 quotas,
                 cached_at: Utc::now(),
             },
         );
     }
+
+    /// 记一次查询失败，累加连续失败次数。
+    ///
+    /// 失败结果不进 `entries`（不能拿失败当数据用），单独记在这里只为算退避窗口。
+    pub fn record_failure(&mut self, provider: &str, account_id: &str, error: &str) {
+        let key = cache_key(provider, account_id);
+        let consecutive = self
+            .failures
+            .get(&key)
+            .map(|f| f.consecutive.saturating_add(1))
+            .unwrap_or(1);
+        self.failures.insert(
+            key,
+            FailureEntry {
+                failed_at: Utc::now(),
+                consecutive,
+                error: error.to_string(),
+            },
+        );
+    }
+
+    /// 该账号是否仍处于失败退避窗口内；是则返回最近一次失败记录，调用方应跳过真实查询。
+    ///
+    /// 退避时长 = `base * 2^(consecutive - 1)`，封顶 `cap`。
+    pub fn in_failure_backoff(
+        &self,
+        provider: &str,
+        account_id: &str,
+        base: std::time::Duration,
+        cap: std::time::Duration,
+    ) -> Option<&FailureEntry> {
+        let entry = self.failures.get(&cache_key(provider, account_id))?;
+        let backoff = failure_backoff(base, cap, entry.consecutive);
+        let age = Utc::now() - entry.failed_at;
+        // age 为负(时钟回拨)时视为已过窗口，保守地允许重查。
+        if age < Duration::zero() || age >= Duration::from_std(backoff).ok()? {
+            return None;
+        }
+        Some(entry)
+    }
+}
+
+/// 连续失败 n 次后的退避时长：`base * 2^(n-1)`，封顶 `cap`。
+fn failure_backoff(
+    base: std::time::Duration,
+    cap: std::time::Duration,
+    consecutive: u32,
+) -> std::time::Duration {
+    let shift = consecutive.saturating_sub(1).min(16);
+    base.saturating_mul(1_u32 << shift).min(cap.max(base))
 }
 
 fn cache_key(provider: &str, account_id: &str) -> String {
@@ -153,6 +219,53 @@ mod tests {
         assert!(cache
             .fresh("claude", "b@x.com", std::time::Duration::from_secs(90))
             .is_none());
+    }
+
+    #[test]
+    fn failure_backoff_grows_and_clears_on_success() {
+        let base = std::time::Duration::from_secs(90);
+        let cap = std::time::Duration::from_secs(900);
+        let mut cache = QuotaCache::default();
+
+        // 首次失败 → 退避 base，窗口内跳过查询。
+        cache.record_failure("claude", "a@x.com", "429 rate limited");
+        let hit = cache
+            .in_failure_backoff("claude", "a@x.com", base, cap)
+            .unwrap();
+        assert_eq!(hit.consecutive, 1);
+        assert_eq!(hit.error, "429 rate limited");
+
+        // 第 3 次失败 → 退避 4*base；把 failed_at 拨到 3*base 之前仍在窗口内。
+        cache.record_failure("claude", "a@x.com", "429 rate limited");
+        cache.record_failure("claude", "a@x.com", "429 rate limited");
+        cache.failures.get_mut("claude::a@x.com").unwrap().failed_at =
+            Utc::now() - Duration::seconds(270);
+        assert!(cache
+            .in_failure_backoff("claude", "a@x.com", base, cap)
+            .is_some());
+
+        // 超过封顶时长 → 放行重查。
+        cache.failures.get_mut("claude::a@x.com").unwrap().failed_at =
+            Utc::now() - Duration::seconds(1000);
+        assert!(cache
+            .in_failure_backoff("claude", "a@x.com", base, cap)
+            .is_none());
+
+        // 查成功一次即清零，不再退避。
+        cache.set("claude", "a@x.com", vec![sample_quota()]);
+        assert!(cache
+            .in_failure_backoff("claude", "a@x.com", base, cap)
+            .is_none());
+    }
+
+    #[test]
+    fn failure_backoff_is_capped() {
+        let base = std::time::Duration::from_secs(90);
+        let cap = std::time::Duration::from_secs(900);
+        assert_eq!(failure_backoff(base, cap, 1), base);
+        assert_eq!(failure_backoff(base, cap, 3), base * 4);
+        // 2^(20-1) * 90s 远超封顶,必须被 cap 住。
+        assert_eq!(failure_backoff(base, cap, 20), cap);
     }
 
     #[test]
