@@ -125,22 +125,24 @@ mod tests {
     /// Codex active 走官方 app-server（内部 SESSION_TIMEOUT=20s）；Kimi active 401 自愈还要
     /// 先跑 `kimi --version`（实测数秒）再持锁刷新。外层 per-attempt 超时若短于这条路径，
     /// 会把尚在进行的查询取消成可重试的 timeout，最终刷出 `timeout after N attempts` + 旧缓存。
+    /// 断言的两侧都是常量，走 `const {}` 让它在编译期成立，同时避开 clippy
+    /// `assertions_on_constants`（CI 用 `-D warnings`，普通 `assert!` 会直接编译失败）。
     #[test]
     fn quota_fetch_timeout_covers_codex_app_server_and_kimi_recovery() {
         const CODEX_APP_SERVER_SESSION_TIMEOUT_MS: u64 = 20_000;
-        assert!(
-            QUOTA_FETCH_TIMEOUT_MS >= CODEX_APP_SERVER_SESSION_TIMEOUT_MS,
-            "QUOTA_FETCH_TIMEOUT_MS={} must be >= Codex app-server session timeout {}ms",
-            QUOTA_FETCH_TIMEOUT_MS,
-            CODEX_APP_SERVER_SESSION_TIMEOUT_MS
-        );
+        const {
+            assert!(
+                QUOTA_FETCH_TIMEOUT_MS >= CODEX_APP_SERVER_SESSION_TIMEOUT_MS,
+                "QUOTA_FETCH_TIMEOUT_MS must be >= Codex app-server session timeout (20s)"
+            );
+        }
         // 单次 attempt 已拉长后，不宜再叠默认 5 次重试（最坏会拖到两分钟以上，且 Codex
         // 会反复拉起 app-server）。
-        assert!(
-            QUOTA_FETCH_RETRIES <= 2,
-            "QUOTA_FETCH_RETRIES={} too high for a {}ms attempt timeout",
-            QUOTA_FETCH_RETRIES,
-            QUOTA_FETCH_TIMEOUT_MS
-        );
+        const {
+            assert!(
+                QUOTA_FETCH_RETRIES <= 2,
+                "QUOTA_FETCH_RETRIES too high for the current per-attempt timeout"
+            );
+        }
     }
 }
