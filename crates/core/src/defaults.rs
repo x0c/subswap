@@ -82,6 +82,14 @@ pub const QUOTA_FETCH_RETRY_DELAY_MS: u64 = 500;
 /// 稳定压到 ~90s 一次。daemon 与 CLI 共用 `quota_cache.json`，节流对两条路径同时生效。
 pub const QUOTA_MIN_REFRESH_INTERVAL_MS: u64 = 90_000;
 
+/// quota 查询失败后的退避上限（毫秒），默认 15 分钟。
+///
+/// 成功结果会写进缓存并被 [`QUOTA_MIN_REFRESH_INTERVAL_MS`] 节流；**失败结果没有缓存**，
+/// 因此在引入退避之前，一个持续查不出的账号会被 daemon 每轮（60s）无节制地重查，
+/// 请求频率反而高于健康账号，把 usage 端点的限流桶打空 → 429 蔓延到其他账号。
+/// 退避从 `min_refresh_interval_ms` 起按连续失败次数翻倍，封顶到这里。
+pub const QUOTA_FAILURE_BACKOFF_MAX_MS: u64 = 900_000;
+
 // ============================================================
 // Token 生命周期
 // ============================================================

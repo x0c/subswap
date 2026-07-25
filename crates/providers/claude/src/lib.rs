@@ -359,6 +359,10 @@ impl ClaudeProvider {
         if self.is_refresh_dead(&refresh_token) {
             return Ok(false);
         }
+        // refresh token 已过期(refreshTokenExpiresAt)：刷也只会拿到 invalid_grant，直接跳过。
+        if refresh_token_expired(&creds) {
+            return Ok(false);
+        }
         match apply_refresh_to_creds(&mut creds).await {
             Ok(()) => {
                 self.save_credentials(id, &creds)?;
@@ -789,8 +793,8 @@ impl Provider for ClaudeProvider {
             Ok(u) => u,
             Err(e) if is_auth_error(&e) && !from_live && creds.oauth.refresh_token.is_some() => {
                 let refresh_token = creds.oauth.refresh_token.clone().unwrap_or_default();
-                // 死 token 守卫：refresh token 已知作废时不再尝试刷新，直接透出 re-login。
-                if self.is_refresh_dead(&refresh_token) {
+                // 死 token 守卫：refresh token 已知作废或已过期时不再尝试刷新，直接透出 re-login。
+                if self.is_refresh_dead(&refresh_token) || refresh_token_expired(&creds) {
                     return Err(relogin_required_error(id));
                 }
                 match apply_refresh_to_creds(&mut creds).await {
@@ -1485,6 +1489,11 @@ async fn best_effort_pre_refresh(creds: &mut CredentialsFile) -> bool {
 /// 不读 keyring、不写 keyring、不动磁盘；调用方负责持久化。缺 `refresh_token`
 /// 时返回 [`Error::Provider`]（不能 offline 续期）。
 async fn apply_refresh_to_creds(creds: &mut CredentialsFile) -> Result<()> {
+    if refresh_token_expired(creds) {
+        return Err(Error::QuotaFetch(format!(
+            "re-login required: {PROVIDER_ID} refresh token expired (refreshTokenExpiresAt), log in again in Claude Code"
+        )));
+    }
     let refresh_token = creds
         .oauth
         .refresh_token
@@ -1539,6 +1548,24 @@ fn relogin_required_error(id: &AccountId) -> Error {
     Error::QuotaFetch(format!(
         "re-login required for {PROVIDER_ID}:{id}; refresh token invalid, log in again in Claude Code"
     ))
+}
+
+/// refresh token 自身是否已过期。
+///
+/// Claude Code 从 2026-07-09 起在 `.credentials.json` 里多写了 `refreshTokenExpiresAt`
+/// （实测约 30 天）。过期后再拿它去刷只会换回 `invalid_grant`，白打请求还会被死 token
+/// 守卫记一笔；提前判掉可以直接给用户「需要重新登录」的确定结论。
+/// 字段缺失（老版本客户端）时返回 false，保持原有行为。
+fn refresh_token_expired(creds: &CredentialsFile) -> bool {
+    let Some(expires_at_ms) = creds
+        .oauth
+        .other
+        .get("refreshTokenExpiresAt")
+        .and_then(serde_json::Value::as_i64)
+    else {
+        return false;
+    };
+    expires_at_ms <= Utc::now().timestamp_millis()
 }
 
 fn is_expired_or_soon(creds: &CredentialsFile, slack_ms: i64) -> bool {
@@ -1630,6 +1657,38 @@ mod tests {
         let future = Utc::now().timestamp_millis() + 24 * 60 * 60_000;
         let c = mk_creds(Some(future), None);
         assert!(!is_expired_or_soon(&c, 60_000));
+    }
+
+    #[test]
+    fn refresh_token_expiry_is_honored_when_present() {
+        // 老版本客户端不写该字段 → 保持原行为，不判过期。
+        assert!(!refresh_token_expired(&mk_creds(None, Some("rt"))));
+
+        let mut fresh = mk_creds(None, Some("rt"));
+        fresh.oauth.other.insert(
+            "refreshTokenExpiresAt".into(),
+            (Utc::now().timestamp_millis() + 24 * 60 * 60_000).into(),
+        );
+        assert!(!refresh_token_expired(&fresh));
+
+        let mut stale = mk_creds(None, Some("rt"));
+        stale.oauth.other.insert(
+            "refreshTokenExpiresAt".into(),
+            (Utc::now().timestamp_millis() - 1).into(),
+        );
+        assert!(refresh_token_expired(&stale));
+    }
+
+    #[tokio::test]
+    async fn refresh_is_refused_offline_when_refresh_token_expired() {
+        let mut creds = mk_creds(None, Some("rt"));
+        creds.oauth.other.insert(
+            "refreshTokenExpiresAt".into(),
+            (Utc::now().timestamp_millis() - 1).into(),
+        );
+        let err = apply_refresh_to_creds(&mut creds).await.unwrap_err();
+        // 文本含 "re-login"，CLI 会压成 needs re-login，而不是白打一次请求换 invalid_grant。
+        assert!(err.to_string().contains("re-login"), "{err}");
     }
 
     #[test]

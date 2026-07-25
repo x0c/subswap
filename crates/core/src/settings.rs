@@ -74,6 +74,9 @@ pub struct Quota {
     /// 直接复用缓存值。daemon 与 CLI 共用同一缓存文件，借此把每账号请求频率压到
     /// 「每 `min_refresh_interval_ms` 最多 1 次」，避免并发查爆 usage 端点触发 429。
     pub min_refresh_interval_ms: u64,
+    /// 连续查询失败时的退避上限（毫秒）。退避从 `min_refresh_interval_ms` 起按失败次数
+    /// 翻倍并封顶到这里，避免查不出的账号被每轮重查、把 usage 端点限流桶打空。
+    pub failure_backoff_max_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -121,6 +124,7 @@ impl Default for Quota {
             fetch_retries: defaults::QUOTA_FETCH_RETRIES,
             fetch_retry_delay_ms: defaults::QUOTA_FETCH_RETRY_DELAY_MS,
             min_refresh_interval_ms: defaults::QUOTA_MIN_REFRESH_INTERVAL_MS,
+            failure_backoff_max_ms: defaults::QUOTA_FAILURE_BACKOFF_MAX_MS,
         }
     }
 }
