@@ -88,8 +88,9 @@ Token 刷新请求体：
 |---|---|---|---|
 | `429 rate_limit_error` | usage `/api/oauth/usage` 429 + `retry-after` | usage 端点限流极严，约**每账号每分钟才放 1 次** | 缓存节流(见下)，**不是**重登 |
 | `invalid_grant` | refresh `/v1/oauth/token` 400 | parked 账号存的 refresh token 已死 | 死 token 守卫 + 重登(见「Refresh token 轮换」) |
-| `401` | usage 401 | active 账号 live token 过期、Claude Code 未刷 | 开一次 Claude Code 让它刷；subswap 不刷 active |
+| `401` | usage 401 | active 账号 live token 过期、Claude Code 未刷 | 开一次 Claude Code 让它刷；subswap 不刷 active，失败退避最多保留 90s |
 | `bad response` | usage **200** 但 parse 失败 | 上游响应结构漂移（见「Usage 响应字段」） | 补宽容解析；**能走到 parse 就说明鉴权和限流都没问题** |
+| 空 access token | 本地凭据 | Claude Code 登录/切换的中间态被错误回灌，账号副本已不完整 | 不发 usage 请求，直接显示 `needs re-login`；回灌时保留 store 完整副本 |
 
 **缓存节流（治 429，`crates/cli/src/cmd/default.rs` + `crates/daemon/src/unix.rs::build_snapshots`）**：
 subswap 每次 CLI 运行 + daemon 每轮都把所有账号一起查，极易并发打爆 usage 端点 → 全员 429。
@@ -102,7 +103,10 @@ subswap 每次 CLI 运行 + daemon 每轮都把所有账号一起查，极易并
 一个必然查不出的账号会被 daemon 每轮（60s）重打，频率反而高于健康账号，把限流桶打空后
 429 蔓延到同账户下的其他账号。对策：失败单独记在 `failures` 表，按
 `min_refresh × 2^(连续失败次数-1)`（封顶 `settings.quota.failure_backoff_max_ms`，默认 15 分钟）
-退避，查成功一次即清零。**新增任何 quota 查询路径都必须同时接失败退避**，只接成功缓存是不够的。
+退避，查成功一次即清零。**401/403 鉴权失败例外封顶为一个 `min_refresh`（默认 90 秒）**：原生客户端
+可能在失败后立刻刷新凭据，若仍保留 15 分钟旧失败，会出现「Claude 已能正常对话、subswap 仍报旧 401」。
+这不是同一次查询里的盲目重试，仍至少间隔 90 秒。**新增任何 quota 查询路径都必须同时接失败退避**，
+只接成功缓存是不够的。
 
 - **排查雷区**：别手动 `curl` usage 端点连发几次去"复现"——会自己把限流桶打空、污染判断（我就踩了）。
 - subswap 不把 429 翻译成 401：`oauth.rs::fetch_usage` 保留原始状态码；CLI 压成 `429 rate limited`
@@ -310,11 +314,12 @@ Codex 只委托官方 app-server；Kimi 只有识别出当前版本官方锁协�
    store 副本会停在旧 token，下次切回写回旧 token → 作废。所有 swap（手动 + daemon 自动）唯一
    经过 `activate`，一处生效覆盖两条路径；找不到 owner 直接跳过（best-effort，不阻塞 swap）。
    Claude 重复切换当前账号时只执行回灌并直接返回，禁止先读 store 再把陈旧 token 覆盖回 live。
-   - **覆盖前必须比较新旧 refresh token，绝不能用「缺 refresh」的快照覆盖「有 refresh」的快照**。
+   - **覆盖前必须比较新旧 access / refresh token，绝不能用缺字段的快照覆盖对应字段完整的快照**。
      原生客户端轮换 token 期间 live 源可能短暂处于不完整状态；这一刻被回灌捕获到会把 store 里
      可续期的副本永久写死；任何 access token 自愈都不能凭空补回丢失的 refresh token（排查见
      [troubleshooting/2026-06-18](troubleshooting/2026-06-18-live-capture-clobbers-refresh-token.md)）。
-     Claude 命中时合并保留旧 refresh、只跟进新 access token；Codex 命中时整段跳过本次回灌
+     Claude 缺 refresh 时合并保留旧 refresh、只跟进非空的新 access；Claude 缺 access 时整段保留
+     store 完整副本；Codex 命中时整段跳过本次回灌
      （遵循下方「opaque blob」处理原则，不做字段级合并）。
 2. **Claude active 账号绝不轮换 token**：
    - `refresh_if_near_expiry` 开头加 active 守卫（`active_account_id()` 命中即返回 `Ok(false)`），
