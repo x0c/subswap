@@ -59,7 +59,7 @@ pub enum QuotaFetchState {
     Failed(String),
     /// 实时查询失败，但存在未过期的缓存数据（由 `QuotaCache` 回填）。
     /// 对应账号的 `AccountWithQuotas.quotas` 存放缓存快照。
-    /// 自动切换策略将其等同于 `Ready` 处理。
+    /// 自动切换可继续参考瞬态失败的缓存；鉴权/缺凭据错误不得成为自动候选。
     Stale {
         cached_at: chrono::DateTime<chrono::Utc>,
         error: String,
@@ -223,6 +223,7 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
             .iter()
             .filter(|a| Some(&a.account.id) != active_id.as_ref())
             .filter(|a| !a.account.manual_only())
+            .filter(|a| !quota_failure_blocks_candidate(&a.fetch_state))
             .filter(|a| a.fetch_state.failed().is_some())
             .collect();
 
@@ -249,6 +250,7 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
         .accounts
         .iter()
         .filter(|a| !a.account.manual_only())
+        .filter(|a| !quota_failure_blocks_candidate(&a.fetch_state))
         .filter_map(|a| reset_ready_at(a, config.threshold, config.allow_unknown).map(|t| (a, t)))
         .collect();
 
@@ -335,6 +337,9 @@ fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: boo
     if a.account.manual_only() {
         return false;
     }
+    if quota_failure_blocks_candidate(&a.fetch_state) {
+        return false;
+    }
     if a.fetch_state.failed().is_some() {
         return allow_unknown;
     }
@@ -357,6 +362,19 @@ fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: boo
         let any_ok = a.quotas.iter().any(|q| matches!(q.status, QuotaStatus::Ok));
         any_ok && no_above_threshold && no_exhausted
     }
+}
+
+fn quota_failure_blocks_candidate(state: &QuotaFetchState) -> bool {
+    let error = match state {
+        QuotaFetchState::Failed(error) | QuotaFetchState::Stale { error, .. } => error,
+        QuotaFetchState::Loading | QuotaFetchState::Ready => return false,
+    };
+    let lower = error.to_ascii_lowercase();
+    lower.contains("401")
+        || lower.contains("403")
+        || lower.contains("re-login")
+        || lower.contains("missing credential")
+        || lower.contains("access token missing")
 }
 
 fn reset_ready_at(
@@ -829,6 +847,46 @@ mod tests {
             &PolicyConfig::default(),
         );
         assert!(matches!(d, PolicyDecision::Swap { to, .. } if to.0 == "candidate"));
+    }
+
+    #[test]
+    fn exhausted_active_does_not_swap_to_stale_relogin_candidate() {
+        let mut candidate = mk_awq("candidate", false, 0, QuotaStatus::Ok);
+        candidate.fetch_state = QuotaFetchState::Stale {
+            cached_at: Utc::now() - chrono::Duration::hours(39),
+            error: "re-login required; access token missing".into(),
+        };
+
+        let d = decide(
+            &ProviderSnapshot {
+                provider: "claude".into(),
+                accounts: vec![
+                    mk_awq("active", true, 100, QuotaStatus::Exhausted),
+                    candidate,
+                ],
+            },
+            &PolicyConfig::default(),
+        );
+        assert!(matches!(d, PolicyDecision::Degraded { .. }));
+    }
+
+    #[test]
+    fn exhausted_active_does_not_use_failed_relogin_fallback() {
+        let mut candidate = mk_awq("candidate", false, 0, QuotaStatus::Ok);
+        candidate.fetch_state =
+            QuotaFetchState::Failed("re-login required; access token missing".into());
+
+        let d = decide(
+            &ProviderSnapshot {
+                provider: "claude".into(),
+                accounts: vec![
+                    mk_awq("active", true, 100, QuotaStatus::Exhausted),
+                    candidate,
+                ],
+            },
+            &PolicyConfig::default(),
+        );
+        assert!(matches!(d, PolicyDecision::Degraded { .. }));
     }
 
     /// 候选都有额度（未达阈值）时，应优先选窗口最快重置的，而不是单纯剩余最多的。

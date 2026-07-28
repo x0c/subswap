@@ -46,8 +46,8 @@
   死 token 守卫止住反复刷的风暴并显示 `needs re-login`，Kimi/Cursor 的跨进程守卫只保存 refresh token
   SHA-256 指纹、不保存 secret。细节见
   [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) 的「Refresh token 轮换」。
-  **`capture_live_into_store` 绝不能用缺 refresh 的 live 快照覆盖 store 里有 refresh 的副本**（会把账号静默写死），
-  各 Provider 都必须保留守卫，改此逻辑前见
+  **`capture_live_into_store` 绝不能用缺 access / refresh 的 live 快照覆盖 store 里对应凭据完整的副本**
+  （会把账号静默写死），各 Provider 都必须保留守卫，改此逻辑前见
   [docs/troubleshooting/2026-06-18-live-capture-clobbers-refresh-token.md](docs/troubleshooting/2026-06-18-live-capture-clobbers-refresh-token.md)。
 - 新 Provider 只能放在 `crates/providers/<id>`，再到 `AppContext::build()` 注册，并在默认入口同步本地 active。
   Cursor 这类凭证位于 SQLite、切换还要协调 GUI 生命周期的 Provider 必须独立实现 `Provider`，不能硬塞进
@@ -146,7 +146,7 @@ docs/                     中文项目文档
 | [docs/CLI.md](docs/CLI.md) | 改、评审、分析或排查 CLI 命令面、Provider 登录/导入语义、默认入口额度输出、`subswapd` 辅助进程、账号环境隔离命令或 Cursor 不支持隔离运行的边界前必读 |
 | [docs/OPERATIONS_GUIDE.md](docs/OPERATIONS_GUIDE.md) | 改、评审或排查本地构建、三平台测试隔离、release 构建、本机覆盖安装、daemon 冒烟、Linux 发布依赖安装、CI/Release 发布流程、Homebrew tap formula 更新机制或 `HOMEBREW_TAP_TOKEN` 配置前必读 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 规划、评审或同步里程碑范围、已完成能力和后续功能优先级前必读 |
-| [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（10 篇记录：keychain ACL 中毒、refresh token 覆写、429 vs invalid_grant、TOML null、Codex 用量 401 但 CLI 能正常用等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
+| [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（11 篇记录：keychain ACL 中毒、access/refresh token 覆写、429 vs invalid_grant、TOML null、Claude/Codex 用量 401 但客户端能正常用等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
 
 ## 领域地图（doc-init）
 

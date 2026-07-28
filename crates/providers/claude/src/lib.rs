@@ -783,6 +783,10 @@ impl Provider for ClaudeProvider {
             // 不写实体文件,激活账号也走这里;FileStore 后端是明文文件,读任何账号都不弹钥匙串。
             None => (self.load_credentials(id)?, false),
         };
+        // 空 access token 不应继续请求 usage 端点：上游可能先返回 429，反而掩盖凭据已损坏的事实。
+        if creds.oauth.access_token.trim().is_empty() {
+            return Err(missing_access_token_error(id));
+        }
         // 进程内自愈：access_token 失效(401)且有 refresh_token 时，best-effort 刷新一次再重试。
         // 动机：daemon 后台保活在部分环境(如 Linux keyutils 按 session 隔离)读不到本进程写入的
         //       keyring 条目，无法保活；查询进程能看到自己的 keyring，因此在这里自愈最可靠。
@@ -1412,6 +1416,23 @@ fn capture_live_into_store(
         return Ok(());
     }
 
+    // 守卫：live 的 access token 为空时不能覆盖 store 里的可用副本。
+    // Claude Code 在退出登录、切换账号或轮换凭据的中间态可能先清空 access token；这份半成品
+    // 若被 capture-on-leave 回灌，parked 账号之后既无法查额度，也可能把 401 误显示成 429。
+    if live_creds.oauth.access_token.trim().is_empty() {
+        if let Some(raw) = store.get(PROVIDER_ID, id.0.as_str(), CRED_FIELD)? {
+            if let Ok(existing) = serde_json::from_str::<CredentialsFile>(&raw) {
+                if !existing.oauth.access_token.trim().is_empty() {
+                    tracing::warn!(
+                        account = %id,
+                        "claude live capture missing access token; kept existing credentials in store"
+                    );
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     // 守卫：live 读到的 refresh token 为空时，不能让它覆盖 store 里已有的非空 refresh token。
     // Claude Code 轮换 token 期间钥匙串可能短暂处于「有 access、缺 refresh」的状态;若照单全收,
     // store 里原本可续期的账号会被写成永久过期(active 账号只读不刷,这个空缺再也补不回来)。
@@ -1547,6 +1568,12 @@ fn refresh_fingerprint(refresh_token: &str) -> String {
 fn relogin_required_error(id: &AccountId) -> Error {
     Error::QuotaFetch(format!(
         "re-login required for {PROVIDER_ID}:{id}; refresh token invalid, log in again in Claude Code"
+    ))
+}
+
+fn missing_access_token_error(id: &AccountId) -> Error {
+    Error::QuotaFetch(format!(
+        "re-login required for {PROVIDER_ID}:{id}; access token missing, log in again in Claude Code"
     ))
 }
 
@@ -1759,6 +1786,46 @@ mod tests {
         assert!(msg.contains("re-login"), "{msg}");
     }
 
+    #[tokio::test]
+    async fn query_quota_rejects_missing_access_token_without_network_request() {
+        use subswap_core::FileStore;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(FileStore::new(tmp.path().join("creds.json")));
+        let registry = Arc::new(AccountRegistry::new(tmp.path().join("registry.toml")));
+        let id = AccountId("a@x.com".into());
+        store
+            .set(
+                PROVIDER_ID,
+                id.0.as_str(),
+                CRED_FIELD,
+                r#"{"claudeAiOauth":{"accessToken":"","refreshToken":"R1"}}"#,
+            )
+            .unwrap();
+        registry
+            .upsert(Account {
+                provider: PROVIDER_ID.into(),
+                id: id.clone(),
+                label: id.0.clone(),
+                active: false,
+                created_at: Utc::now(),
+                last_used_at: None,
+                priority: 100,
+                extra: serde_json::Map::new(),
+            })
+            .unwrap();
+        let provider = ClaudeProvider {
+            store,
+            registry,
+            claude_home: tmp.path().join("claude"),
+            dead_refresh: Arc::new(Mutex::new(HashSet::new())),
+        };
+
+        let err = provider.query_quota(&id).await.unwrap_err();
+        assert!(err.to_string().contains("access token missing"), "{err}");
+        assert!(err.to_string().contains("re-login"), "{err}");
+    }
+
     #[test]
     fn isolated_home_shares_everything_except_account_files() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1959,6 +2026,59 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&stored).unwrap();
         assert_eq!(v["claudeAiOauth"]["refreshToken"], "R1");
         assert_eq!(v["claudeAiOauth"]["accessToken"], "AT2");
+    }
+
+    #[test]
+    fn capture_on_leave_preserves_store_when_live_access_is_missing() {
+        use subswap_core::FileStore;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("claude");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            credentials_path(&home),
+            r#"{"claudeAiOauth":{"accessToken":"","expiresAt":222}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            global_config_path(&home),
+            r#"{"oauthAccount":{"emailAddress":"a@x.com"}}"#,
+        )
+        .unwrap();
+
+        let store = FileStore::new(tmp.path().join("creds.json"));
+        let registry = AccountRegistry::new(tmp.path().join("registry.toml"));
+        store
+            .set(
+                PROVIDER_ID,
+                "a@x.com",
+                CRED_FIELD,
+                r#"{"claudeAiOauth":{"accessToken":"AT1","refreshToken":"R1","expiresAt":111}}"#,
+            )
+            .unwrap();
+        registry
+            .upsert(Account {
+                provider: PROVIDER_ID.into(),
+                id: AccountId("a@x.com".into()),
+                label: "a@x.com".into(),
+                active: true,
+                created_at: Utc::now(),
+                last_used_at: None,
+                priority: 100,
+                extra: serde_json::Map::new(),
+            })
+            .unwrap();
+
+        capture_live_into_store(&store, &registry, &home, false).unwrap();
+
+        let stored = store
+            .get(PROVIDER_ID, "a@x.com", CRED_FIELD)
+            .unwrap()
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(v["claudeAiOauth"]["accessToken"], "AT1");
+        assert_eq!(v["claudeAiOauth"]["refreshToken"], "R1");
+        assert_eq!(v["claudeAiOauth"]["expiresAt"], 111);
     }
 
     #[test]

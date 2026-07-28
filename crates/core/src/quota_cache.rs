@@ -143,7 +143,14 @@ impl QuotaCache {
         cap: std::time::Duration,
     ) -> Option<&FailureEntry> {
         let entry = self.failures.get(&cache_key(provider, account_id))?;
-        let backoff = failure_backoff(base, cap, entry.consecutive);
+        // 401/403 往往会在原生客户端刚刷新凭据后立刻恢复。仍保留一个基础窗口避免请求风暴，
+        // 但不把旧鉴权失败指数退避到 15 分钟，否则用户明明已经恢复登录仍会长期看到旧错误。
+        let effective_cap = if is_authentication_failure(&entry.error) {
+            base
+        } else {
+            cap
+        };
+        let backoff = failure_backoff(base, effective_cap, entry.consecutive);
         let age = Utc::now() - entry.failed_at;
         // age 为负(时钟回拨)时视为已过窗口，保守地允许重查。
         if age < Duration::zero() || age >= Duration::from_std(backoff).ok()? {
@@ -165,6 +172,10 @@ fn failure_backoff(
 
 fn cache_key(provider: &str, account_id: &str) -> String {
     format!("{provider}::{account_id}")
+}
+
+fn is_authentication_failure(error: &str) -> bool {
+    error.contains("401 Unauthorized") || error.contains("403 Forbidden")
 }
 
 /// 判断单个 quota 窗口是否已失效。
@@ -253,6 +264,32 @@ mod tests {
 
         // 查成功一次即清零，不再退避。
         cache.set("claude", "a@x.com", vec![sample_quota()]);
+        assert!(cache
+            .in_failure_backoff("claude", "a@x.com", base, cap)
+            .is_none());
+    }
+
+    #[test]
+    fn authentication_failure_backoff_is_capped_at_base_interval() {
+        let base = std::time::Duration::from_secs(90);
+        let cap = std::time::Duration::from_secs(900);
+        let mut cache = QuotaCache::default();
+
+        for _ in 0..5 {
+            cache.record_failure(
+                "claude",
+                "a@x.com",
+                "quota fetch: usage returned 401 Unauthorized",
+            );
+        }
+        cache.failures.get_mut("claude::a@x.com").unwrap().failed_at =
+            Utc::now() - Duration::seconds(89);
+        assert!(cache
+            .in_failure_backoff("claude", "a@x.com", base, cap)
+            .is_some());
+
+        cache.failures.get_mut("claude::a@x.com").unwrap().failed_at =
+            Utc::now() - Duration::seconds(91);
         assert!(cache
             .in_failure_backoff("claude", "a@x.com", base, cap)
             .is_none());
