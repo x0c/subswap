@@ -174,6 +174,7 @@ fn build_draft(options: AddApiOptions, interactive: bool) -> Result<Draft> {
         .or(legacy_model);
     // 用户只配置 Opus、Sonnet、Haiku 三个 Claude Code 角色。
     // Kimi 的 K3 旗舰模型按会员档位解锁、不会自动路由，仍由用户对每个角色显式选择。
+    // 其余预设（含 DeepSeek）交互时同样逐个询问，预设默认值只作输入默认；
     // 任一 `--*-model` 参数都优先于交互选择与预设默认值。
     let (opus_model, sonnet_model, haiku_model) = if preset == "kimi" && interactive {
         let (opus, sonnet, haiku) = prompt_kimi_models()?;
@@ -185,19 +186,19 @@ fn build_draft(options: AddApiOptions, interactive: bool) -> Result<Draft> {
     } else {
         let opus_model = value_or_prompt(
             opus_model_option,
-            interactive && preset == "custom",
+            interactive && preset != "kimi",
             "Opus model",
             defaults.opus_model,
         )?;
         let sonnet_model = value_or_prompt(
             sonnet_model_option,
-            interactive && preset == "custom",
+            interactive && preset != "kimi",
             "Sonnet model",
             defaults.sonnet_model,
         )?;
         let haiku_model = value_or_prompt(
             haiku_model_option,
-            interactive && preset == "custom",
+            interactive && preset != "kimi",
             "Haiku model",
             defaults.haiku_model,
         )?;
@@ -437,6 +438,16 @@ mod tests {
             "kimi-for-coding"
         );
         assert_eq!(flag_or(None, "kimi-for-coding"), "kimi-for-coding");
+    }
+
+    #[test]
+    fn deepseek_preset_defaults_use_official_endpoint_and_models() {
+        let defaults = preset_defaults("deepseek");
+        assert_eq!(defaults.endpoint, "https://api.deepseek.com/anthropic");
+        // 默认模型作为交互询问的输入默认值，非交互路径直接采用。
+        assert_eq!(defaults.opus_model, "deepseek-v4-pro[1m]");
+        assert_eq!(defaults.sonnet_model, "deepseek-v4-pro[1m]");
+        assert_eq!(defaults.haiku_model, "deepseek-v4-flash");
     }
 
     #[test]
