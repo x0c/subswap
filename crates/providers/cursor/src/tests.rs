@@ -825,6 +825,7 @@ fn unlogged_desktop_database_falls_back_to_cursor_cli_credentials() {
             assert_eq!(selected_config, cli_config);
         }
         CredentialSource::Desktop { .. } => panic!("should use Cursor CLI credentials"),
+        #[cfg(target_os = "macos")]
         CredentialSource::Agent { .. } => panic!("expected file-backed Cursor CLI credentials"),
     }
 }
