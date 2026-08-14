@@ -25,13 +25,22 @@
 - 手动 `subswap swap` 永远不依赖 quota 查询；网络坏、quota API 坏、token 过期时也要能切走。
 - Claude 自定义 API 账号必须标记 `manual_only`：只能手动切入，active 时禁用自动换号，也不能成为自动候选；
   切回 OAuth 时必须恢复进入 API 模式前的 `settings.json.env` 受管字段。
-- macOS 上读写 Claude Code 的 `Claude Code-credentials` keychain item **只能 fork `/usr/bin/security`**，
+- macOS 上读写 Claude Code 的 `Claude Code-credentials`、以及 Cursor 命令行的
+  `cursor-access-token` / `cursor-refresh-token` keychain item **只能 fork `/usr/bin/security`**，
   禁止用 `keyring` crate（security-framework 原生 API）：keyring 写会把 item ACL 重置成「仅 subswap」，
-  导致 Claude Code（也用 `security` 读）每次切换后反复弹授权框。详见
+  导致官方客户端（也用 `security` 读）每次切换后反复弹授权框。详见
   [docs/troubleshooting/2026-06-11-claude-code-keychain-acl-poisoning.md](docs/troubleshooting/2026-06-11-claude-code-keychain-acl-poisoning.md)。
+  Cursor 官方钥匙串**已有条目只改内容、禁止 delete 后再 add**：删建会把解密权限收成「仅 security」，
+  桌面版界面邮箱对了、请求却报未登录。新建时才把 `/usr/bin/security` 和 Cursor.app 写入信任名单。
   - 测试隔离：集成测试**禁止触碰真实登录钥匙串**（否则 `cargo test` 在 macOS 弹授权框并改写本机凭证）。
-    所有 `security` 读写认 `SUBSWAP_CLAUDE_KEYCHAIN_PATH` 环境变量重定向到一次性 keychain；
-    `cli_surface.rs::isolated_subswap` 已统一设置它，新写的会激活 Claude OAuth 的集成测试也必须经它隔离。
+    Claude 认 `SUBSWAP_CLAUDE_KEYCHAIN_PATH`，Cursor 命令行认 `SUBSWAP_CURSOR_KEYCHAIN_PATH`；
+    `cli_surface.rs::isolated_subswap` 已把两者都指到同一份一次性 keychain。
+    新写的会激活 Claude OAuth 或 Cursor 命令行钥匙串的集成测试也必须经它隔离。
+- Cursor 命令行的令牌与身份必须成套读写：切换时同时写令牌后端和 `cli-config.json` 的 `authInfo`。
+  live 主人只认令牌 JWT，不得用过期邮箱去对号；仓库里令牌 JWT 与账号身份不一致时显示 `needs re-login`，
+  **禁止**拿这份令牌查额度或刷新（会把真正主人的一次性 refresh token 刷废）。
+  详见 [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) 的「Cursor」与
+  [docs/troubleshooting/2026-08-14-cursor-quota-cloned-across-accounts.md](docs/troubleshooting/2026-08-14-cursor-quota-cloned-across-accounts.md)。
 - `subswap run claude` 的隔离 `.claude.json` 必须包含 `hasCompletedOnboarding: true`，
   否则 claude 无论钥匙串里有无有效凭证都会弹「Select login method」首次引导——
   由 `materialize_isolated` 调 `mark_onboarding_complete` 写入；改隔离物化流程时不得删除该调用。
@@ -146,7 +155,7 @@ docs/                     中文项目文档
 | [docs/CLI.md](docs/CLI.md) | 改、评审、分析或排查 CLI 命令面、Provider 登录/导入语义、默认入口额度输出、`subswapd` 辅助进程、账号环境隔离命令或 Cursor 不支持隔离运行的边界前必读 |
 | [docs/OPERATIONS_GUIDE.md](docs/OPERATIONS_GUIDE.md) | 改、评审或排查本地构建、三平台测试隔离、release 构建、本机覆盖安装、daemon 冒烟、Linux 发布依赖安装、CI/Release 发布流程、Homebrew tap formula 更新机制或 `HOMEBREW_TAP_TOKEN` 配置前必读 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 规划、评审或同步里程碑范围、已完成能力和后续功能优先级前必读 |
-| [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（11 篇记录：keychain ACL 中毒、access/refresh token 覆写、429 vs invalid_grant、TOML null、Claude/Codex 用量 401 但客户端能正常用等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
+| [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（13 篇记录：keychain ACL 中毒、Cursor 命令行钥匙串登录查不到额度、Cursor 多个账号额度完全一样、access/refresh token 覆写、429 vs invalid_grant、TOML null、Claude/Codex 用量 401 但客户端能正常用等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
 
 ## 领域地图（doc-init）
 
