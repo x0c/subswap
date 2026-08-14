@@ -39,9 +39,13 @@ const AGENT_AUTH_ENV: &str = "SUBSWAP_CURSOR_AGENT_AUTH_PATH";
 /// 命令行 agent 的 cli-config.json 路径覆盖（绝对路径）。
 const AGENT_CONFIG_ENV: &str = "SUBSWAP_CURSOR_AGENT_CONFIG_PATH";
 /// macOS 命令行 agent 钥匙串文件覆盖（绝对路径）。测试必须设置，禁止碰真实登录钥匙串。
+#[cfg(target_os = "macos")]
 const AGENT_KEYCHAIN_ENV: &str = "SUBSWAP_CURSOR_KEYCHAIN_PATH";
+#[cfg(target_os = "macos")]
 const AGENT_ACCESS_SERVICE: &str = "cursor-access-token";
+#[cfg(target_os = "macos")]
 const AGENT_REFRESH_SERVICE: &str = "cursor-refresh-token";
+#[cfg(target_os = "macos")]
 const AGENT_KEYCHAIN_ACCOUNT: &str = "cursor-user";
 
 const ACCESS_KEY: &str = "cursorAuth/accessToken";
@@ -351,7 +355,10 @@ impl CursorProvider {
             return Ok(());
         };
         let stored = self.stored_blob(&owner).ok();
-        if live.refresh_token.is_none() && stored.as_ref().is_some_and(|blob| blob.refresh_token.is_some())
+        if live.refresh_token.is_none()
+            && stored
+                .as_ref()
+                .is_some_and(|blob| blob.refresh_token.is_some())
         {
             tracing::warn!(account = %owner.id, "skip Cursor live capture without refresh token");
             return Ok(());
@@ -362,9 +369,8 @@ impl CursorProvider {
                 to_store.email = stored.email;
                 to_store.auth_id = stored.auth_id.or(to_store.auth_id);
                 to_store.membership_type = stored.membership_type.or(to_store.membership_type);
-                to_store.subscription_status = stored
-                    .subscription_status
-                    .or(to_store.subscription_status);
+                to_store.subscription_status =
+                    stored.subscription_status.or(to_store.subscription_status);
                 to_store.sign_up_type = stored.sign_up_type.or(to_store.sign_up_type);
             }
         }
@@ -923,8 +929,7 @@ fn select_credential_source(desktop: PathBuf, agent: Option<CredentialSource>) -
 fn default_agent_auth_path() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
-        return directories::BaseDirs::new()
-            .map(|dirs| dirs.home_dir().join(".cursor/auth.json"));
+        return directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".cursor/auth.json"));
     }
     #[cfg(target_os = "windows")]
     {
@@ -933,8 +938,7 @@ fn default_agent_auth_path() -> Option<PathBuf> {
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        directories::BaseDirs::new()
-            .map(|dirs| dirs.home_dir().join(".config/cursor/auth.json"))
+        directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config/cursor/auth.json"))
     }
 }
 
@@ -1191,7 +1195,9 @@ struct AgentKeychainSnapshot {
 /// 命令行 token 快照：文件与钥匙串共用同一套回滚入口。
 #[derive(Debug, Clone, Serialize)]
 enum AgentTokenSnapshot {
-    File { bytes: Option<Vec<u8>> },
+    File {
+        bytes: Option<Vec<u8>>,
+    },
     #[cfg(target_os = "macos")]
     Keychain(AgentKeychainSnapshot),
 }
@@ -1305,11 +1311,7 @@ fn cursor_app_bundle_path() -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn security_set_cursor_password(
-    service: &str,
-    value: &str,
-    keychain: Option<&Path>,
-) -> Result<()> {
+fn security_set_cursor_password(service: &str, value: &str, keychain: Option<&Path>) -> Result<()> {
     if cursor_keychain_item_exists(service, keychain) {
         // 已有条目只改内容、不动 ACL。删建会把解密权限收成「仅 security」，
         // 桌面版读自己的令牌会报未登录。
@@ -1420,10 +1422,7 @@ fn snapshot_agent_keychain(keychain: Option<&Path>) -> Result<AgentKeychainSnaps
 }
 
 #[cfg(target_os = "macos")]
-fn restore_agent_keychain(
-    keychain: Option<&Path>,
-    previous: &AgentKeychainSnapshot,
-) -> Result<()> {
+fn restore_agent_keychain(keychain: Option<&Path>, previous: &AgentKeychainSnapshot) -> Result<()> {
     match &previous.access_token {
         Some(access) => security_set_cursor_password(AGENT_ACCESS_SERVICE, access, keychain)?,
         None => security_delete_cursor_password(AGENT_ACCESS_SERVICE, keychain)?,
@@ -1622,8 +1621,7 @@ fn account_matches_blob(account: &Account, blob: &CursorBlob) -> bool {
 }
 
 fn account_has_subject(account: &Account, subject: &str) -> bool {
-    account.extra.get("auth_id").and_then(Value::as_str) == Some(subject)
-        || account.id.0 == subject
+    account.extra.get("auth_id").and_then(Value::as_str) == Some(subject) || account.id.0 == subject
 }
 
 fn account_identity_fields_match(account: &Account, blob: &CursorBlob) -> bool {
