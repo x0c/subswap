@@ -25,9 +25,13 @@ fn isolated_subswap(tmp: &tempfile::TempDir) -> Command {
             "SUBSWAP_CURSOR_STATE_DB_PATH",
             tmp.path().join("cursor").join("state.vscdb"),
         )
+        // macOS：Cursor 命令行默认走钥匙串；测试必须重定向，禁止读写真实登录钥匙串。
+        .env("SUBSWAP_CURSOR_KEYCHAIN_PATH", test_keychain_path(tmp))
         // macOS：把 Claude Code 钥匙串读写重定向到一次性 keychain，绝不碰用户真实登录钥匙串
         // （否则集成测试会弹授权框并污染本机凭证）。
         .env("SUBSWAP_CLAUDE_KEYCHAIN_PATH", test_keychain_path(tmp))
+        // Cursor 命令行在 macOS 默认读登录钥匙串；测试必须重定向，禁止碰真实 cursor-access-token。
+        .env("SUBSWAP_CURSOR_KEYCHAIN_PATH", test_keychain_path(tmp))
         .env("SUBSWAP_NO_DAEMON", "1");
     command
 }

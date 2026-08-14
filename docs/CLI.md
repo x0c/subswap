@@ -49,8 +49,12 @@ eval "$(subswap env codex/bob@x.com)"   # 临时把当前 shell 指向某 codex 
 
 ## Cursor
 
-`subswap login cursor` 不打开浏览器或复制 Cursor 的登录流程：先在 Cursor 桌面端完成登录，再运行该命令导入当前
-账号。之后可用通用编号或 `cursor/<邮箱>` 执行 `swap` / `rm`。
+`subswap login cursor` 不打开浏览器或复制 Cursor 的登录流程：先在 Cursor 桌面端或 `cursor-agent` 完成登录，再运行
+该命令导入当前账号。之后可用通用编号或 `cursor/<邮箱>` 执行 `swap` / `rm`。
+只装命令行、没装桌面应用时同样能导入：macOS 读官方钥匙串，Linux 读命令行登录文件。若命令行已登录但列表仍没有
+Cursor，见 [troubleshooting/2026-08-14-cursor-quota-missing-cli-keychain.md](troubleshooting/2026-08-14-cursor-quota-missing-cli-keychain.md)。
+若多个 Cursor 账号余量数字完全一样，见
+[troubleshooting/2026-08-14-cursor-quota-cloned-across-accounts.md](troubleshooting/2026-08-14-cursor-quota-cloned-across-accounts.md)。
 
 Cursor 正在运行时，`swap` 会先请求它正常退出，等待进程完全结束后再切换账号，成功后自动重新打开；任一步失败
 都会恢复原账号状态，避免 Cursor 退出时把内存中的旧凭证写回磁盘。默认入口对两个官方窗口统一显示**余量**：

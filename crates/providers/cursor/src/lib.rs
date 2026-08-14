@@ -1,8 +1,9 @@
 //! Cursor Provider：导入与切换 Cursor 账号并查询官方用量。
 //! 支持两种凭证来源：桌面版 Electron 的 `state.vscdb`（SQLite），以及命令行
-//! agent（cursor-agent）的 `~/.config/cursor/auth.json`（accessToken / refreshToken）
-//! 配合 `~/.cursor/cli-config.json` 的 `authInfo`（邮箱等元数据）。两种来源共用同一套
-//! 额度查询与 refresh token 轮换逻辑。
+//! agent（cursor-agent）。agent 的 token 在 Linux 默认是 `~/.config/cursor/auth.json`，
+//! 在 macOS 默认是系统钥匙串（`cursor-access-token` / `cursor-refresh-token`），
+//! 文件后端时落在 `~/.cursor/auth.json`；邮箱等元数据在 `~/.cursor/cli-config.json`
+//! 的 `authInfo`。两种来源共用同一套额度查询与 refresh token 轮换逻辑。
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -37,6 +38,11 @@ const STATE_DB_ENV: &str = "SUBSWAP_CURSOR_STATE_DB_PATH";
 const AGENT_AUTH_ENV: &str = "SUBSWAP_CURSOR_AGENT_AUTH_PATH";
 /// 命令行 agent 的 cli-config.json 路径覆盖（绝对路径）。
 const AGENT_CONFIG_ENV: &str = "SUBSWAP_CURSOR_AGENT_CONFIG_PATH";
+/// macOS 命令行 agent 钥匙串文件覆盖（绝对路径）。测试必须设置，禁止碰真实登录钥匙串。
+const AGENT_KEYCHAIN_ENV: &str = "SUBSWAP_CURSOR_KEYCHAIN_PATH";
+const AGENT_ACCESS_SERVICE: &str = "cursor-access-token";
+const AGENT_REFRESH_SERVICE: &str = "cursor-refresh-token";
+const AGENT_KEYCHAIN_ACCOUNT: &str = "cursor-user";
 
 const ACCESS_KEY: &str = "cursorAuth/accessToken";
 const REFRESH_KEY: &str = "cursorAuth/refreshToken";
@@ -75,16 +81,26 @@ struct CursorBlob {
     sign_up_type: Option<String>,
 }
 
+/// 命令行 agent 的 token 后端。邮箱等元数据始终在 `cli-config.json`。
+#[derive(Clone, Debug)]
+enum AgentTokenStore {
+    /// `auth.json` 文件（Linux 默认；macOS 仅在官方文件后端时使用）。
+    File,
+    /// macOS 钥匙串（cursor-agent 在 Darwin 上的默认后端）。
+    #[cfg(target_os = "macos")]
+    Keychain { path: Option<PathBuf> },
+}
+
 /// Cursor 凭证来源。桌面版与命令行 agent 的存储布局不同，但对上层是同一套账号语义。
 #[derive(Clone, Debug)]
 enum CredentialSource {
     /// 桌面版 Electron：凭证在 `state.vscdb`（SQLite ItemTable）。
     Desktop { state_db: PathBuf },
-    /// 命令行 agent：accessToken / refreshToken 在 `auth.json`，
-    /// 邮箱等元数据在 `cli-config.json` 的 `authInfo`。
+    /// 命令行 agent：token 在文件或 macOS 钥匙串，邮箱等元数据在 `cli-config.json`。
     Agent {
         auth_json: PathBuf,
         cli_config: PathBuf,
+        token_store: AgentTokenStore,
     },
 }
 
@@ -96,7 +112,8 @@ impl CredentialSource {
             CredentialSource::Agent {
                 auth_json,
                 cli_config,
-            } => read_agent_blob(auth_json, cli_config),
+                token_store,
+            } => read_agent_blob(auth_json, cli_config, token_store),
         }
     }
 
@@ -201,7 +218,7 @@ impl CursorProvider {
             .map_err(join_error)?
     }
 
-    /// 对齐当前 Cursor 登录账号的元数据。Cursor 凭证位于普通 SQLite 文件，无钥匙串弹窗。
+    /// 对齐当前 Cursor 登录账号的元数据。桌面版走 SQLite；命令行在 macOS 上可能读钥匙串。
     pub async fn sync_active_metadata(&self, label_hint: Option<String>) -> Result<Account> {
         self.import_active(label_hint).await
     }
@@ -224,8 +241,34 @@ impl CursorProvider {
     }
 
     fn import_active_blocking(&self, label_hint: Option<String>) -> Result<Account> {
-        let blob = self.source.read_live()?;
+        let blob = self.canonicalize_live_blob(self.source.read_live()?)?;
         self.upsert_blob(blob, label_hint, true)
+    }
+
+    /// 令牌 JWT 才是 live 归属；过期的 cli-config 邮箱不得开出幽灵账号，也不得改写真正主人的身份字段。
+    fn canonicalize_live_blob(&self, mut live: CursorBlob) -> Result<CursorBlob> {
+        let Some(owner) = self.find_owner(&live)? else {
+            return Ok(live);
+        };
+        if owner_email_matches(&owner, &live) {
+            return Ok(live);
+        }
+        if let Some(stored) = self.stored_blob(&owner).ok() {
+            live.email = stored.email;
+            live.auth_id = stored.auth_id.or(live.auth_id);
+            live.membership_type = stored.membership_type.or(live.membership_type);
+            live.subscription_status = stored.subscription_status.or(live.subscription_status);
+            live.sign_up_type = stored.sign_up_type.or(live.sign_up_type);
+        } else if let Some(email) = owner.extra.get("email").and_then(Value::as_str) {
+            live.email = email.to_string();
+            live.auth_id = owner
+                .extra
+                .get("auth_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or(live.auth_id);
+        }
+        Ok(live)
     }
 
     fn upsert_blob(
@@ -307,29 +350,40 @@ impl CursorProvider {
         let Some(owner) = self.find_owner(live)? else {
             return Ok(());
         };
-        if live.refresh_token.is_none()
-            && self
-                .stored_blob(&owner)
-                .ok()
-                .is_some_and(|stored| stored.refresh_token.is_some())
+        let stored = self.stored_blob(&owner).ok();
+        if live.refresh_token.is_none() && stored.as_ref().is_some_and(|blob| blob.refresh_token.is_some())
         {
             tracing::warn!(account = %owner.id, "skip Cursor live capture without refresh token");
             return Ok(());
+        }
+        let mut to_store = live.clone();
+        if let Some(stored) = stored {
+            if !owner_email_matches(&owner, &to_store) {
+                to_store.email = stored.email;
+                to_store.auth_id = stored.auth_id.or(to_store.auth_id);
+                to_store.membership_type = stored.membership_type.or(to_store.membership_type);
+                to_store.subscription_status = stored
+                    .subscription_status
+                    .or(to_store.subscription_status);
+                to_store.sign_up_type = stored.sign_up_type.or(to_store.sign_up_type);
+            }
         }
         self.store.set(
             PROVIDER_ID,
             &owner.id.0,
             STORE_FIELD,
-            &serde_json::to_string(live)?,
+            &serde_json::to_string(&to_store)?,
         )
     }
 
     fn activate_blocking(&self, id: &AccountId) -> Result<()> {
         match self.source.clone() {
             CredentialSource::Desktop { state_db } => self.activate_desktop_blocking(id, &state_db),
-            CredentialSource::Agent { auth_json, .. } => {
-                self.activate_agent_blocking(id, &auth_json)
-            }
+            CredentialSource::Agent {
+                auth_json,
+                cli_config,
+                token_store,
+            } => self.activate_agent_blocking(id, &auth_json, &cli_config, &token_store),
         }
     }
 
@@ -367,6 +421,9 @@ impl CursorProvider {
             Err(error) => return Err(self.restart_old_after_failure(cursor_was_running, error)),
         };
         if let Err(error) = validate_blob(&target) {
+            return Err(self.restart_old_after_failure(cursor_was_running, error));
+        }
+        if let Err(error) = reject_foreign_credentials(&account, &target) {
             return Err(self.restart_old_after_failure(cursor_was_running, error));
         }
         let before = match snapshot_items(&conn) {
@@ -432,47 +489,74 @@ impl CursorProvider {
         Ok(())
     }
 
-    /// 命令行 agent 切换：把目标账号凭证写回 auth.json 并标记 active。
-    /// agent 无 GUI 进程生命周期需协调，写文件后 cursor-agent 下次读取即生效。
-    fn activate_agent_blocking(&self, id: &AccountId, auth_json: &Path) -> Result<()> {
+    /// 命令行 agent 切换：令牌与 cli-config 身份必须成套写入，失败则两边一起回滚。
+    /// agent 无 GUI 进程生命周期需协调，写回后 cursor-agent 下次读取即生效。
+    fn activate_agent_blocking(
+        &self,
+        id: &AccountId,
+        auth_json: &Path,
+        cli_config: &Path,
+        token_store: &AgentTokenStore,
+    ) -> Result<()> {
         let _switch_lock = self.acquire_switch_lock()?;
         let account = self.require_account(id)?;
 
-        // 覆盖前先把当前 agent 登录凭证回灌其 owner 账号，避免丢失客户端刚轮换的 token。
+        // 覆盖前先把当前 agent 登录凭证回灌其 JWT 主人，避免丢失客户端刚轮换的 token。
         if let Ok(live) = self.source.read_live() {
             self.capture_live_into_store(&live)?;
         }
         let target = self.stored_blob(&account)?;
         validate_blob(&target)?;
+        reject_foreign_credentials(&account, &target)?;
 
-        // 快照旧 auth.json 与 registry，便于失败回滚与手工恢复。
-        let previous = std::fs::read(auth_json).ok();
-        self.persist_pre_swap_agent_snapshot(previous.as_deref())?;
+        let previous_config = std::fs::read(cli_config).ok();
         let registry_before = self.registry.load()?;
+        let previous_tokens = snapshot_agent_tokens(auth_json, token_store)?;
+        self.persist_pre_swap_agent_bundle(&previous_tokens, previous_config.as_deref())?;
 
-        write_agent_blob(auth_json, &target)?;
+        if let Err(error) = write_agent_live(auth_json, cli_config, token_store, &target) {
+            let token_rollback = restore_agent_tokens(auth_json, token_store, &previous_tokens);
+            let config_rollback = restore_bytes(cli_config, previous_config.as_deref());
+            return Err(Error::Provider(format!(
+                "write Cursor CLI credentials failed: {error}; token rollback: {}; cli-config rollback: {}",
+                rollback_result(token_rollback),
+                rollback_result(config_rollback)
+            )));
+        }
         if let Err(error) = self.registry.set_active(PROVIDER_ID, id) {
-            let file_rollback = restore_agent_auth(auth_json, previous.as_deref());
+            let token_rollback = restore_agent_tokens(auth_json, token_store, &previous_tokens);
+            let config_rollback = restore_bytes(cli_config, previous_config.as_deref());
             let registry_rollback = self.registry.save(&registry_before);
             return Err(Error::Provider(format!(
-                "mark Cursor account active failed: {error}; auth.json rollback: {}; registry rollback: {}",
-                rollback_result(file_rollback),
+                "mark Cursor account active failed: {error}; token rollback: {}; cli-config rollback: {}; registry rollback: {}",
+                rollback_result(token_rollback),
+                rollback_result(config_rollback),
                 rollback_result(registry_rollback)
             )));
         }
         Ok(())
     }
 
-    fn persist_pre_swap_agent_snapshot(&self, previous: Option<&[u8]>) -> Result<()> {
+    fn persist_pre_swap_agent_bundle(
+        &self,
+        previous_tokens: &AgentTokenSnapshot,
+        previous_config: Option<&[u8]>,
+    ) -> Result<()> {
         let registry = std::fs::read(self.registry.path())?;
-        let mut entries = vec![SnapshotEntry {
-            name: "registry.toml".into(),
-            content: registry,
-        }];
-        if let Some(previous) = previous {
+        let mut entries = vec![
+            SnapshotEntry {
+                name: "registry.toml".into(),
+                content: registry,
+            },
+            SnapshotEntry {
+                name: "cursor-agent-tokens.json".into(),
+                content: serde_json::to_vec_pretty(previous_tokens)?,
+            },
+        ];
+        if let Some(previous_config) = previous_config {
             entries.push(SnapshotEntry {
-                name: "cursor-auth.json".into(),
-                content: previous.to_vec(),
+                name: "cursor-cli-config.json".into(),
+                content: previous_config.to_vec(),
             });
         }
         persist_pre_swap_snapshot_in(PROVIDER_ID, &self.snapshots_dir, entries)?;
@@ -521,6 +605,7 @@ impl CursorProvider {
             .map_err(join_error)??;
 
         let (mut blob, source) = self.blob_for_query(account.clone()).await?;
+        reject_foreign_credentials(&account, &blob)?;
         match self.fetch_usage(&account.id, &blob).await {
             Ok(quotas) => Ok(quotas),
             Err(UsageError::Unauthorized) if source == QuerySource::LiveOwner => {
@@ -568,10 +653,19 @@ impl CursorProvider {
         tokio::task::spawn_blocking(move || match this.source.read_live() {
             Ok(live) if account_matches_blob(&account, &live) => {
                 this.capture_live_into_store(&live)?;
+                let live = this.canonicalize_live_blob(live)?;
                 Ok((live, QuerySource::LiveOwner))
             }
-            Ok(_) => Ok((this.stored_blob(&account)?, QuerySource::ParkedConfirmed)),
-            Err(_) => Ok((this.stored_blob(&account)?, QuerySource::LiveUnreadable)),
+            Ok(_) => {
+                let stored = this.stored_blob(&account)?;
+                reject_foreign_credentials(&account, &stored)?;
+                Ok((stored, QuerySource::ParkedConfirmed))
+            }
+            Err(_) => {
+                let stored = this.stored_blob(&account)?;
+                reject_foreign_credentials(&account, &stored)?;
+                Ok((stored, QuerySource::LiveUnreadable))
+            }
         })
         .await
         .map_err(join_error)?
@@ -621,7 +715,9 @@ impl CursorProvider {
         let (guard, mut blob, dead_fingerprint) = tokio::task::spawn_blocking(move || {
             let guard = this.acquire_refresh_lock(&account_id)?;
             // 锁内重读：另一进程可能已经完成一次性 refresh token 轮换。
-            let latest = this.stored_blob(&this.require_account(&account_id)?)?;
+            let account = this.require_account(&account_id)?;
+            let latest = this.stored_blob(&account)?;
+            reject_foreign_credentials(&account, &latest)?;
             let dead_fingerprint = guard.dead_fingerprint()?;
             Ok::<_, Error>((guard, latest, dead_fingerprint))
         })
@@ -759,8 +855,9 @@ impl Provider for CursorProvider {
     }
 }
 
-/// 解析默认凭证来源：显式覆盖优先，其次按「桌面版数据库存在 → 桌面版；否则 agent auth.json
-/// 存在 → agent」自动探测；两者都不存在时回退桌面路径，读取时给出「请先登录」提示。
+/// 解析默认凭证来源：显式覆盖优先；否则桌面库能读出有效登录时用桌面版。
+/// 桌面未登录时回退命令行：文件后端的 auth.json，或 macOS 钥匙串里的 access token。
+/// 两者都不存在时回退桌面路径，读取时给出「请先登录」提示。
 fn default_credential_source() -> Result<CredentialSource> {
     if std::env::var_os(STATE_DB_ENV).is_none() {
         if let Some(auth) = std::env::var_os(AGENT_AUTH_ENV) {
@@ -773,6 +870,7 @@ fn default_credential_source() -> Result<CredentialSource> {
             return Ok(CredentialSource::Agent {
                 auth_json,
                 cli_config,
+                token_store: AgentTokenStore::File,
             });
         }
     }
@@ -781,25 +879,63 @@ fn default_credential_source() -> Result<CredentialSource> {
     if std::env::var_os(STATE_DB_ENV).is_some() {
         return Ok(CredentialSource::Desktop { state_db: desktop });
     }
-    if desktop.exists() {
-        return Ok(CredentialSource::Desktop { state_db: desktop });
+    let agent = default_agent_source();
+    Ok(select_credential_source(desktop, agent))
+}
+
+/// 找到 CLI 凭证时优先保留为候选来源。配置文件缺失不阻止导入：可从 JWT 解析身份。
+fn default_agent_source() -> Option<CredentialSource> {
+    let auth_json = default_agent_auth_path()?;
+    let cli_config =
+        default_agent_config_path().unwrap_or_else(|| auth_json.with_file_name("cli-config.json"));
+    if agent_file_has_access_token(&auth_json) {
+        return Some(CredentialSource::Agent {
+            auth_json,
+            cli_config,
+            token_store: AgentTokenStore::File,
+        });
     }
-    if let Some(auth_json) = default_agent_auth_path() {
-        if auth_json.exists() {
-            let cli_config = default_agent_config_path()
-                .unwrap_or_else(|| auth_json.with_file_name("cli-config.json"));
-            return Ok(CredentialSource::Agent {
+    #[cfg(target_os = "macos")]
+    {
+        let path = cursor_keychain_override();
+        if agent_keychain_has_access_token(path.as_deref()) {
+            return Some(CredentialSource::Agent {
                 auth_json,
                 cli_config,
+                token_store: AgentTokenStore::Keychain { path },
             });
         }
     }
-    Ok(CredentialSource::Desktop { state_db: desktop })
+    None
 }
 
-/// cursor-agent 的 auth.json 默认路径：`~/.config/cursor/auth.json`。
+/// 桌面数据库可能由未登录的旧安装留下。只有能读出有效凭证时才优先桌面端，
+/// 否则回退到已登录的 Cursor CLI，避免默认入口静默遗漏该账号。
+fn select_credential_source(desktop: PathBuf, agent: Option<CredentialSource>) -> CredentialSource {
+    if desktop.exists() && (read_live_blob(&desktop).is_ok() || agent.is_none()) {
+        return CredentialSource::Desktop { state_db: desktop };
+    }
+    agent.unwrap_or(CredentialSource::Desktop { state_db: desktop })
+}
+
+/// cursor-agent 登录文件路径。与官方 CLI 对齐：macOS 为 `~/.cursor/auth.json`，
+/// Linux 为 `~/.config/cursor/auth.json`，Windows 为 `%APPDATA%/Cursor/auth.json`。
 fn default_agent_auth_path() -> Option<PathBuf> {
-    directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config/cursor/auth.json"))
+    #[cfg(target_os = "macos")]
+    {
+        return directories::BaseDirs::new()
+            .map(|dirs| dirs.home_dir().join(".cursor/auth.json"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return std::env::var_os("APPDATA")
+            .map(|appdata| PathBuf::from(appdata).join("Cursor/auth.json"));
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        directories::BaseDirs::new()
+            .map(|dirs| dirs.home_dir().join(".config/cursor/auth.json"))
+    }
 }
 
 /// cursor-agent 的 cli-config.json 默认路径：`~/.cursor/cli-config.json`。
@@ -843,8 +979,21 @@ fn require_absolute(path: PathBuf, env: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// 从 cursor-agent 的 auth.json（token）与 cli-config.json（authInfo 元数据）拼出账号凭证。
-fn read_agent_blob(auth_json: &Path, cli_config: &Path) -> Result<CursorBlob> {
+/// 从 cursor-agent 的 token 后端与 cli-config.json（authInfo 元数据）拼出账号凭证。
+fn read_agent_blob(
+    auth_json: &Path,
+    cli_config: &Path,
+    token_store: &AgentTokenStore,
+) -> Result<CursorBlob> {
+    let (access_token, refresh_token) = match token_store {
+        AgentTokenStore::File => read_agent_file_tokens(auth_json)?,
+        #[cfg(target_os = "macos")]
+        AgentTokenStore::Keychain { path } => read_agent_keychain_tokens(path.as_deref())?,
+    };
+    agent_blob_from_tokens(access_token, refresh_token, cli_config)
+}
+
+fn read_agent_file_tokens(auth_json: &Path) -> Result<(String, Option<String>)> {
     if !auth_json.exists() {
         return Err(Error::Provider(format!(
             "Cursor CLI agent is not signed in ({} not found); run `cursor-agent login` first",
@@ -864,26 +1013,33 @@ fn read_agent_blob(auth_json: &Path, cli_config: &Path) -> Result<CursorBlob> {
         .get("refreshToken")
         .and_then(Value::as_str)
         .and_then(|token| non_empty(Some(token.to_string())));
+    Ok((access_token, refresh_token))
+}
 
-    // 邮箱、authId 等元数据在 cli-config.json 的 authInfo；缺失时回退到 access token 的 JWT sub。
+fn agent_file_has_access_token(auth_json: &Path) -> bool {
+    read_agent_file_tokens(auth_json).is_ok()
+}
+
+fn agent_blob_from_tokens(
+    access_token: String,
+    refresh_token: Option<String>,
+    cli_config: &Path,
+) -> Result<CursorBlob> {
+    // 邮箱、authId 等元数据在 cli-config.json 的 authInfo。若 authId 与令牌 JWT 不一致，
+    // 说明身份文件是过期拼接，绝不能把当前令牌算到那个邮箱头上。
     let config = std::fs::read_to_string(cli_config)
         .ok()
         .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
     let auth_info = config.as_ref().and_then(|value| value.get("authInfo"));
-    let email = auth_info
+    let info_email = auth_info
         .and_then(|value| value.get("email"))
         .and_then(Value::as_str)
-        .and_then(|email| non_empty(Some(email.to_string())))
-        .or_else(|| jwt_subject(&access_token))
-        .ok_or_else(|| {
-            Error::Provider("cannot resolve Cursor agent account email or identity".into())
-        })?;
-    let auth_id = auth_info
+        .and_then(|email| non_empty(Some(email.to_string())));
+    let info_auth_id = auth_info
         .and_then(|value| value.get("authId"))
         .and_then(Value::as_str)
-        .map(str::to_string)
-        .or_else(|| jwt_subject(&access_token));
-    let membership_type = auth_info
+        .and_then(|id| non_empty(Some(id.to_string())));
+    let info_membership = auth_info
         .and_then(|value| {
             value
                 .get("membershipType")
@@ -891,6 +1047,23 @@ fn read_agent_blob(auth_json: &Path, cli_config: &Path) -> Result<CursorBlob> {
         })
         .and_then(Value::as_str)
         .map(str::to_string);
+    let jwt_sub = jwt_subject(&access_token);
+    let auth_info_agrees = match (&jwt_sub, &info_auth_id) {
+        (Some(sub), Some(auth_id)) => auth_id == sub,
+        _ => true,
+    };
+    let (email, auth_id, membership_type) = if auth_info_agrees {
+        (
+            info_email.or_else(|| jwt_sub.clone()),
+            info_auth_id.or_else(|| jwt_sub.clone()),
+            info_membership,
+        )
+    } else {
+        (jwt_sub.clone(), jwt_sub, None)
+    };
+    let email = email.ok_or_else(|| {
+        Error::Provider("cannot resolve Cursor agent account email or identity".into())
+    })?;
 
     let blob = CursorBlob {
         access_token,
@@ -933,6 +1106,62 @@ fn write_agent_blob(auth_json: &Path, blob: &CursorBlob) -> Result<()> {
     Ok(())
 }
 
+/// 把账号身份写回 cli-config.json 的 authInfo，保留文件中的其他字段。
+fn write_agent_cli_config(cli_config: &Path, blob: &CursorBlob) -> Result<()> {
+    let mut root = std::fs::read_to_string(cli_config)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Map<String, Value>>(&raw).ok())
+        .unwrap_or_default();
+    let mut auth_info = root
+        .get("authInfo")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    auth_info.insert("email".into(), Value::String(blob.email.clone()));
+    match &blob.auth_id {
+        Some(auth_id) => {
+            auth_info.insert("authId".into(), Value::String(auth_id.clone()));
+        }
+        None => {
+            auth_info.remove("authId");
+        }
+    }
+    match &blob.membership_type {
+        Some(membership) => {
+            auth_info.insert("membershipType".into(), Value::String(membership.clone()));
+        }
+        None => {}
+    }
+    root.insert("authInfo".into(), Value::Object(auth_info));
+    if let Some(parent) = cli_config.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = open_private_file(cli_config)?;
+    file.set_len(0)?;
+    file.write_all(serde_json::to_string_pretty(&root)?.as_bytes())?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// 令牌与身份成套写入当前 agent 后端。
+fn write_agent_live(
+    auth_json: &Path,
+    cli_config: &Path,
+    token_store: &AgentTokenStore,
+    blob: &CursorBlob,
+) -> Result<()> {
+    match token_store {
+        AgentTokenStore::File => write_agent_blob(auth_json, blob)?,
+        #[cfg(target_os = "macos")]
+        AgentTokenStore::Keychain { path } => write_agent_keychain(path.as_deref(), blob)?,
+    }
+    write_agent_cli_config(cli_config, blob)
+}
+
+fn restore_bytes(path: &Path, previous: Option<&[u8]>) -> Result<()> {
+    restore_agent_auth(path, previous)
+}
+
 /// 回滚 auth.json：有旧内容则还原，原本不存在则删除。
 fn restore_agent_auth(auth_json: &Path, previous: Option<&[u8]>) -> Result<()> {
     match previous {
@@ -949,6 +1178,263 @@ fn restore_agent_auth(auth_json: &Path, previous: Option<&[u8]>) -> Result<()> {
             Err(error) => Err(error.into()),
         },
     }
+}
+
+/// 命令行钥匙串快照，供切换失败回滚。不保存到用户可见输出。
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Default, Serialize)]
+struct AgentKeychainSnapshot {
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+}
+
+/// 命令行 token 快照：文件与钥匙串共用同一套回滚入口。
+#[derive(Debug, Clone, Serialize)]
+enum AgentTokenSnapshot {
+    File { bytes: Option<Vec<u8>> },
+    #[cfg(target_os = "macos")]
+    Keychain(AgentKeychainSnapshot),
+}
+
+fn snapshot_agent_tokens(
+    auth_json: &Path,
+    token_store: &AgentTokenStore,
+) -> Result<AgentTokenSnapshot> {
+    match token_store {
+        AgentTokenStore::File => Ok(AgentTokenSnapshot::File {
+            bytes: std::fs::read(auth_json).ok(),
+        }),
+        #[cfg(target_os = "macos")]
+        AgentTokenStore::Keychain { path } => Ok(AgentTokenSnapshot::Keychain(
+            snapshot_agent_keychain(path.as_deref())?,
+        )),
+    }
+}
+
+fn restore_agent_tokens(
+    auth_json: &Path,
+    token_store: &AgentTokenStore,
+    previous: &AgentTokenSnapshot,
+) -> Result<()> {
+    match (token_store, previous) {
+        (AgentTokenStore::File, AgentTokenSnapshot::File { bytes }) => {
+            restore_agent_auth(auth_json, bytes.as_deref())
+        }
+        #[cfg(target_os = "macos")]
+        (AgentTokenStore::Keychain { path }, AgentTokenSnapshot::Keychain(snapshot)) => {
+            restore_agent_keychain(path.as_deref(), snapshot)
+        }
+        #[cfg(target_os = "macos")]
+        _ => Err(Error::Provider(
+            "Cursor CLI token snapshot does not match the current credential store".into(),
+        )),
+    }
+}
+
+/// 测试隔离用一次性钥匙串；生产环境不设，走登录钥匙串。
+#[cfg(target_os = "macos")]
+fn cursor_keychain_override() -> Option<PathBuf> {
+    std::env::var_os(AGENT_KEYCHAIN_ENV)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
+/// 与 Claude 相同：只 fork `/usr/bin/security`，避免 keyring crate 改写 ACL。
+#[cfg(target_os = "macos")]
+fn run_cursor_security(base: &[&str], keychain: Option<&Path>) -> Result<std::process::Output> {
+    let mut command = Command::new("/usr/bin/security");
+    command.args(base);
+    if let Some(path) = keychain {
+        command.arg(path);
+    }
+    command
+        .output()
+        .map_err(|error| Error::Credential(format!("run /usr/bin/security failed: {error}")))
+}
+
+#[cfg(target_os = "macos")]
+fn security_find_cursor_password(service: &str, keychain: Option<&Path>) -> Result<Option<String>> {
+    let output = run_cursor_security(
+        &[
+            "find-generic-password",
+            "-s",
+            service,
+            "-a",
+            AGENT_KEYCHAIN_ACCOUNT,
+            "-w",
+        ],
+        keychain,
+    )?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let mut raw = String::from_utf8(output.stdout)
+        .map_err(|error| Error::Credential(format!("Cursor keychain non-UTF8: {error}")))?;
+    if raw.ends_with('\n') {
+        raw.pop();
+    }
+    Ok(non_empty(Some(raw)))
+}
+
+#[cfg(target_os = "macos")]
+fn cursor_keychain_item_exists(service: &str, keychain: Option<&Path>) -> bool {
+    run_cursor_security(
+        &[
+            "find-generic-password",
+            "-s",
+            service,
+            "-a",
+            AGENT_KEYCHAIN_ACCOUNT,
+        ],
+        keychain,
+    )
+    .map(|output| output.status.success())
+    .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn cursor_app_bundle_path() -> Option<String> {
+    let mut candidates = vec![PathBuf::from("/Applications/Cursor.app")];
+    if let Some(dirs) = directories::BaseDirs::new() {
+        candidates.push(dirs.home_dir().join("Applications/Cursor.app"));
+    }
+    candidates
+        .into_iter()
+        .find(|path| path.exists())
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn security_set_cursor_password(
+    service: &str,
+    value: &str,
+    keychain: Option<&Path>,
+) -> Result<()> {
+    if cursor_keychain_item_exists(service, keychain) {
+        // 已有条目只改内容、不动 ACL。删建会把解密权限收成「仅 security」，
+        // 桌面版读自己的令牌会报未登录。
+        let update = run_cursor_security(
+            &[
+                "add-generic-password",
+                "-a",
+                AGENT_KEYCHAIN_ACCOUNT,
+                "-s",
+                service,
+                "-w",
+                value,
+                "-U",
+            ],
+            keychain,
+        )?;
+        if update.status.success() {
+            return Ok(());
+        }
+        return Err(Error::Credential(format!(
+            "update Cursor keychain item {service} failed: {}",
+            String::from_utf8_lossy(&update.stderr)
+        )));
+    }
+
+    let cursor_app = cursor_app_bundle_path();
+    let mut args = vec![
+        "add-generic-password",
+        "-a",
+        AGENT_KEYCHAIN_ACCOUNT,
+        "-s",
+        service,
+        "-w",
+        value,
+        "-U",
+        "-T",
+        "/usr/bin/security",
+    ];
+    if let Some(app) = cursor_app.as_deref() {
+        args.push("-T");
+        args.push(app);
+    }
+    let add = run_cursor_security(&args, keychain)?;
+    if add.status.success() {
+        return Ok(());
+    }
+    Err(Error::Credential(format!(
+        "write Cursor CLI keychain failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    )))
+}
+
+#[cfg(target_os = "macos")]
+fn security_delete_cursor_password(service: &str, keychain: Option<&Path>) -> Result<()> {
+    let _ = run_cursor_security(
+        &[
+            "delete-generic-password",
+            "-s",
+            service,
+            "-a",
+            AGENT_KEYCHAIN_ACCOUNT,
+        ],
+        keychain,
+    )?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn read_agent_keychain_tokens(keychain: Option<&Path>) -> Result<(String, Option<String>)> {
+    let access = security_find_cursor_password(AGENT_ACCESS_SERVICE, keychain)?.ok_or_else(|| {
+        Error::Provider(
+            "Cursor CLI agent is not signed in (macOS keychain has no access token); run `cursor-agent login` first"
+                .into(),
+        )
+    })?;
+    let refresh = security_find_cursor_password(AGENT_REFRESH_SERVICE, keychain)?;
+    Ok((access, refresh))
+}
+
+#[cfg(target_os = "macos")]
+fn agent_keychain_has_access_token(keychain: Option<&Path>) -> bool {
+    matches!(
+        security_find_cursor_password(AGENT_ACCESS_SERVICE, keychain),
+        Ok(Some(_))
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn write_agent_keychain(keychain: Option<&Path>, blob: &CursorBlob) -> Result<()> {
+    security_set_cursor_password(AGENT_ACCESS_SERVICE, &blob.access_token, keychain)?;
+    match &blob.refresh_token {
+        Some(refresh) => {
+            security_set_cursor_password(AGENT_REFRESH_SERVICE, refresh, keychain)?;
+        }
+        None => {
+            security_delete_cursor_password(AGENT_REFRESH_SERVICE, keychain)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn snapshot_agent_keychain(keychain: Option<&Path>) -> Result<AgentKeychainSnapshot> {
+    Ok(AgentKeychainSnapshot {
+        access_token: security_find_cursor_password(AGENT_ACCESS_SERVICE, keychain)?,
+        refresh_token: security_find_cursor_password(AGENT_REFRESH_SERVICE, keychain)?,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn restore_agent_keychain(
+    keychain: Option<&Path>,
+    previous: &AgentKeychainSnapshot,
+) -> Result<()> {
+    match &previous.access_token {
+        Some(access) => security_set_cursor_password(AGENT_ACCESS_SERVICE, access, keychain)?,
+        None => security_delete_cursor_password(AGENT_ACCESS_SERVICE, keychain)?,
+    }
+    match &previous.refresh_token {
+        Some(refresh) => {
+            security_set_cursor_password(AGENT_REFRESH_SERVICE, refresh, keychain)?;
+        }
+        None => security_delete_cursor_password(AGENT_REFRESH_SERVICE, keychain)?,
+    }
+    Ok(())
 }
 
 fn read_live_blob(path: &Path) -> Result<CursorBlob> {
@@ -1124,8 +1610,25 @@ fn parse_reset_at(value: &Value) -> Option<DateTime<Utc>> {
 }
 
 fn account_matches_blob(account: &Account, blob: &CursorBlob) -> bool {
+    if let Some(sub) = jwt_subject(&blob.access_token) {
+        return account_has_subject(account, &sub);
+    }
     if let Some(auth_id) = &blob.auth_id {
-        if account.extra.get("auth_id").and_then(Value::as_str) == Some(auth_id) {
+        if account_has_subject(account, auth_id) {
+            return true;
+        }
+    }
+    account_identity_fields_match(account, blob)
+}
+
+fn account_has_subject(account: &Account, subject: &str) -> bool {
+    account.extra.get("auth_id").and_then(Value::as_str) == Some(subject)
+        || account.id.0 == subject
+}
+
+fn account_identity_fields_match(account: &Account, blob: &CursorBlob) -> bool {
+    if let Some(auth_id) = &blob.auth_id {
+        if account.extra.get("auth_id").and_then(Value::as_str) == Some(auth_id.as_str()) {
             return true;
         }
     }
@@ -1135,6 +1638,31 @@ fn account_matches_blob(account: &Account, blob: &CursorBlob) -> bool {
         .and_then(Value::as_str)
         .is_some_and(|email| email.eq_ignore_ascii_case(&blob.email))
         || account.id.0.eq_ignore_ascii_case(&blob.email)
+}
+
+fn owner_email_matches(account: &Account, blob: &CursorBlob) -> bool {
+    account
+        .extra
+        .get("email")
+        .and_then(Value::as_str)
+        .is_some_and(|email| email.eq_ignore_ascii_case(&blob.email))
+}
+
+fn credentials_belong_to_account(account: &Account, blob: &CursorBlob) -> bool {
+    match jwt_subject(&blob.access_token) {
+        Some(sub) => account_has_subject(account, &sub),
+        None => true,
+    }
+}
+
+fn reject_foreign_credentials(account: &Account, blob: &CursorBlob) -> Result<()> {
+    if credentials_belong_to_account(account, blob) {
+        return Ok(());
+    }
+    Err(Error::QuotaFetch(format!(
+        "re-login required for cursor:{}; stored credentials belong to another Cursor account",
+        account.id
+    )))
 }
 
 fn identity_for(blob: &CursorBlob) -> String {

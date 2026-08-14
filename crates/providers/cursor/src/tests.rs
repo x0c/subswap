@@ -1,10 +1,11 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
 use rusqlite::Connection;
-use subswap_core::{AccountRegistry, FileStore, Provider, QuotaWindow};
+use subswap_core::{AccountRegistry, CredentialStore, FileStore, Provider, QuotaWindow};
 
 use super::*;
 
@@ -725,6 +726,7 @@ fn agent_provider(
             source: CredentialSource::Agent {
                 auth_json,
                 cli_config,
+                token_store: AgentTokenStore::File,
             },
             usage_url,
             token_url,
@@ -793,6 +795,68 @@ async fn imports_and_queries_cursor_cli_agent_credentials() {
     assert!(requests[0].starts_with("GET /usage"));
 }
 
+#[test]
+fn unlogged_desktop_database_falls_back_to_cursor_cli_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    let desktop = temp.path().join("state.vscdb");
+    let conn = Connection::open(&desktop).unwrap();
+    conn.execute("CREATE TABLE ItemTable (key TEXT UNIQUE, value TEXT)", [])
+        .unwrap();
+    drop(conn);
+
+    let auth_json = temp.path().join("auth.json");
+    let cli_config = temp.path().join("cli-config.json");
+    let selected = select_credential_source(
+        desktop,
+        Some(CredentialSource::Agent {
+            auth_json: auth_json.clone(),
+            cli_config: cli_config.clone(),
+            token_store: AgentTokenStore::File,
+        }),
+    );
+
+    match selected {
+        CredentialSource::Agent {
+            auth_json: selected_auth,
+            cli_config: selected_config,
+            token_store: AgentTokenStore::File,
+        } => {
+            assert_eq!(selected_auth, auth_json);
+            assert_eq!(selected_config, cli_config);
+        }
+        CredentialSource::Desktop { .. } => panic!("should use Cursor CLI credentials"),
+        CredentialSource::Agent { .. } => panic!("expected file-backed Cursor CLI credentials"),
+    }
+}
+
+#[test]
+fn signed_in_desktop_database_stays_preferred_over_cursor_cli_credentials() {
+    let (_temp, _provider, desktop) = setup();
+    write_live(
+        &desktop,
+        "desktop@example.com",
+        "auth0|desktop",
+        &jwt("auth0|desktop", "desktop"),
+        "refresh-desktop",
+    );
+    let auth_json = desktop.with_file_name("auth.json");
+    let cli_config = desktop.with_file_name("cli-config.json");
+
+    let selected = select_credential_source(
+        desktop.clone(),
+        Some(CredentialSource::Agent {
+            auth_json,
+            cli_config,
+            token_store: AgentTokenStore::File,
+        }),
+    );
+
+    match selected {
+        CredentialSource::Desktop { state_db } => assert_eq!(state_db, desktop),
+        CredentialSource::Agent { .. } => panic!("should keep desktop credentials"),
+    }
+}
+
 #[tokio::test]
 async fn agent_activate_writes_target_credentials_back_to_auth_json() {
     let temp = tempfile::tempdir().unwrap();
@@ -828,8 +892,110 @@ async fn agent_activate_writes_target_credentials_back_to_auth_json() {
         written.get("refreshToken").and_then(|v| v.as_str()),
         Some("refresh-a")
     );
+    let config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cli_config).unwrap()).unwrap();
+    assert_eq!(
+        config.pointer("/authInfo/email").and_then(|v| v.as_str()),
+        Some("a@example.com")
+    );
+    assert_eq!(
+        config.pointer("/authInfo/authId").and_then(|v| v.as_str()),
+        Some("auth0|user_a")
+    );
     assert!(provider.require_account(&a.id).unwrap().active);
     assert!(!provider.require_account(&b.id).unwrap().active);
+}
+
+#[tokio::test]
+async fn stale_cli_config_does_not_capture_live_tokens_into_wrong_account() {
+    let temp = tempfile::tempdir().unwrap();
+    let auth_json = temp.path().join("auth.json");
+    let cli_config = temp.path().join("cli-config.json");
+    let access_a = jwt("auth0|user_a", "a");
+    write_agent_auth(&auth_json, &access_a, "refresh-a");
+    write_agent_config(&cli_config, "a@example.com", "auth0|user_a");
+    let provider = agent_provider(
+        temp.path(),
+        auth_json.clone(),
+        cli_config.clone(),
+        "http://127.0.0.1:9/usage".into(),
+        "http://127.0.0.1:9/token".into(),
+    );
+    let a = provider.import_active(None).await.unwrap();
+
+    let access_b = jwt("auth0|user_b", "b");
+    write_agent_auth(&auth_json, &access_b, "refresh-b");
+    write_agent_config(&cli_config, "b@example.com", "auth0|user_b");
+    let b = provider.import_active(None).await.unwrap();
+
+    // 令牌已切回 A，身份文件仍停在 B：旧逻辑会把 A 的令牌灌进 B 的仓库。
+    write_agent_auth(&auth_json, &access_a, "refresh-a");
+    write_agent_config(&cli_config, "b@example.com", "auth0|user_b");
+    let synced = provider.import_active(None).await.unwrap();
+
+    assert_eq!(synced.id, a.id);
+    assert_eq!(
+        synced.extra.get("email").and_then(|v| v.as_str()),
+        Some("a@example.com")
+    );
+    assert!(provider.require_account(&a.id).unwrap().active);
+    assert!(!provider.require_account(&b.id).unwrap().active);
+    assert_eq!(provider.stored_blob(&a).unwrap().access_token, access_a);
+    assert_eq!(provider.stored_blob(&b).unwrap().access_token, access_b);
+}
+
+#[tokio::test]
+async fn foreign_stored_token_does_not_query_or_refresh() {
+    let temp = tempfile::tempdir().unwrap();
+    let auth_json = temp.path().join("auth.json");
+    let cli_config = temp.path().join("cli-config.json");
+    let access_a = jwt("auth0|user_a", "a");
+    write_agent_auth(&auth_json, &access_a, "refresh-a");
+    write_agent_config(&cli_config, "a@example.com", "auth0|user_a");
+    let provider = agent_provider(
+        temp.path(),
+        auth_json.clone(),
+        cli_config.clone(),
+        "http://127.0.0.1:9/usage".into(),
+        "http://127.0.0.1:9/token".into(),
+    );
+    provider.import_active(None).await.unwrap();
+
+    let access_b = jwt("auth0|user_b", "b");
+    write_agent_auth(&auth_json, &access_b, "refresh-b");
+    write_agent_config(&cli_config, "b@example.com", "auth0|user_b");
+    let b = provider.import_active(None).await.unwrap();
+
+    let poisoned = CursorBlob {
+        access_token: access_a.clone(),
+        refresh_token: Some("refresh-a".into()),
+        email: "b@example.com".into(),
+        auth_id: Some("auth0|user_b".into()),
+        membership_type: None,
+        subscription_status: None,
+        sign_up_type: None,
+    };
+    FileStore::new(temp.path().join("credentials.json"))
+        .set(
+            PROVIDER_ID,
+            &b.id.0,
+            STORE_FIELD,
+            &serde_json::to_string(&poisoned).unwrap(),
+        )
+        .unwrap();
+
+    write_agent_auth(&auth_json, &access_a, "refresh-a");
+    write_agent_config(&cli_config, "a@example.com", "auth0|user_a");
+
+    let provider = agent_provider(
+        temp.path(),
+        auth_json,
+        cli_config,
+        "http://127.0.0.1:9/usage".into(),
+        "http://127.0.0.1:9/token".into(),
+    );
+    let error = provider.query_quota(&b.id).await.unwrap_err();
+    assert!(error.to_string().contains("re-login"), "{error}");
 }
 
 #[tokio::test]
@@ -878,4 +1044,160 @@ async fn concurrent_switches_are_serialized_by_provider_lock() {
     first.unwrap();
     second.unwrap();
     assert_eq!(probe.max.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn cursor_cli_auth_json_path_matches_official_cli() {
+    let path = default_agent_auth_path().unwrap();
+    #[cfg(target_os = "macos")]
+    assert!(path.ends_with(".cursor/auth.json"));
+    #[cfg(target_os = "windows")]
+    assert!(path.ends_with(std::path::Path::new("Cursor").join("auth.json")));
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    assert!(path.ends_with(std::path::Path::new(".config").join("cursor").join("auth.json")));
+}
+
+#[cfg(target_os = "macos")]
+fn create_test_cursor_keychain(dir: &std::path::Path) -> PathBuf {
+    let path = dir.join("cursor-cli.keychain-db");
+    let status = std::process::Command::new("/usr/bin/security")
+        .args(["create-keychain", "-p", ""])
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(status.success(), "create-keychain failed");
+    let _ = std::process::Command::new("/usr/bin/security")
+        .args(["set-keychain-settings", "-t", "86400", "-l"])
+        .arg(&path)
+        .status();
+    let _ = std::process::Command::new("/usr/bin/security")
+        .args(["unlock-keychain", "-p", ""])
+        .arg(&path)
+        .status();
+    path
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn imports_cursor_cli_tokens_from_isolated_keychain() {
+    let temp = tempfile::tempdir().unwrap();
+    let keychain = create_test_cursor_keychain(temp.path());
+    let cli_config = temp.path().join("cli-config.json");
+    let auth_json = temp.path().join("auth.json");
+    write_agent_config(&cli_config, "cli@example.com", "auth0|user_cli");
+    let access = jwt("auth0|user_cli", "cli");
+    let blob = CursorBlob {
+        access_token: access.clone(),
+        refresh_token: Some("refresh-cli".into()),
+        email: "cli@example.com".into(),
+        auth_id: Some("auth0|user_cli".into()),
+        membership_type: None,
+        subscription_status: None,
+        sign_up_type: None,
+    };
+    write_agent_keychain(Some(&keychain), &blob).unwrap();
+
+    let server = MockServer::start(vec![(
+        "200 OK",
+        r#"{"individualUsage":{"plan":{"autoPercentUsed":12,"apiPercentUsed":8}}}"#,
+    )]);
+    let provider = CursorProvider::with_config(
+        Arc::new(FileStore::new(temp.path().join("credentials.json"))),
+        Arc::new(AccountRegistry::new(temp.path().join("registry.toml"))),
+        CursorProviderConfig {
+            source: CredentialSource::Agent {
+                auth_json,
+                cli_config,
+                token_store: AgentTokenStore::Keychain {
+                    path: Some(keychain.clone()),
+                },
+            },
+            usage_url: format!("{}/usage", server.base),
+            token_url: format!("{}/token", server.base),
+            process_control: Arc::new(NoopProcessControl),
+            refresh_lock_dir: temp.path().join("refresh-locks"),
+            snapshots_dir: temp.path().join("snapshots"),
+        },
+    );
+
+    let account = provider.import_active(None).await.unwrap();
+    assert_eq!(account.label, "cli@example.com");
+    let quotas = provider.query_quota(&account.id).await.unwrap();
+    assert_eq!(quotas[0].used, 12);
+    assert_eq!(quotas[1].used, 8);
+    let _ = server.finish();
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn agent_activate_writes_target_credentials_back_to_keychain() {
+    let temp = tempfile::tempdir().unwrap();
+    let keychain = create_test_cursor_keychain(temp.path());
+    let cli_config = temp.path().join("cli-config.json");
+    let auth_json = temp.path().join("auth.json");
+
+    let access_a = jwt("auth0|user_a", "a");
+    write_agent_config(&cli_config, "a@example.com", "auth0|user_a");
+    write_agent_keychain(
+        Some(&keychain),
+        &CursorBlob {
+            access_token: access_a.clone(),
+            refresh_token: Some("refresh-a".into()),
+            email: "a@example.com".into(),
+            auth_id: Some("auth0|user_a".into()),
+            membership_type: None,
+            subscription_status: None,
+            sign_up_type: None,
+        },
+    )
+    .unwrap();
+    let provider = CursorProvider::with_config(
+        Arc::new(FileStore::new(temp.path().join("credentials.json"))),
+        Arc::new(AccountRegistry::new(temp.path().join("registry.toml"))),
+        CursorProviderConfig {
+            source: CredentialSource::Agent {
+                auth_json,
+                cli_config: cli_config.clone(),
+                token_store: AgentTokenStore::Keychain {
+                    path: Some(keychain.clone()),
+                },
+            },
+            usage_url: "http://127.0.0.1:9/usage".into(),
+            token_url: "http://127.0.0.1:9/token".into(),
+            process_control: Arc::new(NoopProcessControl),
+            refresh_lock_dir: temp.path().join("refresh-locks"),
+            snapshots_dir: temp.path().join("snapshots"),
+        },
+    );
+    let a = provider.import_active(None).await.unwrap();
+
+    let access_b = jwt("auth0|user_b", "b");
+    write_agent_config(&cli_config, "b@example.com", "auth0|user_b");
+    write_agent_keychain(
+        Some(&keychain),
+        &CursorBlob {
+            access_token: access_b.clone(),
+            refresh_token: Some("refresh-b".into()),
+            email: "b@example.com".into(),
+            auth_id: Some("auth0|user_b".into()),
+            membership_type: None,
+            subscription_status: None,
+            sign_up_type: None,
+        },
+    )
+    .unwrap();
+    let b = provider.import_active(None).await.unwrap();
+
+    provider.activate(&a.id).await.unwrap();
+    let (live_access, live_refresh) = read_agent_keychain_tokens(Some(&keychain)).unwrap();
+    assert_eq!(live_access, access_a);
+    assert_eq!(live_refresh.as_deref(), Some("refresh-a"));
+    let config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cli_config).unwrap()).unwrap();
+    assert_eq!(
+        config.pointer("/authInfo/email").and_then(|v| v.as_str()),
+        Some("a@example.com")
+    );
+    assert!(provider.require_account(&a.id).unwrap().active);
+    assert!(!provider.require_account(&b.id).unwrap().active);
 }

@@ -4,6 +4,8 @@
 
 | 文档 | 排查场景 |
 |---|---|
+| [2026-08-14 Cursor 多个账号额度数字完全一样](2026-08-14-cursor-quota-cloned-across-accounts.md) | 默认入口里好几个 Cursor 账号余量、重置时间一模一样，或切命令行账号后其它号额度跟着变时必读；改命令行切换、live 回灌、额度查询归属或 macOS 钥匙串写入前也读此 |
+| [2026-08-14 本机 Cursor 命令行已登录但 subswap 没有 Cursor 额度](2026-08-14-cursor-quota-missing-cli-keychain.md) | `subswap` 列表里整段 Cursor 都不出现、导入报「请先登录」，但 `cursor-agent` 已登录且能对话时必读；改 Cursor 命令行凭证探测、macOS 钥匙串来源或 `auth.json` 路径前也读此 |
 | [2026-07-28 Claude 能正常使用但 subswap 仍显示旧 401 / 空 access 被回灌](2026-07-28-claude-working-but-quota-stale-401.md) | Claude Code 已恢复登录、对话正常但 subswap 仍显示十几分钟前的 `401 auth failed`，或 parked 账号长期 429 且凭据里的 access token 变空时必读；改鉴权失败退避、Claude live→store 回灌或空 access 判定前也读此 |
 | [2026-07-26 Claude 额度 `bad response` / usage 响应字段漂移](2026-07-26-claude-usage-schema-drift-bad-response.md) | Claude 账号额度长期查不出并显示 `bad response`、另一个号连带 429、账号频繁横跳；改 usage 响应解析、quota 失败退避或 `refreshTokenExpiresAt` 处理前必读；排查「上游响应结构变了没」时也查此（含 2026-07 实测响应与判别手法） |
 | [2026-07-09 Codex 用量 401 但 CLI 能正常用](2026-07-09-codex-quota-401-despite-working-cli.md) | Codex 账号明明在正常对话、`subswap` 却显示 `401 auth failed`，或改/排查官方 app-server 额度查询、control socket、并发时安全刷新与 429 fallback 边界时必读 |

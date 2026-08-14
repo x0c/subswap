@@ -497,11 +497,30 @@ Cursor 有两种客户端，凭证存储布局不同，subswap 用 `CredentialSo
 与 refresh token 轮换逻辑（代码见 `crates/providers/cursor/src/lib.rs::CredentialSource`）：
 
 - **桌面版（Electron IDE）**：凭证在 SQLite 数据库 `state.vscdb` 的 `ItemTable`。
-- **命令行 agent（`cursor-agent`）**：`accessToken` / `refreshToken` 在 `~/.config/cursor/auth.json`（纯 JSON），
-  邮箱等元数据在 `~/.cursor/cli-config.json` 的 `authInfo`。**无 GUI 生命周期，纯文件读写**，适用于服务器等无桌面环境。
+- **命令行 agent（`cursor-agent`）**：邮箱等元数据在 `~/.cursor/cli-config.json` 的 `authInfo`。
+  token 存放随平台与官方开关变化，**不是永远一份 JSON 文件**：
+  - macOS 默认写系统钥匙串（service `cursor-access-token` / `cursor-refresh-token`，account `cursor-user`），
+    不落盘；
+  - 官方文件后端时：macOS 为 `~/.cursor/auth.json`，Linux 为 `~/.config/cursor/auth.json`（或 `$XDG_CONFIG_HOME/cursor/auth.json`）。
+  无 GUI 生命周期，适用于服务器等无桌面环境。
 
-来源自动探测顺序：桌面版 `state.vscdb` 存在则用桌面版；否则 agent 的 `auth.json` 存在则用 agent；两者都不存在时
-回退桌面路径，读取时给出「请先登录」提示。
+来源自动探测顺序：显式指定桌面库时始终用桌面版；否则桌面库能读出有效登录时用桌面版。桌面库只是未登录的遗留文件
+而命令行已登录（macOS 钥匙串有 access token，或官方 `auth.json` 有 access token）时，回退命令行来源，避免默认入口
+静默遗漏 CLI 账号；两者都不存在时回退桌面路径，读取时给出「请先登录」提示。
+
+macOS 命令行钥匙串读写**只能 fork `/usr/bin/security`**，禁止 `keyring` crate，否则会把官方条目 ACL 改成「仅 subswap」，
+`cursor-agent` 下次读取反复弹授权框。同类事故见
+[troubleshooting/2026-06-11-claude-code-keychain-acl-poisoning.md](troubleshooting/2026-06-11-claude-code-keychain-acl-poisoning.md)。
+**已有条目只更新密码、禁止 delete 后再 add**：删建会把解密权限收成「仅 security」，桌面版邮箱显示对了、请求却报未登录。
+新建条目时才把 `/usr/bin/security` 与 Cursor.app 写入信任名单。曾漏读钥匙串、只认 Linux 风格登录文件的故障见
+[troubleshooting/2026-08-14-cursor-quota-missing-cli-keychain.md](troubleshooting/2026-08-14-cursor-quota-missing-cli-keychain.md)。
+
+**live 归属以令牌 JWT 为准，禁止把当前令牌拼到过期身份上。** 命令行身份文件（`authInfo`）与令牌不在同一处，
+只写令牌、留下上一号邮箱时，回灌和额度查询会把同一份令牌算到每个账号上，停用号再刷新还会把真正主人的一次性
+refresh token 刷废。匹配主人只认 access token 的 JWT `sub`；`authInfo.authId` 与 JWT 不一致时忽略这份身份，
+回灌不得用过期邮箱覆盖主人；仓库里令牌 JWT 对不上该账号时显示 `needs re-login`，禁止查询或刷新。
+现象与修复见
+[troubleshooting/2026-08-14-cursor-quota-cloned-across-accounts.md](troubleshooting/2026-08-14-cursor-quota-cloned-across-accounts.md)。
 
 ### 本地状态与跨平台路径
 
@@ -513,14 +532,17 @@ Cursor 有两种客户端，凭证存储布局不同，subswap 用 `CredentialSo
 | Linux | `~/.config/Cursor/User/globalStorage/state.vscdb` |
 | Windows | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` |
 
-命令行 agent：`~/.config/cursor/auth.json` + `~/.cursor/cli-config.json`。
+命令行 agent 元数据：`~/.cursor/cli-config.json`。token：macOS 默认钥匙串；文件后端时 macOS 为
+`~/.cursor/auth.json`，Linux 为 `~/.config/cursor/auth.json`。subswap 按官方路径探测，macOS 优先读钥匙串。
 
 测试用 `SUBSWAP_CURSOR_STATE_DB_PATH`（桌面版）或 `SUBSWAP_CURSOR_AGENT_AUTH_PATH` /
-`SUBSWAP_CURSOR_AGENT_CONFIG_PATH`（agent）重定向到绝对临时路径；相对路径会直接报错，完整隔离契约见
+`SUBSWAP_CURSOR_AGENT_CONFIG_PATH`（agent 文件后端）重定向到绝对临时路径；macOS 命令行钥匙串用
+`SUBSWAP_CURSOR_KEYCHAIN_PATH` 指到一次性 keychain。相对路径会直接报错，完整隔离契约见
 [OPERATIONS_GUIDE.md](OPERATIONS_GUIDE.md) 的「三平台测试隔离」。桌面版只读写 `ItemTable` 中与身份有关的键：
 `cursorAuth/accessToken`、`cursorAuth/refreshToken`、`cursorAuth/cachedEmail`、`cursorAuth/authId`，并同步
-兼容键 `cursor.accessToken` / `cursor.email`；其余 Cursor 设置、扩展和工作区状态不动。agent 写回 `auth.json` 时
-只覆盖 `accessToken` / `refreshToken`，保留文件里的其他字段。两种来源在 CredentialStore 中都保存同构的私有
+兼容键 `cursor.accessToken` / `cursor.email`；其余 Cursor 设置、扩展和工作区状态不动。agent 写回时
+令牌与 `cli-config.json` 的 `authInfo` 成套覆盖：文件后端写 `accessToken` / `refreshToken`，钥匙串后端写
+对应条目，并同步邮箱 / authId；保留文件里的其他字段。两种来源在 CredentialStore 中都保存同构的私有
 JSON blob，registry 只存邮箱、稳定身份与展示元数据。
 
 ### 登录、导入与切换事务
@@ -528,9 +550,9 @@ JSON blob，registry 只存邮箱、稳定身份与展示元数据。
 `subswap login cursor` 不复制 Cursor OAuth，也不驱动网页登录：用户先在 Cursor 客户端登录（桌面端登录，
 或 `cursor-agent login`），命令只读取本地凭证、导入/覆盖账号并标记 active。默认入口也会同步当前 live 账号。
 
-**agent 来源的切换**是纯文件操作：capture-on-leave 回灌当前 agent 登录 → 快照旧 `auth.json` 与 registry →
-把目标账号凭证写回 `auth.json` → 标记 registry active；失败则回滚文件与 registry。无进程协调，写文件后
-`cursor-agent` 下次读取即生效。
+**agent 来源的切换**是纯本地凭证写回：capture-on-leave 回灌当前 agent 登录 → 快照旧令牌、`cli-config.json` 与 registry →
+把目标账号的令牌写回当前后端（文件或 macOS 钥匙串）并同步 `authInfo` → 标记 registry active；失败则令牌、配置与
+registry 一起回滚。无进程协调，写回后 `cursor-agent` 下次读取即生效。
 
 **桌面版来源**的 Cursor 进程存活时不能直接改 SQLite：Electron 退出阶段可能把内存中的旧 token 写回数据库，
 覆盖 subswap 刚写的账号。切换固定遵守以下顺序：

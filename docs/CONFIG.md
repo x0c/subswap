@@ -24,7 +24,7 @@ Windows: %APPDATA%\subswap\subswap\config\config.toml
 
 这些目录不存在时会自动创建。同一套账号状态下，CLI 与独立启动的 daemon 必须使用相同的 `SUBSWAP_HOME`；由 CLI 拉起的 daemon 会自然继承当前值。
 
-这个覆盖**只管理 subswap 自己的目录**，不会搬迁 Codex、Claude、Kimi 或 Cursor 的原生登录位置。完整测试隔离还要分别重定向各原生客户端目录、Cursor 数据库和 macOS Claude 测试钥匙串，统一要求见 [OPERATIONS_GUIDE.md](OPERATIONS_GUIDE.md) 的「三平台测试隔离」。特别地，Cursor 可用 `SUBSWAP_CURSOR_STATE_DB_PATH` 指向临时 `state.vscdb`，且同样只接受绝对路径；它是测试/便携覆盖，不是普通运行时调优项。
+这个覆盖**只管理 subswap 自己的目录**，不会搬迁 Codex、Claude、Kimi 或 Cursor 的原生登录位置。完整测试隔离还要分别重定向各原生客户端目录、Cursor 数据库和 macOS Claude / Cursor 测试钥匙串，统一要求见 [OPERATIONS_GUIDE.md](OPERATIONS_GUIDE.md) 的「三平台测试隔离」。特别地，Cursor 可用 `SUBSWAP_CURSOR_STATE_DB_PATH` 指向临时 `state.vscdb`，macOS 命令行钥匙串用 `SUBSWAP_CURSOR_KEYCHAIN_PATH`；两者都只接受绝对路径，是测试/便携覆盖，不是普通运行时调优项。
 
 ## 热加载
 

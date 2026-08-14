@@ -32,8 +32,8 @@
 - Linux 依赖：CI 在 Linux 安装 `libdbus-1-dev pkg-config`，否则 keyring 相关依赖可能链接失败。
 - daemon 副作用：本地运行默认入口时如只做测试，优先设置 `SUBSWAP_NO_DAEMON=1`，避免留下后台进程。
 - Windows 只发布 `subswap.exe`，不构建 Unix-only 的 `subswapd`；CLI 与四个 Provider 由 Windows CI 实测。
-- 真实账号隔离：新增会触发 Claude OAuth 或 Codex 登录状态的集成测试时，必须沿用 `crates/cli/tests/cli_surface.rs::isolated_subswap` 的隔离环境，特别是 `SUBSWAP_CLAUDE_KEYCHAIN_PATH`。
-- macOS 钥匙串：测试用一次性 keychain，不得触碰真实 `Claude Code-credentials` 登录钥匙串。
+- 真实账号隔离：新增会触发 Claude OAuth、Codex 登录状态或 Cursor 命令行钥匙串的集成测试时，必须沿用 `crates/cli/tests/cli_surface.rs::isolated_subswap` 的隔离环境，特别是 `SUBSWAP_CLAUDE_KEYCHAIN_PATH` 与 `SUBSWAP_CURSOR_KEYCHAIN_PATH`。
+- macOS 钥匙串：测试用一次性 keychain，不得触碰真实 `Claude Code-credentials` 或 `cursor-access-token` / `cursor-refresh-token` 登录钥匙串。
 
 ## 三平台测试隔离
 
@@ -44,7 +44,7 @@ CLI 集成测试统一经 `isolated_subswap` 构造临时环境，不能只改 `
 | subswap 配置、数据、状态、缓存 | `SUBSWAP_HOME` | 指向每个测试独占的绝对临时目录；相对路径直接报错 |
 | Claude、Codex、Kimi 原生目录 | `CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`KIMI_CODE_HOME` | 全部指向同一个测试临时根下的不同子目录 |
 | Cursor 原生状态数据库 | `SUBSWAP_CURSOR_STATE_DB_PATH` | 指向绝对临时路径下的 `state.vscdb`；文件可以尚不存在，禁止回退探测真实用户数据库 |
-| macOS Claude 登录钥匙串 | `SUBSWAP_CLAUDE_KEYCHAIN_PATH` | 使用一次性 keychain，禁止读取或写入真实登录钥匙串 |
+| macOS Claude / Cursor 命令行钥匙串 | `SUBSWAP_CLAUDE_KEYCHAIN_PATH`、`SUBSWAP_CURSOR_KEYCHAIN_PATH` | 使用同一份一次性 keychain，禁止读取或写入真实登录钥匙串 |
 | 后台进程 | `SUBSWAP_NO_DAEMON=1` | 普通集成测试不留下 daemon；专门冒烟时再显式开启 |
 
 `SUBSWAP_HOME` 的目录映射和便携运行边界以 [CONFIG.md](CONFIG.md) 为准。新增任何会探测原生客户端登录状态的 CLI 测试时，必须复用统一 helper，不得手工拼一套不完整的覆盖。
@@ -108,7 +108,7 @@ pgrep -af 'subswap __daemon|subswapd' || true
 | `cargo build --locked` 提示 lock file 需要更新 | 升版本或依赖后没有同步 `Cargo.lock` | 看错误里是否出现 cannot update lock file | 先跑 `cargo update --workspace --offline` 再重试 locked build | AGENTS |
 | Linux CI 编译 keyring 相关依赖失败 | 缺少 D-Bus 开发包和 pkg-config | 对比 `.github/workflows/ci.yml` | 安装 `libdbus-1-dev pkg-config` | CI |
 | Linux Release 安装依赖时 APT 镜像瞬态失败 | 镜像正在同步或包列表暂时不可用 | release 日志会提示清理包列表并在 10s、20s 后重试 | 等待内置 3 次有界重试；第 3 次仍失败时按真实基础设施故障排查，不继续无限重跑 | release workflow |
-| 集成测试弹 macOS 钥匙串授权框 | 测试触碰真实登录钥匙串 | 检查是否设置 `SUBSWAP_CLAUDE_KEYCHAIN_PATH` | 改用 `isolated_subswap` 或补齐隔离环境变量 | `cli_surface.rs` |
+| 集成测试弹 macOS 钥匙串授权框 | 测试触碰真实登录钥匙串 | 检查是否设置 `SUBSWAP_CLAUDE_KEYCHAIN_PATH` 与 `SUBSWAP_CURSOR_KEYCHAIN_PATH` | 改用 `isolated_subswap` 或补齐隔离环境变量 | `cli_surface.rs` |
 | 本地默认入口留下后台进程 | 没有设置 `SUBSWAP_NO_DAEMON=1` | `pgrep -af 'subswap __daemon|subswapd'` | 测试场景设置 `SUBSWAP_NO_DAEMON=1`，需要冒烟时再显式启动 | README/测试 |
 | daemon 冒烟后版本仍旧 | `~/.local/bin` 未覆盖或 shell 命中旧路径 | `command -v subswap`、`subswap --version`、哈希对比 | 重新安装 release 产物并确认 PATH | AGENTS |
 
