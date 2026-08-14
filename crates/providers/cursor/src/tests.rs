@@ -171,21 +171,28 @@ async fn imports_and_transactionally_switches_while_capturing_live_owner() {
 }
 
 #[tokio::test]
-async fn sync_active_metadata_does_not_recreate_a_removed_account() {
+async fn sync_active_metadata_imports_unknown_live_account_like_other_providers() {
     let (_temp, provider, db) = setup();
     let access = jwt("auth0|user_a", "a");
     write_live(&db, "a@example.com", "auth0|user_a", &access, "refresh-a");
     write_plan(&db, "pro", "active", "oauth");
-    let account = provider.import_active(None).await.unwrap();
 
-    provider.registry.remove(PROVIDER_ID, &account.id).unwrap();
-    provider
-        .store
-        .delete(PROVIDER_ID, account.id.0.as_str(), STORE_FIELD)
-        .unwrap();
+    let synced = provider.sync_active_metadata(None).await.unwrap();
+    assert_eq!(
+        synced.extra.get("email").and_then(|v| v.as_str()),
+        Some("a@example.com")
+    );
+    assert!(provider.require_account(&synced.id).unwrap().active);
+}
 
-    let err = provider.sync_active_metadata(None).await.unwrap_err();
-    assert!(matches!(err, Error::AccountNotFound { .. }), "{err:?}");
+#[tokio::test]
+async fn reconcile_does_not_create_an_unknown_live_account() {
+    let (_temp, provider, db) = setup();
+    let access = jwt("auth0|user_a", "a");
+    write_live(&db, "a@example.com", "auth0|user_a", &access, "refresh-a");
+    write_plan(&db, "pro", "active", "oauth");
+
+    provider.reconcile_active_from_live().await.unwrap();
     assert!(provider
         .registry
         .list_by_provider(PROVIDER_ID)

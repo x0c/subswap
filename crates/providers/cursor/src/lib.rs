@@ -238,10 +238,11 @@ impl CursorProvider {
         Ok(AccountId(identity_for(&live)))
     }
 
-    /// 对齐当前 Cursor 登录账号。只更新已导入的主人，绝不把已删除或从未导入的 live 再写进列表。
-    pub async fn sync_active_metadata(&self, _label_hint: Option<String>) -> Result<Account> {
+    /// 对齐当前 Cursor 登录账号。已导入则回灌；列表里没有则像 Claude/Codex/Kimi 一样自动收入。
+    /// 显式 `rm` 过的号由默认入口对照墓碑跳过，不会走到这里。
+    pub async fn sync_active_metadata(&self, label_hint: Option<String>) -> Result<Account> {
         let this = self.clone();
-        tokio::task::spawn_blocking(move || this.sync_active_metadata_blocking())
+        tokio::task::spawn_blocking(move || this.sync_active_metadata_blocking(label_hint))
             .await
             .map_err(join_error)?
     }
@@ -249,7 +250,7 @@ impl CursorProvider {
     /// 把当前 Cursor 登录凭证回灌到其账号副本，供 daemon 捕获客户端自行轮换的 token。
     pub async fn reconcile_active_from_live(&self) -> Result<()> {
         let this = self.clone();
-        tokio::task::spawn_blocking(move || match this.sync_active_metadata_blocking() {
+        tokio::task::spawn_blocking(move || match this.align_existing_live_blocking() {
             Ok(_) | Err(Error::AccountNotFound { .. }) => Ok(()),
             Err(error) => Err(error),
         })
@@ -257,8 +258,16 @@ impl CursorProvider {
         .map_err(join_error)?
     }
 
-    /// 默认入口 / daemon 共用：live 对得上已导入账号才回灌并标 active。
-    fn sync_active_metadata_blocking(&self) -> Result<Account> {
+    fn sync_active_metadata_blocking(&self, label_hint: Option<String>) -> Result<Account> {
+        match self.align_existing_live_blocking() {
+            Ok(account) => Ok(account),
+            Err(Error::AccountNotFound { .. }) => self.import_active_blocking(label_hint),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// 只回灌已导入的 live 主人；未知账号不新增（daemon 用）。
+    fn align_existing_live_blocking(&self) -> Result<Account> {
         let live = self.canonicalize_live_blob(self.source.read_live()?)?;
         let Some(owner) = self.find_owner(&live)? else {
             return Err(Error::AccountNotFound {
