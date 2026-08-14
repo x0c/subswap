@@ -10,6 +10,14 @@ use subswap_core::AuditEvent;
 use crate::app::AppContext;
 use crate::render::account_ref;
 
+fn clear_removed(provider: &str, id: &str) {
+    if let Ok(mut removed) = AppContext::load_removed() {
+        if let Err(e) = removed.clear(provider, id) {
+            tracing::warn!(err=%e, provider, id, "failed to clear removed-account marker");
+        }
+    }
+}
+
 pub async fn run(
     ctx: &AppContext,
     provider: &str,
@@ -41,6 +49,7 @@ pub async fn run(
             ctx.registry
                 .set_active("claude", &account.id)
                 .context("mark Claude login active")?;
+            clear_removed("claude", account.id.0.as_str());
             ctx.audit.append(AuditEvent::ok(
                 "login",
                 "claude",
@@ -67,6 +76,7 @@ pub async fn run(
             ctx.registry
                 .set_active("codex", &account.id)
                 .context("mark Codex login active")?;
+            clear_removed("codex", account.id.0.as_str());
             ctx.audit.append(AuditEvent::ok(
                 "login",
                 "codex",
@@ -87,6 +97,7 @@ pub async fn run(
             ctx.registry
                 .set_active("kimi", &account.id)
                 .context("mark Kimi login active")?;
+            clear_removed("kimi", account.id.0.as_str());
             ctx.audit
                 .append(AuditEvent::ok("login", "kimi", Some(account.id.0.as_str())));
             println!("login → kimi/{}", account_ref(&account.id.0));
@@ -101,6 +112,7 @@ pub async fn run(
                 .import_active(None)
                 .await
                 .context("import Cursor login; sign in to Cursor first")?;
+            clear_removed("cursor", account.id.0.as_str());
             ctx.audit.append(AuditEvent::ok(
                 "login",
                 "cursor",

@@ -270,6 +270,24 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
         self.store_account(raw, label_hint, Some(true))
     }
 
+    /// 当前 live 凭证对应的 registry id。默认入口用它对照墓碑，避免 `rm` 后被自动导入加回。
+    pub fn live_account_id(&self) -> Result<AccountId> {
+        let raw = fs::read_to_string(self.live_path())
+            .map_err(|e| Error::Provider(format!("read live credentials failed: {e}")))?;
+        let meta = self.runtime.parse_metadata(&raw);
+        if let Some(existing) = self.find_by_dedup(&meta) {
+            return Ok(existing.id);
+        }
+        let id_string = meta
+            .primary_id
+            .clone()
+            .or(meta.label.clone())
+            .ok_or_else(|| {
+                Error::Provider("cannot parse account id from live credentials".into())
+            })?;
+        Ok(AccountId(id_string))
+    }
+
     /// 从任意文件导入（校验合法 JSON）。
     pub fn import_from_file(&self, path: PathBuf, label_hint: Option<String>) -> Result<Account> {
         let raw = fs::read_to_string(&path)?;

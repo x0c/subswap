@@ -222,26 +222,58 @@ impl CursorProvider {
             .map_err(join_error)?
     }
 
-    /// 对齐当前 Cursor 登录账号的元数据。桌面版走 SQLite；命令行在 macOS 上可能读钥匙串。
-    pub async fn sync_active_metadata(&self, label_hint: Option<String>) -> Result<Account> {
-        self.import_active(label_hint).await
+    /// 当前客户端登录账号的 registry id。默认入口用它对照墓碑，避免 `rm` 后被自动导入加回。
+    pub async fn live_account_id(&self) -> Result<AccountId> {
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || this.live_account_id_blocking())
+            .await
+            .map_err(join_error)?
+    }
+
+    fn live_account_id_blocking(&self) -> Result<AccountId> {
+        let live = self.canonicalize_live_blob(self.source.read_live()?)?;
+        if let Some(owner) = self.find_owner(&live)? {
+            return Ok(owner.id);
+        }
+        Ok(AccountId(identity_for(&live)))
+    }
+
+    /// 对齐当前 Cursor 登录账号。只更新已导入的主人，绝不把已删除或从未导入的 live 再写进列表。
+    pub async fn sync_active_metadata(&self, _label_hint: Option<String>) -> Result<Account> {
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || this.sync_active_metadata_blocking())
+            .await
+            .map_err(join_error)?
     }
 
     /// 把当前 Cursor 登录凭证回灌到其账号副本，供 daemon 捕获客户端自行轮换的 token。
     pub async fn reconcile_active_from_live(&self) -> Result<()> {
         let this = self.clone();
-        tokio::task::spawn_blocking(move || {
-            let live = this.source.read_live()?;
-            let owner = this.find_owner(&live)?;
-            this.capture_live_into_store(&live)?;
-            // 只对已导入账号对齐 active；未知账号不由 daemon 擅自新增。
-            if let Some(owner) = owner {
-                this.registry.set_active(PROVIDER_ID, &owner.id)?;
-            }
-            Ok(())
+        tokio::task::spawn_blocking(move || match this.sync_active_metadata_blocking() {
+            Ok(_) | Err(Error::AccountNotFound { .. }) => Ok(()),
+            Err(error) => Err(error),
         })
         .await
         .map_err(join_error)?
+    }
+
+    /// 默认入口 / daemon 共用：live 对得上已导入账号才回灌并标 active。
+    fn sync_active_metadata_blocking(&self) -> Result<Account> {
+        let live = self.canonicalize_live_blob(self.source.read_live()?)?;
+        let Some(owner) = self.find_owner(&live)? else {
+            return Err(Error::AccountNotFound {
+                provider: PROVIDER_ID.into(),
+                id: live.email,
+            });
+        };
+        self.capture_live_into_store(&live)?;
+        self.registry.set_active(PROVIDER_ID, &owner.id)?;
+        self.registry
+            .find(PROVIDER_ID, &owner.id)?
+            .ok_or_else(|| Error::AccountNotFound {
+                provider: PROVIDER_ID.into(),
+                id: owner.id.to_string(),
+            })
     }
 
     fn import_active_blocking(&self, label_hint: Option<String>) -> Result<Account> {
