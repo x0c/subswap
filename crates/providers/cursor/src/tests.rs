@@ -1054,7 +1054,11 @@ fn cursor_cli_auth_json_path_matches_official_cli() {
     #[cfg(target_os = "windows")]
     assert!(path.ends_with(std::path::Path::new("Cursor").join("auth.json")));
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    assert!(path.ends_with(std::path::Path::new(".config").join("cursor").join("auth.json")));
+    assert!(path.ends_with(
+        std::path::Path::new(".config")
+            .join("cursor")
+            .join("auth.json")
+    ));
 }
 
 #[cfg(target_os = "macos")]
