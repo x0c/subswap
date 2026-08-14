@@ -80,9 +80,16 @@ make install   # = cargo build --release + install subswap 到 ~/.local/bin
 ```bash
 install -m 755 target/release/subswap ~/.local/bin/subswap
 install -m 755 target/release/subswapd ~/.local/bin/subswapd
+```
 
+先确认 `command -v subswap` 指向刚装上的那一份。若 `~/.cargo/bin` 排在 `~/.local/bin` 前面，只更新后者时，直接敲 `subswap` 仍会跑到旧的 `cargo install` 产物（开发机上曾因此一直用 0.3.25，列表里整段没有 Cursor）。这种情况要把新文件同步覆盖 PATH 里真正命中的那一份，或拿掉旧入口。
+
+GitHub Release 的 `x86_64-unknown-linux-gnu` 包按 CI 的较新系统库构建，需要 **GLIBC 2.39**。开发机若是 Ubuntu 22.04（GLIBC 2.35），该包会直接起不来；必须在那台机器上 `cargo build --release` 再覆盖安装，不要用 Release 附件覆盖还能跑的本机产物。
+
+```bash
 shasum -a 256 target/release/subswap target/release/subswapd \
   ~/.local/bin/subswap ~/.local/bin/subswapd
+```
 
 pkill -f 'subswap __daemon' 2>/dev/null || true
 pkill -f 'subswapd' 2>/dev/null || true

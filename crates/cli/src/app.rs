@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use subswap_core::{
     paths::AppPaths, Account, AccountRegistry, AuditLog, CredentialStore, FileStore, KeyringStore,
-    ProviderRegistry,
+    ProviderRegistry, RemovedAccounts,
 };
 use subswap_provider_claude::ClaudeProvider;
 use subswap_provider_codex::CodexProvider;
@@ -78,5 +78,10 @@ impl AppContext {
             out.extend(self.registry.list_by_provider(&pid)?);
         }
         Ok(out)
+    }
+
+    /// 显式删除墓碑。文件缺失视为没有墓碑。
+    pub fn load_removed() -> Result<RemovedAccounts> {
+        Ok(RemovedAccounts::load(&AppPaths::resolve()?.removed_file()))
     }
 }

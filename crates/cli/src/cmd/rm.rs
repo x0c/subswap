@@ -18,7 +18,18 @@ pub async fn run(ctx: &AppContext, id_input: &str) -> Result<()> {
         );
     }
 
+    let cursor_still_signed_in = if acc.provider == "cursor" {
+        ctx.cursor
+            .sync_active_metadata(None)
+            .await
+            .ok()
+            .is_some_and(|live| live.id == acc.id)
+    } else {
+        false
+    };
+
     ctx.registry.remove(&acc.provider, &acc.id)?;
+    AppContext::load_removed()?.add(&acc.provider, acc.id.0.as_str())?;
 
     let fields: &[&str] = match acc.provider.as_str() {
         "claude" => &["credentials_json", "api_key"],
@@ -35,5 +46,10 @@ pub async fn run(ctx: &AppContext, id_input: &str) -> Result<()> {
     ctx.audit
         .append(AuditEvent::ok("rm", &acc.provider, Some(acc.id.0.as_str())));
     println!("removed {}/{}", acc.provider, acc.id);
+    if cursor_still_signed_in {
+        println!(
+            "note: Cursor is still signed in as this account; it will not reappear until `subswap login cursor`"
+        );
+    }
     Ok(())
 }

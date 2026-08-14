@@ -170,6 +170,42 @@ async fn imports_and_transactionally_switches_while_capturing_live_owner() {
     assert!(snapshot_dirs[0].join("registry.toml").is_file());
 }
 
+#[tokio::test]
+async fn sync_active_metadata_does_not_recreate_a_removed_account() {
+    let (_temp, provider, db) = setup();
+    let access = jwt("auth0|user_a", "a");
+    write_live(&db, "a@example.com", "auth0|user_a", &access, "refresh-a");
+    write_plan(&db, "pro", "active", "oauth");
+    let account = provider.import_active(None).await.unwrap();
+
+    provider.registry.remove(PROVIDER_ID, &account.id).unwrap();
+    provider
+        .store
+        .delete(PROVIDER_ID, account.id.0.as_str(), STORE_FIELD)
+        .unwrap();
+
+    let err = provider.sync_active_metadata(None).await.unwrap_err();
+    assert!(matches!(err, Error::AccountNotFound { .. }), "{err:?}");
+    assert!(provider
+        .registry
+        .list_by_provider(PROVIDER_ID)
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn sync_active_metadata_keeps_existing_imported_owner() {
+    let (_temp, provider, db) = setup();
+    let access = jwt("auth0|user_a", "a");
+    write_live(&db, "a@example.com", "auth0|user_a", &access, "refresh-a");
+    write_plan(&db, "pro", "active", "oauth");
+    let account = provider.import_active(None).await.unwrap();
+
+    let synced = provider.sync_active_metadata(None).await.unwrap();
+    assert_eq!(synced.id, account.id);
+    assert!(provider.require_account(&account.id).unwrap().active);
+}
+
 #[test]
 fn parses_first_party_and_api_as_used_percentages() {
     let id = AccountId("account".into());

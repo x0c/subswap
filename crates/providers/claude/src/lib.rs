@@ -264,6 +264,22 @@ impl ClaudeProvider {
         self.store_account(creds, oauth_account, label_hint)
     }
 
+    /// 当前 Claude 登录账号的 registry id。默认入口用它对照墓碑，避免 `rm` 后被自动导入加回。
+    pub fn live_account_id(&self) -> Result<AccountId> {
+        self.reconcile_api_external_login()?;
+        if let Some(account) = self.active_api_account()? {
+            return Ok(account.id);
+        }
+        let oauth_account = read_oauth_account(&global_config_path(&self.claude_home))?
+            .ok_or_else(|| {
+                Error::Provider(
+                    "no oauthAccount in ~/.claude; log into Claude Code first, or use --credentials-file"
+                        .into(),
+                )
+            })?;
+        Ok(AccountId(oauth_account.email_address))
+    }
+
     /// 仅同步当前 Claude 账号的非敏感元数据,不读写 keyring。
     pub fn sync_active_metadata(&self, label_hint: Option<String>) -> Result<Account> {
         self.reconcile_api_external_login()?;

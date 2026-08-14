@@ -7,7 +7,7 @@
 | `subswap login <claude\|codex>` | 调用官方 CLI 登录流程，完成后导入/覆盖当前登录账号并标记为 active |
 | `subswap login <kimi\|cursor>` | **不驱动登录**：用户先在 Kimi TUI / Cursor 桌面端登录，本命令只导入客户端当前登录状态并标记为 active |
 | `subswap swap [<id\|N>]` | 手动切换；`<id>` 用 id/label/`<provider>/<id>`，`<N>` 用默认入口列出的全局序号。无参打印编号清单 |
-| `subswap rm <id\|N>` | 删除账号（registry + keyring），引用形式同 `swap` |
+| `subswap rm <id\|N>` | 删除账号（registry + keyring），引用形式同 `swap`。Cursor 当前正在登录的那个号删掉后，默认入口不会再自动加回来；要重新纳入列表请 `subswap login cursor` |
 | `subswap run <provider> <id> [-- args]` | 账号隔离启动：把该账号凭证投影到私有目录，设隔离环境变量后启动原生 CLI（codex/claude/kimi），**不动全局活账号**；退出时吸收轮换后的凭证。Cursor 不支持此模式 |
 | `subswap shell <id>` | 起一个导出好隔离环境变量的子 shell，交互里连跑多条命令；provider 从账号推断；退出时吸收凭证 |
 | `subswap env <id>` | 打印 `export` 行供 `eval`。**注意**：eval 模式不持锁、退出后不吸收凭证，仅供临时短用 |
@@ -51,6 +51,7 @@ eval "$(subswap env codex/bob@x.com)"   # 临时把当前 shell 指向某 codex 
 
 `subswap login cursor` 不打开浏览器或复制 Cursor 的登录流程：先在 Cursor 桌面端或 `cursor-agent` 完成登录，再运行
 该命令导入当前账号。之后可用通用编号或 `cursor/<邮箱>` 执行 `swap` / `rm`。
+删除后默认入口不会因为 Cursor 仍登录着就把该号再加回来；要重新纳入列表请再执行一次 `subswap login cursor`。
 只装命令行、没装桌面应用时同样能导入：macOS 读官方钥匙串，Linux 读命令行登录文件。若命令行已登录但列表仍没有
 Cursor，见 [troubleshooting/2026-08-14-cursor-quota-missing-cli-keychain.md](troubleshooting/2026-08-14-cursor-quota-missing-cli-keychain.md)。
 若多个 Cursor 账号余量数字完全一样，见

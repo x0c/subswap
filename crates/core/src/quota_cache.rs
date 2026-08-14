@@ -84,13 +84,24 @@ impl QuotaCache {
 
     /// 若缓存足够新(`cached_at` 距今 < `max_age`)且仍有有效窗口，返回快照；否则 None。
     /// 用于「缓存节流」：够新就直接复用、跳过真实 quota 查询，避免高频打 usage 端点。
+    ///
+    /// 最近一次失败是鉴权/缺凭据时不复用成功缓存：那些数字往往是串号或已作废令牌留下的，
+    /// 继续当 `Ready` 会让「needs re-login」的行看起来像额度耗尽。
     pub fn fresh(
         &self,
         provider: &str,
         account_id: &str,
         max_age: std::time::Duration,
     ) -> Option<ValidEntry> {
-        let entry = self.entries.get(&cache_key(provider, account_id))?;
+        let key = cache_key(provider, account_id);
+        if self
+            .failures
+            .get(&key)
+            .is_some_and(|entry| is_authentication_failure(&entry.error))
+        {
+            return None;
+        }
+        let entry = self.entries.get(&key)?;
         let age = Utc::now() - entry.cached_at;
         // age 为负(时钟回拨/未来时间戳)时视为「不新鲜」,保守地重新查询。
         if age < Duration::zero() || age >= Duration::from_std(max_age).ok()? {
@@ -115,8 +126,12 @@ impl QuotaCache {
     /// 记一次查询失败，累加连续失败次数。
     ///
     /// 失败结果不进 `entries`（不能拿失败当数据用），单独记在这里只为算退避窗口。
+    /// 鉴权失败还会丢掉旧的成功缓存，避免下一屏把过期 0% 当成真实余量。
     pub fn record_failure(&mut self, provider: &str, account_id: &str, error: &str) {
         let key = cache_key(provider, account_id);
+        if is_authentication_failure(error) {
+            self.entries.remove(&key);
+        }
         let consecutive = self
             .failures
             .get(&key)
@@ -130,6 +145,13 @@ impl QuotaCache {
                 error: error.to_string(),
             },
         );
+    }
+
+    /// 删除某账号的成功缓存与失败退避（`rm` 时调用，避免尸号数字粘在下一个同 id 导入上）。
+    pub fn remove(&mut self, provider: &str, account_id: &str) {
+        let key = cache_key(provider, account_id);
+        self.entries.remove(&key);
+        self.failures.remove(&key);
     }
 
     /// 该账号是否仍处于失败退避窗口内；是则返回最近一次失败记录，调用方应跳过真实查询。
@@ -174,8 +196,22 @@ fn cache_key(provider: &str, account_id: &str) -> String {
     format!("{provider}::{account_id}")
 }
 
-fn is_authentication_failure(error: &str) -> bool {
-    error.contains("401 Unauthorized") || error.contains("403 Forbidden")
+/// 额度查询失败是否属于确定性鉴权/缺凭据，而不是网络或 429。
+///
+/// 这类错误不得把旧 quota 缓存当可用余量展示，也不得成为自动切换候选。
+pub fn is_authentication_failure(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("401")
+        || lower.contains("403")
+        || lower.contains("unauthorized")
+        || lower.contains("forbidden")
+        || lower.contains("re-login")
+        || lower.contains("invalid_grant")
+        || lower.contains("missing credential")
+        || lower.contains("no credentials")
+        || lower.contains("no keyring entry")
+        || lower.contains("access token missing")
+        || lower.contains("belong to another")
 }
 
 /// 判断单个 quota 窗口是否已失效。
@@ -292,6 +328,38 @@ mod tests {
             Utc::now() - Duration::seconds(91);
         assert!(cache
             .in_failure_backoff("claude", "a@x.com", base, cap)
+            .is_none());
+    }
+
+    #[test]
+    fn auth_failure_drops_success_cache_and_skips_fresh() {
+        let mut cache = QuotaCache::default();
+        cache.set("cursor", "auth0|dead", vec![sample_quota()]);
+        cache.record_failure(
+            "cursor",
+            "auth0|dead",
+            "re-login required for cursor:auth0|dead; stored credentials belong to another Cursor account",
+        );
+        assert!(cache.get("cursor", "auth0|dead").is_none());
+        assert!(cache
+            .fresh("cursor", "auth0|dead", std::time::Duration::from_secs(90))
+            .is_none());
+    }
+
+    #[test]
+    fn remove_clears_success_and_failure_entries() {
+        let mut cache = QuotaCache::default();
+        cache.set("cursor", "auth0|gone", vec![sample_quota()]);
+        cache.record_failure("cursor", "auth0|gone", "429 rate limited");
+        cache.remove("cursor", "auth0|gone");
+        assert!(cache.get("cursor", "auth0|gone").is_none());
+        assert!(cache
+            .in_failure_backoff(
+                "cursor",
+                "auth0|gone",
+                std::time::Duration::from_secs(90),
+                std::time::Duration::from_secs(900)
+            )
             .is_none());
     }
 

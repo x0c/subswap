@@ -11,6 +11,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::model::{Account, AccountId, Quota, QuotaStatus, QuotaWindow};
+use crate::quota_cache::is_authentication_failure;
 use crate::settings;
 
 #[derive(Debug, Clone, Copy)]
@@ -369,12 +370,7 @@ fn quota_failure_blocks_candidate(state: &QuotaFetchState) -> bool {
         QuotaFetchState::Failed(error) | QuotaFetchState::Stale { error, .. } => error,
         QuotaFetchState::Loading | QuotaFetchState::Ready => return false,
     };
-    let lower = error.to_ascii_lowercase();
-    lower.contains("401")
-        || lower.contains("403")
-        || lower.contains("re-login")
-        || lower.contains("missing credential")
-        || lower.contains("access token missing")
+    is_authentication_failure(error)
 }
 
 fn reset_ready_at(
