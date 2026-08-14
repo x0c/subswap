@@ -257,7 +257,7 @@ impl CursorProvider {
         if owner_email_matches(&owner, &live) {
             return Ok(live);
         }
-        if let Some(stored) = self.stored_blob(&owner).ok() {
+        if let Ok(stored) = self.stored_blob(&owner) {
             live.email = stored.email;
             live.auth_id = stored.auth_id.or(live.auth_id);
             live.membership_type = stored.membership_type.or(live.membership_type);
@@ -929,12 +929,11 @@ fn select_credential_source(desktop: PathBuf, agent: Option<CredentialSource>) -
 fn default_agent_auth_path() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
-        return directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".cursor/auth.json"));
+        directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".cursor/auth.json"))
     }
     #[cfg(target_os = "windows")]
     {
-        return std::env::var_os("APPDATA")
-            .map(|appdata| PathBuf::from(appdata).join("Cursor/auth.json"));
+        std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("Cursor/auth.json"))
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
@@ -1130,11 +1129,8 @@ fn write_agent_cli_config(cli_config: &Path, blob: &CursorBlob) -> Result<()> {
             auth_info.remove("authId");
         }
     }
-    match &blob.membership_type {
-        Some(membership) => {
-            auth_info.insert("membershipType".into(), Value::String(membership.clone()));
-        }
-        None => {}
+    if let Some(membership) = &blob.membership_type {
+        auth_info.insert("membershipType".into(), Value::String(membership.clone()));
     }
     root.insert("authInfo".into(), Value::Object(auth_info));
     if let Some(parent) = cli_config.parent() {
