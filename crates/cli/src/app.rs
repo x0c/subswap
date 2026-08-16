@@ -13,6 +13,7 @@ use subswap_provider_codex::CodexProvider;
 use subswap_provider_common::IsolatedProvider;
 use subswap_provider_cursor::CursorProvider;
 use subswap_provider_kimi::KimiProvider;
+use subswap_provider_opencode::OpencodeProvider;
 
 pub struct AppContext {
     pub store: Arc<dyn CredentialStore>,
@@ -21,6 +22,7 @@ pub struct AppContext {
     pub codex: Arc<CodexProvider>,
     pub kimi: Arc<KimiProvider>,
     pub cursor: Arc<CursorProvider>,
+    pub opencode: Arc<OpencodeProvider>,
     pub providers: ProviderRegistry,
     /// 隔离运行（`run`/`shell`/`env`）查表：provider id → 通用隔离抽象。
     /// Claude 不在此表中，走 `run.rs` 里的专用分支（macOS 钥匙串 / API 账号逻辑不适配此通用形状）。
@@ -43,16 +45,22 @@ impl AppContext {
         let codex = Arc::new(subswap_provider_codex::new(store.clone(), registry.clone()));
         let kimi = Arc::new(subswap_provider_kimi::new(store.clone(), registry.clone()));
         let cursor = Arc::new(CursorProvider::new(store.clone(), registry.clone())?);
+        let opencode = Arc::new(subswap_provider_opencode::new(
+            store.clone(),
+            registry.clone(),
+        ));
 
         let mut providers = ProviderRegistry::new();
         providers.register(claude.clone());
         providers.register(codex.clone());
         providers.register(kimi.clone());
         providers.register(cursor.clone());
+        providers.register(opencode.clone());
 
         let mut isolated: HashMap<&'static str, Arc<dyn IsolatedProvider>> = HashMap::new();
         isolated.insert("codex", codex.clone());
         isolated.insert("kimi", kimi.clone());
+        isolated.insert("opencode", opencode.clone());
 
         let audit = AuditLog::from_default_paths()?;
 
@@ -63,6 +71,7 @@ impl AppContext {
             codex,
             kimi,
             cursor,
+            opencode,
             providers,
             isolated,
             audit,

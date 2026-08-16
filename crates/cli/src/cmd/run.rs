@@ -68,7 +68,7 @@ pub async fn env(ctx: &AppContext, id_input: &str) -> Result<()> {
     let env_dir = checkout.env_dir().to_path_buf();
     materialize(ctx, &acc, &env_dir)?;
 
-    for (k, v) in env_vars(ctx, &acc.provider, &env_dir) {
+    for (k, v) in env_vars(ctx, &acc, &env_dir) {
         println!("export {k}={}", shell_quote(&v));
     }
     eprintln!(
@@ -113,7 +113,7 @@ async fn launch_program(
 
     materialize(ctx, acc, &env_dir)?;
 
-    let envs = env_vars(ctx, &acc.provider, &env_dir);
+    let envs = env_vars(ctx, acc, &env_dir);
     println!(
         "run → {}/{} (isolated {}={})",
         acc.provider,
@@ -171,12 +171,14 @@ fn absorb(ctx: &AppContext, acc: &Account, env_dir: &Path) -> Result<()> {
 }
 
 /// 该 provider 隔离会话需要导出的环境变量。
-fn env_vars(ctx: &AppContext, provider: &str, env_dir: &Path) -> Vec<(String, String)> {
+fn env_vars(ctx: &AppContext, acc: &Account, env_dir: &Path) -> Vec<(String, String)> {
     let dir = env_dir.to_string_lossy().into_owned();
-    if let Some(iso) = ctx.isolated.get(provider) {
-        return vec![(iso.isolation_env_var().to_string(), dir)];
+    if let Some(iso) = ctx.isolated.get(acc.provider.as_str()) {
+        let mut v = vec![(iso.isolation_env_var().to_string(), dir)];
+        v.extend(iso.isolation_extra_env(&acc.id));
+        return v;
     }
-    match provider {
+    match acc.provider.as_str() {
         "claude" => {
             let mut v = vec![("CLAUDE_CONFIG_DIR".into(), dir.clone())];
             // macOS：显式设 SECURESTORAGE 目录，使钥匙串 service 名哈希源为我们已知的确切字符串，
@@ -215,7 +217,8 @@ fn normalize_provider(provider: &str) -> Result<&'static str> {
         "codex" | "openai" | "chatgpt" => Ok("codex"),
         "claude" | "anthropic" => Ok("claude"),
         "kimi" | "moonshot" => Ok("kimi"),
-        other => bail!("unknown provider: {other} (expected codex, claude or kimi)"),
+        "opencode" | "opencode-go" => Ok("opencode"),
+        other => bail!("unknown provider: {other} (expected codex, claude, kimi or opencode)"),
     }
 }
 

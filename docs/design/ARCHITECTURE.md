@@ -24,10 +24,11 @@
 ┌──────────▼────────────┐             ┌──────────▼─────────────┐
 │ providers/codex       │             │ providers/claude        │
 │ providers/kimi        │             │ - keyring + 备份替换    │
-│ - CodexRuntime /      │             │ - Anthropic usage 端点  │
-│   KimiRuntime         │             │ - 同步 ~/.claude        │
-│ - 只写差异点：本地路径│             │ - 自定义 API 账号       │
-│   解析/元数据/刷新/   │             │ - 独立实现，不接 common │
+│ providers/opencode    │             │ - Anthropic usage 端点  │
+│ - Codex/Kimi/OpenCode │             │ - 同步 ~/.claude        │
+│   Runtime             │             │ - 自定义 API 账号       │
+│ - 只写差异点：本地路径│             │ - 独立实现，不接 common │
+│   解析/元数据/刷新/   │             │                         │
 │   usage 查询          │             │                         │
 └──────────┬────────────┘             └──────────┬─────────────┘
            │ 实现 FileBlobRuntime                 │
@@ -57,9 +58,10 @@
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Codex 与 Kimi 共享 `providers/common` 里的切换机制（原子写文件、快照回滚、capture-on-leave 回灌、
+Codex、Kimi 与 OpenCode Go 共享 `providers/common` 里的切换机制（原子写文件、快照回滚、capture-on-leave 回灌、
 parked-only 刷新、隔离导出/吸收），各自只实现 `FileBlobRuntime` trait 提供的差异点（本地路径解析、
-凭证 blob 里的元数据抽取、刷新请求、usage 查询）。Claude 因 macOS Keychain 存储 + 自定义 API 账号
+凭证 blob 里的元数据抽取、刷新请求、usage 查询；OpenCode 另覆盖 `extract_blob` / `compose_live`，
+因为 `auth.json` 是多供应商共存文件，只能改 `opencode-go` 那一项）。Claude 因 macOS Keychain 存储 + 自定义 API 账号
 这类无本地凭证文件的特殊形状，继续保留独立实现。Cursor 的身份位于 SQLite，切换还要协调桌面应用
 生命周期，也独立实现 `Provider`；两者都不接共享引擎。
 
@@ -68,7 +70,7 @@ parked-only 刷新、隔离导出/吸收），各自只实现 `FileBlobRuntime` 
 | 模式 | 落地位置 | 作用 |
 |---|---|---|
 | Strategy + Factory | `Provider` trait + `ProviderRegistry` | 多 Provider 多策略，新增 = 加一行注册 |
-| Adapter | `providers/codex`、`providers/kimi` | 各自实现 `FileBlobRuntime`，把本地路径/元数据/刷新/usage 查询的差异适配进 `providers/common` 共享引擎；Claude/Cursor 直接实现 `Provider` trait，不属于这个 Adapter 关系 |
+| Adapter | `providers/codex`、`providers/kimi`、`providers/opencode` | 各自实现 `FileBlobRuntime`，把本地路径/元数据/刷新/usage 查询的差异适配进 `providers/common` 共享引擎；Claude/Cursor 直接实现 `Provider` trait，不属于这个 Adapter 关系 |
 | Repository | `CredentialStore` trait + `FileStore` / `KeyringStore` | 默认私有文件仓库；旧 keyring 只作懒迁移源 |
 | Observer | M4 的 `UsageMonitor` → `AutoSwapPolicy` | 周期采样触发自动切换 |
 | Chain of Responsibility | M4 的 `AutoSwapPolicy` 内部 | 阈值 → 限流 → 候选筛选 → 选优 |
@@ -117,8 +119,9 @@ parked-only 刷新、隔离导出/吸收），各自只实现 `FileBlobRuntime` 
 ```
 claude: subswap login claude → claude auth login --claudeai → claude.import_active()
 codex:  subswap login codex  → codex login                 → codex.import_active()
-kimi:   subswap login kimi   → （用户自己先跑 kimi 登录）  → kimi.import_active()
-cursor: subswap login cursor → （用户自己先在 Cursor 登录）→ cursor.import_active()
+kimi:     subswap login kimi     → （用户自己先跑 kimi 登录）     → kimi.import_active()
+cursor:   subswap login cursor   → （用户自己先在 Cursor 登录）   → cursor.import_active()
+opencode: subswap login opencode → （TUI 已 connect，或 `-- sk-…`）→ import_active / import_raw
                                       └─ registry.set_active(provider, imported_id)
 ```
 
@@ -129,6 +132,9 @@ cursor: subswap login cursor → （用户自己先在 Cursor 登录）→ curso
 - Kimi 没有可供 subswap 驱动的官方 CLI 登录子命令，因此 `subswap login kimi` 不跑任何 OAuth
   流程，只是单纯 import：约定用户已自行用 `kimi` 这个原生 TUI 登录过。
 - Cursor 同样不复制登录流程：用户先在桌面端登录，`subswap login cursor` 只从 `state.vscdb` 导入。
+- OpenCode Go 也没有可驱动的登录子命令：`subswap login opencode` 导入当前 `auth.json` 的
+  `opencode-go` 项；也可 `subswap login opencode -- sk-...` 直接写入 API key。切换时只改这一项，
+  不得覆盖同文件里的其它供应商。
 
 ### 3.3 `subswap swap [<id|N>]`
 
@@ -242,6 +248,7 @@ Linux 的 keyutils 后端按**内核 session keyring** 隔离。`subswapd` 由 C
 - Codex：`~/.codex/accounts/registry.json` + `~/.codex/sessions/`
 - Claude：`~/.claude/`
 - Kimi：`~/.kimi-code/credentials/kimi-code.json`（`KIMI_CODE_HOME` 可覆盖工作目录）
+- OpenCode Go：`~/.local/share/opencode/auth.json` 的 `opencode-go` 项（`SUBSWAP_OPENCODE_HOME` 可覆盖工作目录）
 - Cursor：各平台 `Cursor/User/globalStorage/state.vscdb`（详见 Provider 知识库）
 
 subswap 切换时会写这些上游状态；完整 token 另存凭证仓库 `FileStore`，`registry.toml` 只存非敏感元数据。

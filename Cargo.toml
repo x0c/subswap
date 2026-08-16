@@ -9,17 +9,18 @@ members = [
     "crates/providers/claude",
     "crates/providers/kimi",
     "crates/providers/cursor",
+    "crates/providers/opencode",
 ]
 
 [workspace.package]
-version = "1.5.0"
+version = "1.6.0"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
 authors = ["subswap contributors"]
 repository = "https://github.com/x0c/subswap"
 homepage = "https://github.com/x0c/subswap"
-keywords = ["claude", "codex", "kimi", "cursor", "quota"]
+keywords = ["claude", "codex", "kimi", "cursor", "opencode", "quota"]
 categories = ["command-line-utilities", "authentication"]
 
 [workspace.dependencies]
@@ -62,6 +63,7 @@ subswap-provider-codex = { path = "crates/providers/codex" }
 subswap-provider-claude = { path = "crates/providers/claude" }
 subswap-provider-kimi = { path = "crates/providers/kimi" }
 subswap-provider-cursor = { path = "crates/providers/cursor" }
+subswap-provider-opencode = { path = "crates/providers/opencode" }
 subswap-daemon = { path = "crates/daemon" }
 
 [profile.release]

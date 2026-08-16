@@ -32,6 +32,7 @@ use subswap_provider_claude::ClaudeProvider;
 use subswap_provider_codex::CodexProvider;
 use subswap_provider_cursor::CursorProvider;
 use subswap_provider_kimi::KimiProvider;
+use subswap_provider_opencode::OpencodeProvider;
 use tokio::signal::unix::{signal, SignalKind};
 
 use state::DaemonState;
@@ -73,11 +74,16 @@ pub async fn run() -> Result<()> {
     let codex = Arc::new(subswap_provider_codex::new(store.clone(), registry.clone()));
     let kimi = Arc::new(subswap_provider_kimi::new(store.clone(), registry.clone()));
     let cursor = Arc::new(CursorProvider::new(store.clone(), registry.clone())?);
+    let opencode = Arc::new(subswap_provider_opencode::new(
+        store.clone(),
+        registry.clone(),
+    ));
     let mut providers = ProviderRegistry::new();
     providers.register(claude.clone());
     providers.register(codex.clone());
     providers.register(kimi.clone());
     providers.register(cursor.clone());
+    providers.register(opencode.clone());
 
     let mut state = DaemonState::new();
 
@@ -104,6 +110,7 @@ pub async fn run() -> Result<()> {
             &codex,
             &kimi,
             &cursor,
+            &opencode,
             &audit,
             &mut state,
             &policy,
@@ -149,6 +156,7 @@ async fn run_cycle(
     codex: &Arc<CodexProvider>,
     kimi: &Arc<KimiProvider>,
     cursor: &Arc<CursorProvider>,
+    opencode: &Arc<OpencodeProvider>,
     audit: &AuditLog,
     state: &mut DaemonState,
     policy: &PolicyConfig,
@@ -165,6 +173,7 @@ async fn run_cycle(
     // current-thread runtime 上会直接 panic,此处沿用同一取舍)。
     reconcile_file_blob_provider(codex, "codex").await;
     reconcile_file_blob_provider(kimi, "kimi").await;
+    reconcile_file_blob_provider(opencode, "opencode").await;
     if let Err(e) = cursor.reconcile_active_from_live().await {
         tracing::debug!(err = %e, "cursor live-credential reconcile skipped");
     }

@@ -22,7 +22,7 @@ use subswap_core::{
     Account, AccountId, AccountRegistry, ClientTarget, CredentialStore, Provider, Quota,
 };
 
-use crate::json::{extract_access_token, extract_refresh_token};
+use crate::json::extract_refresh_token;
 use crate::runtime::{BlobMetadata, FileBlobRuntime, IsolationSpec, RefreshOutcome};
 
 /// 文件型 OAuth 账号切换引擎：接一个 [`FileBlobRuntime`] adapter 即可获得完整 [`Provider`] 实现。
@@ -78,6 +78,34 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
     /// 转调 runtime 的额外物化（如 Codex 复制 `config.toml` 进隔离目录）。
     pub fn materialize_extra_into(&self, env_dir: &Path) {
         self.runtime.materialize_extra(&self.home, env_dir);
+    }
+
+    /// 隔离目录内 live 文件相对 env_dir 的路径。
+    pub fn isolation_dest_rel(&self) -> PathBuf {
+        self.runtime
+            .isolation_rel_path()
+            .unwrap_or_else(|| self.live_rel_path())
+    }
+
+    /// 把账号 blob 合进现有 live 内容（默认整文件覆盖）。
+    pub fn compose_live_blob(&self, existing: Option<&str>, blob: &str) -> String {
+        self.runtime.compose_live(existing, blob)
+    }
+
+    /// 从 live 文件内容抽出本 provider 的 blob（默认整文件）。
+    pub fn extract_live_blob(&self, live: &str) -> Option<String> {
+        self.runtime.extract_blob(live)
+    }
+
+    /// 隔离启动时除 home 环境变量外额外注入的变量。
+    pub fn isolation_extra_env(&self, id: &AccountId) -> Vec<(String, String)> {
+        match self.export_blob(id) {
+            Ok(blob) => {
+                let composed = self.runtime.compose_live(None, &blob);
+                self.runtime.isolation_extra_env(&composed)
+            }
+            Err(_) => Vec::new(),
+        }
     }
 
     /// 原子写 live 凭证：tmp + rename + 0o600。同时供隔离物化写入使用（`pub(crate)`）。
@@ -231,17 +259,28 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
             .find(|a| a.extra.get(dedup_extra_key).and_then(|v| v.as_str()) == Some(target))
     }
 
+    /// 读 live 文件并抽出本 provider 的 blob。
+    fn read_extracted_live(&self) -> Result<String> {
+        Self::read_extracted_live_at(self.runtime.as_ref(), &self.home)
+    }
+
+    fn read_extracted_live_at(runtime: &A, home: &Path) -> Result<String> {
+        let live = fs::read_to_string(runtime.live_cred_path(home))
+            .map_err(|e| Error::Provider(format!("read live credentials failed: {e}")))?;
+        runtime.extract_blob(&live).ok_or_else(|| {
+            Error::Provider("live credentials have no usable entry for this provider".into())
+        })
+    }
+
     /// 从当前 live 文件导入（可切换）。
     pub fn import_active(&self, label_hint: Option<String>) -> Result<Account> {
-        let raw = fs::read_to_string(self.live_path())
-            .map_err(|e| Error::Provider(format!("read live credentials failed: {e}")))?;
+        let raw = self.read_extracted_live()?;
         self.store_account(raw, label_hint, Some(true))
     }
 
     /// 只对齐当前 live 的元数据 active 标记，不写凭证（默认入口用，避免弹钥匙串）。
     pub fn sync_active_metadata(&self, label_hint: Option<String>) -> Result<Account> {
-        let raw = fs::read_to_string(self.live_path())
-            .map_err(|e| Error::Provider(format!("read live credentials failed: {e}")))?;
+        let raw = self.read_extracted_live()?;
         // 复用 store_account，但不覆盖 store 里已有的可切换 blob：仅当 store 尚无该账号时才写。
         let meta = self.runtime.parse_metadata(&raw);
         let has_blob = meta
@@ -273,8 +312,7 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
     /// 当前 live 凭证对应的 registry id。`rm` 用它判断删除的号是否仍在客户端登录着，
     /// 默认入口用它判断「客户端登录着但同步失败」要不要提示。
     pub fn live_account_id(&self) -> Result<AccountId> {
-        let raw = fs::read_to_string(self.live_path())
-            .map_err(|e| Error::Provider(format!("read live credentials failed: {e}")))?;
+        let raw = self.read_extracted_live()?;
         let meta = self.runtime.parse_metadata(&raw);
         if let Some(existing) = self.find_by_dedup(&meta) {
             return Ok(existing.id);
@@ -370,7 +408,7 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
     }
 
     fn read_live_if_matches(&self, account: &Account) -> Option<String> {
-        let raw = fs::read_to_string(self.live_path()).ok()?;
+        let raw = self.read_extracted_live().ok()?;
         let meta = self.runtime.parse_metadata(&raw);
         Self::metadata_matches(&meta, account, self.runtime.dedup_extra_key()).then_some(raw)
     }
@@ -397,7 +435,7 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
         registry: &AccountRegistry,
         home: &Path,
     ) -> Result<()> {
-        let live_raw = match fs::read_to_string(runtime.live_cred_path(home)) {
+        let live_raw = match Self::read_extracted_live_at(runtime, home) {
             Ok(r) => r,
             Err(_) => return Ok(()),
         };
@@ -417,6 +455,19 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
                     tracing::warn!(
                         account = %owner.id,
                         "live capture missing refresh_token; skipped overwrite to keep existing store copy"
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        if runtime.access_token(&live_raw).is_none() {
+            if let Some(existing) =
+                store.get(runtime.id(), owner.id.0.as_str(), runtime.store_field())?
+            {
+                if runtime.access_token(&existing).is_some() {
+                    tracing::warn!(
+                        account = %owner.id,
+                        "live capture missing access token; skipped overwrite to keep existing store copy"
                     );
                     return Ok(());
                 }
@@ -511,10 +562,15 @@ impl<A: FileBlobRuntime> Provider for FileBlobProvider<A> {
             }
 
             let blob = target_raw;
+            let runtime_for_write = runtime.clone();
             let targets = vec![SwapTarget {
                 snapshot_name: "credentials",
                 live_path,
-                writer: Box::new(move |p: &Path| FileBlobProvider::<A>::write_blob(p, &blob)),
+                writer: Box::new(move |p: &Path| {
+                    let existing = fs::read_to_string(p).ok();
+                    let composed = runtime_for_write.compose_live(existing.as_deref(), &blob);
+                    FileBlobProvider::<A>::write_blob(p, &composed)
+                }),
             }];
             swap_with_snapshot(provider_id, &home, targets, || {
                 registry.set_active(provider_id, &id_owned)
@@ -534,8 +590,8 @@ impl<A: FileBlobRuntime> Provider for FileBlobProvider<A> {
                 raw = fresh;
             }
         }
-        let access = extract_access_token(&raw).ok_or_else(|| {
-            Error::QuotaFetch("no access_token in credentials; schema may have changed".into())
+        let access = self.runtime.access_token(&raw).ok_or_else(|| {
+            Error::QuotaFetch("no access token in credentials; schema may have changed".into())
         })?;
         self.runtime.fetch_quota(&access, &account).await
     }
@@ -734,7 +790,7 @@ mod tests {
         provider_with(tmp, FakeRuntime::new(tmp.join("home")))
     }
 
-    fn provider_with(tmp: &Path, runtime: FakeRuntime) -> FileBlobProvider<FakeRuntime> {
+    fn provider_with<A: FileBlobRuntime>(tmp: &Path, runtime: A) -> FileBlobProvider<A> {
         let store = Arc::new(FileStore::new(tmp.join("creds.json")));
         let registry = Arc::new(AccountRegistry::new(tmp.join("registry.toml")));
         FileBlobProvider::new(runtime, store, registry)
@@ -1099,5 +1155,110 @@ mod tests {
             p.test_store_get("u1").unwrap(),
             r#"{"uid":"u1","access_token":"OLD"}"#
         );
+    }
+
+    #[test]
+    fn capture_skips_when_live_missing_access_token_but_store_has_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = provider(tmp.path());
+        fs::create_dir_all(p.home()).unwrap();
+        p.import_raw(
+            r#"{"uid":"u1","access_token":"A1"}"#.into(),
+            None,
+            Some(false),
+        )
+        .unwrap();
+        fs::write(p.test_live_path(), r#"{"uid":"u1"}"#).unwrap();
+        p.reconcile_active_from_live().unwrap();
+        let stored = p.test_store_get("u1").unwrap();
+        assert!(
+            stored.contains("A1"),
+            "store 应保留带 access_token 的旧副本"
+        );
+    }
+
+    struct SlotRuntime {
+        inner: FakeRuntime,
+    }
+
+    #[async_trait]
+    impl FileBlobRuntime for SlotRuntime {
+        fn id(&self) -> &'static str {
+            self.inner.id()
+        }
+        fn display_name(&self) -> &'static str {
+            self.inner.display_name()
+        }
+        fn home(&self) -> PathBuf {
+            self.inner.home()
+        }
+        fn live_cred_path(&self, home: &Path) -> PathBuf {
+            self.inner.live_cred_path(home)
+        }
+        fn parse_metadata(&self, blob: &str) -> BlobMetadata {
+            self.inner.parse_metadata(blob)
+        }
+        fn isolation(&self) -> IsolationSpec {
+            self.inner.isolation()
+        }
+        async fn refresh(&self, blob: &str) -> Result<RefreshOutcome> {
+            self.inner.refresh(blob).await
+        }
+        async fn fetch_quota(&self, access_token: &str, account: &Account) -> Result<Vec<Quota>> {
+            self.inner.fetch_quota(access_token, account).await
+        }
+        fn extract_blob(&self, live_contents: &str) -> Option<String> {
+            let v: serde_json::Value = serde_json::from_str(live_contents).ok()?;
+            let slot = v.get("slot")?;
+            serde_json::to_string(slot).ok()
+        }
+        fn compose_live(&self, existing_live: Option<&str>, blob: &str) -> String {
+            let mut map = existing_live
+                .and_then(|s| {
+                    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(s).ok()
+                })
+                .unwrap_or_default();
+            let entry = serde_json::from_str(blob).unwrap_or(serde_json::Value::Null);
+            map.insert("slot".into(), entry);
+            serde_json::Value::Object(map).to_string()
+        }
+    }
+
+    #[tokio::test]
+    async fn import_active_extracts_slot_and_activate_preserves_neighbors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = SlotRuntime {
+            inner: FakeRuntime::new(tmp.path().join("home")),
+        };
+        let p = provider_with(tmp.path(), runtime);
+        fs::create_dir_all(p.home()).unwrap();
+        fs::write(
+            p.test_live_path(),
+            r#"{"keep":"other","slot":{"uid":"u1","access_token":"A1"}}"#,
+        )
+        .unwrap();
+
+        let account = p.import_active(None).unwrap();
+        assert_eq!(account.id.0, "u1");
+        let stored: serde_json::Value =
+            serde_json::from_str(&p.test_store_get("u1").unwrap()).unwrap();
+        assert_eq!(stored["uid"], "u1");
+        assert_eq!(stored["access_token"], "A1");
+        assert!(stored.get("keep").is_none());
+
+        let parked = p
+            .import_raw(
+                r#"{"uid":"u2","access_token":"A2"}"#.into(),
+                None,
+                Some(false),
+            )
+            .unwrap();
+        p.activate(&parked.id).await.unwrap();
+
+        let live: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(p.test_live_path()).unwrap()).unwrap();
+        assert_eq!(live["keep"], "other");
+        assert_eq!(live["slot"]["uid"], "u2");
+        assert_eq!(live["slot"]["access_token"], "A2");
     }
 }

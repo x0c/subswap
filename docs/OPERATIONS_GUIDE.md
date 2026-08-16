@@ -31,7 +31,7 @@
 - Rust 工具链：workspace 声明 `rust-version = "1.80"`，CI 使用 stable。
 - Linux 依赖：CI 在 Linux 安装 `libdbus-1-dev pkg-config`，否则 keyring 相关依赖可能链接失败。
 - daemon 副作用：本地运行默认入口时如只做测试，优先设置 `SUBSWAP_NO_DAEMON=1`，避免留下后台进程。
-- Windows 只发布 `subswap.exe`，不构建 Unix-only 的 `subswapd`；CLI 与四个 Provider 由 Windows CI 实测。
+- Windows 只发布 `subswap.exe`，不构建 Unix-only 的 `subswapd`；CLI 与五个 Provider 由 Windows CI 实测。
 - 真实账号隔离：新增会触发 Claude OAuth、Codex 登录状态或 Cursor 命令行钥匙串的集成测试时，必须沿用 `crates/cli/tests/cli_surface.rs::isolated_subswap` 的隔离环境，特别是 `SUBSWAP_CLAUDE_KEYCHAIN_PATH` 与 `SUBSWAP_CURSOR_KEYCHAIN_PATH`。
 - macOS 钥匙串：测试用一次性 keychain，不得触碰真实 `Claude Code-credentials` 或 `cursor-access-token` / `cursor-refresh-token` 登录钥匙串。
 
@@ -42,7 +42,7 @@ CLI 集成测试统一经 `isolated_subswap` 构造临时环境，不能只改 `
 | 隔离对象 | 覆盖方式 | 约束 |
 |---|---|---|
 | subswap 配置、数据、状态、缓存 | `SUBSWAP_HOME` | 指向每个测试独占的绝对临时目录；相对路径直接报错 |
-| Claude、Codex、Kimi 原生目录 | `CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`KIMI_CODE_HOME` | 全部指向同一个测试临时根下的不同子目录 |
+| Claude、Codex、Kimi、OpenCode 原生目录 | `CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`KIMI_CODE_HOME`、`SUBSWAP_OPENCODE_HOME` | 全部指向同一个测试临时根下的不同子目录；OpenCode 测试绝不能回落到真实 `~/.local/share/opencode` |
 | Cursor 原生状态数据库 | `SUBSWAP_CURSOR_STATE_DB_PATH` | 指向绝对临时路径下的 `state.vscdb`；文件可以尚不存在，禁止回退探测真实用户数据库 |
 | macOS Claude / Cursor 命令行钥匙串 | `SUBSWAP_CLAUDE_KEYCHAIN_PATH`、`SUBSWAP_CURSOR_KEYCHAIN_PATH` | 使用同一份一次性 keychain，禁止读取或写入真实登录钥匙串 |
 | 后台进程 | `SUBSWAP_NO_DAEMON=1` | 普通集成测试不留下 daemon；专门冒烟时再显式开启 |

@@ -23,6 +23,7 @@ pub async fn run(ctx: &AppContext, id_input: &str) -> Result<()> {
         "codex" => ctx.codex.live_account_id().ok(),
         "kimi" => ctx.kimi.live_account_id().ok(),
         "cursor" => ctx.cursor.live_account_id().await.ok(),
+        "opencode" => ctx.opencode.live_account_id().ok(),
         _ => None,
     }
     .is_some_and(|live| live == acc.id);
@@ -32,7 +33,7 @@ pub async fn run(ctx: &AppContext, id_input: &str) -> Result<()> {
     let fields: &[&str] = match acc.provider.as_str() {
         "claude" => &["credentials_json", "api_key"],
         "codex" => &["auth_json"],
-        "cursor" | "kimi" => &["blob"],
+        "cursor" | "kimi" | "opencode" => &["blob"],
         _ => &[],
     };
     for f in fields {

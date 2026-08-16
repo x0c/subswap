@@ -1,18 +1,18 @@
-# subswap - Claude、Codex、ChatGPT、Kimi、Cursor アカウント切り替えツール
+# subswap - Claude、Codex、ChatGPT、Kimi、Cursor、OpenCode アカウント切り替えツール
 
 Languages: [English](README.md) | [简体中文](README.zh-CN.md) | 日本語 | [한국어](README.ko.md)
 
-subswap は、Claude Code、OpenAI Codex / ChatGPT、Kimi Code、Cursor の複数の AI サブスクリプションアカウントを管理する Rust CLI です。ローカルのログイン状態を取り込み、クォータを確認し、アクティブアカウントを手動または自動で切り替えます。
+subswap は、Claude Code、OpenAI Codex / ChatGPT、Kimi Code、Cursor、OpenCode Go の複数の AI サブスクリプションアカウントを管理する Rust CLI です。ローカルのログイン状態を取り込み、クォータを確認し、アクティブアカウントを手動または自動で切り替えます。
 
 Claude アカウント切り替えツール、Codex アカウント管理ツール、ChatGPT クォータトラッカー、または複数 Provider を統合するサブスクリプション切り替えツールとして利用できます。
 
-**プラットフォームサポート**: CLI と 4 Provider は macOS / Linux / Windows の CI で検証されています。バックグラウンド daemon は Unix 専用で、Windows ではフォアグラウンド CLI を使用します。
+**プラットフォームサポート**: CLI と 5 Provider は macOS / Linux / Windows の CI で検証されています。バックグラウンド daemon は Unix 専用で、Windows ではフォアグラウンド CLI を使用します。
 
 ## 機能
 
-- **Claude Code、Codex CLI、Kimi Code、Cursor のマルチアカウント切り替え**：再ログインなしでアクティブアカウントを切り替えます。
+- **Claude Code、Codex CLI、Kimi Code、Cursor、OpenCode Go のマルチアカウント切り替え**：再ログインなしでアクティブアカウントを切り替えます。
 - **Claude Code カスタム API エンドポイント**：インタラクティブウィザードで DeepSeek、Kimi などの Anthropic 互換エンドポイントを追加し、通常の Claude アカウントと同様に切り替えられます。
-- **Claude / Codex / Kimi のアカウント分離環境**：`subswap run`・`shell`・`env` で並列利用できます。Cursor はデスクトップ SQLite のためこのモードには対応しません。
+- **Claude / Codex / Kimi / OpenCode のアカウント分離環境**：`subswap run`・`shell`・`env` で並列利用できます。Cursor はデスクトップ SQLite のためこのモードには対応しません。
 - **クォータ対応ステータス**：Claude / Kimi / Codex のウィンドウと、Cursor の `First-Party Models` / `API` 使用率を表示します。
 - **自動アカウント切り替え**：バックグラウンド daemon が使用量がしきい値を超えたアカウントから切り替え、クォータ更新のたびに再判定して常に最良のアカウントを選びます。
 - **自動切り替えトグル**：`subswap autoswap on/off` でコンフィグファイルを触らずに自動切り替えを有効・無効化できます。
@@ -30,6 +30,7 @@ Claude アカウント切り替えツール、Codex アカウント管理ツー�
 | Codex / ChatGPT | Codex CLI (`~/.codex`) | `auth.json`、アクティブアカウント、公式 app-server クォータ |
 | Kimi / Moonshot | Kimi Code (`~/.kimi-code`) | OAuth 認証情報、アクティブアカウント、5h / 7d 使用量 |
 | Cursor | Cursor デスクトップ (`state.vscdb`) | アカウント切り替え、First-Party Models / API 使用率、請求サイクルリセット |
+| OpenCode Go | OpenCode (`~/.local/share/opencode/auth.json`) | `opencode-go` API key のみ（同ファイルの他プロバイダは維持）、5h / 週 / 月クォータ |
 
 ## よくある用途
 
@@ -49,6 +50,7 @@ Claude アカウント切り替えツール、Codex アカウント管理ツー�
 | M4 | `subswapd` daemon: periodic poll + auto-swap + Claude token keepalive + zero-config auto-spawn | done |
 | M5 | アカウント分離実行環境、自動切り替えトグル、クォータキャッシュ、セトルグレース | done |
 | M6 | Kimi / Cursor Provider、Codex 公式クォータ経路、安全な token 復旧 | done |
+| M7 | OpenCode Go Provider：`auth.json` の Go 項目のみ切替、5h/週/月クォータ、自動切替と分離実行 | done |
 
 ## なぜ必要か
 
@@ -136,7 +138,7 @@ subswap rm alice@example.com
 subswap doctor
 ```
 
-各ネイティブクライアントで一度ログインしていれば、初回実行時に Claude Code、Codex CLI、Kimi Code、Cursor の現在のアカウントを自動的に取り込みます。
+各ネイティブクライアントで一度ログインしていれば、初回実行時に Claude Code、Codex CLI、Kimi Code、Cursor、OpenCode Go の現在のアカウントを自動的に取り込みます。
 
 最初の `subswap` 実行時には、macOS 以外の Unix プラットフォームで分離されたバックグラウンド daemon（`subswapd`）も起動します。daemon はクォータをポーリングしてバックグラウンドで自動切り替えを行い、Claude OAuth token を新鮮に保つことで、長く使っていなかったアカウントへ切り替えた瞬間に 401 になることを避けます。macOS では、切り離されたプロセスの Keychain アクセスが追加の認証プロンプトを出すことがあるため明示的な opt-in が必要です。自動起動を有効にするには `SUBSWAP_AUTO_DAEMON=1` を export してください。daemon は単一インスタンス（ファイルロック）です。停止しても問題ありません：`pkill -f 'subswap __daemon'` または `pkill subswapd`。完全に無効化するには `SUBSWAP_NO_DAEMON=1` を export してください。
 
@@ -190,11 +192,11 @@ token と refresh token はアプリデータディレクトリ内のオーナ�
 
 ### Claude / Codex 専用ですか？
 
-いいえ。Claude / Anthropic、Codex / ChatGPT、Kimi / Moonshot、Cursor に対応しています。
+いいえ。Claude / Anthropic、Codex / ChatGPT、Kimi / Moonshot、Cursor、OpenCode Go に対応しています。
 
 ### Windows で動きますか？
 
-はい。CLI と 4 Provider は Windows CI で検証され、上記 PowerShell コマンドでインストールできます。daemon のみ Unix 専用です。
+はい。CLI と 5 Provider は Windows CI で検証され、上記 PowerShell コマンドでインストールできます。daemon のみ Unix 専用です。
 
 ## GitHub topics
 

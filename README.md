@@ -1,4 +1,4 @@
-# subswap - Claude, Codex, ChatGPT, Kimi and Cursor account switcher
+# subswap - Claude, Codex, ChatGPT, Kimi, Cursor and OpenCode account switcher
 
 [![CI](https://github.com/x0c/subswap/actions/workflows/ci.yml/badge.svg)](https://github.com/x0c/subswap/actions/workflows/ci.yml)
 [![Release](https://github.com/x0c/subswap/actions/workflows/release.yml/badge.svg)](https://github.com/x0c/subswap/actions/workflows/release.yml)
@@ -6,7 +6,7 @@
 Languages: English | [简体中文](README.zh-CN.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
 
 subswap is a Rust CLI for managing multiple AI subscription accounts across
-Claude Code, OpenAI Codex / ChatGPT, Kimi Code, and Cursor. It imports local
+Claude Code, OpenAI Codex / ChatGPT, Kimi Code, Cursor, and OpenCode Go. It imports local
 login state, stores private credential snapshots, checks quota windows, and
 swaps the active account manually or automatically when usage crosses a
 configurable threshold.
@@ -14,14 +14,14 @@ configurable threshold.
 Use it as a Claude account switcher, Codex account manager, Kimi account
 switcher, Cursor quota tracker, or a unified multi-provider subscription swapper.
 
-**Platform support**: the CLI and all four providers support macOS, Linux, and Windows and are tested in CI.
+**Platform support**: the CLI and all five providers support macOS, Linux, and Windows and are tested in CI.
 The background daemon remains Unix-only; Windows uses the foreground CLI.
 
 ## Features
 
-- **Multi-account swap for Claude Code, Codex CLI, Kimi Code, and Cursor**: flip the active account without re-logging-in.
+- **Multi-account swap for Claude Code, Codex CLI, Kimi Code, Cursor, and OpenCode Go**: flip the active account without re-logging-in.
 - **Claude Code custom API endpoints**: add DeepSeek, Kimi, or another Anthropic-compatible endpoint through an interactive terminal wizard, then swap to and from it like any Claude account.
-- **Account-isolated parallel environments for Claude, Codex, and Kimi**: `subswap run`, `shell`, and `env` project credentials into a private directory without touching the global active account. Cursor is intentionally excluded because its desktop SQLite state cannot be safely projected.
+- **Account-isolated parallel environments for Claude, Codex, Kimi, and OpenCode**: `subswap run`, `shell`, and `env` project credentials into a private directory without touching the global active account. Cursor is intentionally excluded because its desktop SQLite state cannot be safely projected.
 - **Quota-aware status**: view Claude/Kimi/Codex windows plus Cursor's `First-Party Models` and `API` percentages.
 - **Automatic account swap**: a background daemon moves away from an account once usage crosses the configured threshold, and re-evaluates on every quota update to always pick the best available account.
 - **Auto-swap toggle**: `subswap autoswap on/off` enables or disables automatic switching without touching the config file.
@@ -29,7 +29,7 @@ The background daemon remains Unix-only; Windows uses the foreground CLI.
 - **Network-independent manual swap**: `subswap swap` still works when quota APIs fail, tokens expire, or the network is down.
 - **Quota result cache with stale fallback**: cached quota results are served while a fresh fetch is in flight, so the status screen is always responsive.
 - **File-backed credential storage**: tokens are kept in an owner-only (`0600`) file under the app data directory, so reading quota never triggers OS keychain prompts. Credentials from older keyring-based installs are migrated automatically on first run.
-- **Provider-based architecture**: Claude, Codex, Kimi, and Cursor are separate crates, so new AI providers can be added without changing core policy.
+- **Provider-based architecture**: Claude, Codex, Kimi, Cursor, and OpenCode Go are separate crates, so new AI providers can be added without changing core policy.
 
 ## Supported clients
 
@@ -39,6 +39,7 @@ The background daemon remains Unix-only; Windows uses the foreground CLI.
 | Codex / ChatGPT | Codex CLI (`~/.codex`) | `auth.json` passthrough, active account files, official app-server quota lookup |
 | Kimi / Moonshot | Kimi Code (`~/.kimi-code`) | OAuth credential blob, active account file, 5h / 7d usage, coordinated token recovery |
 | Cursor | Cursor desktop (`state.vscdb`) | account import/swap, `First-Party Models` and `API` usage, billing-cycle reset |
+| OpenCode Go | OpenCode (`~/.local/share/opencode/auth.json`) | `opencode-go` API key only (other providers in the same file are left untouched), 5h / weekly / monthly quota |
 
 ## Common use cases
 
@@ -46,7 +47,7 @@ The background daemon remains Unix-only; Windows uses the foreground CLI.
 - Keep a backup AI subscription ready when the current account reaches its usage limit.
 - Run two accounts in separate terminals at the same time without interfering with each other.
 - Check usage across accounts before starting a long coding session.
-- Consolidate Claude, ChatGPT, Kimi, and Cursor account switching into one CLI.
+- Consolidate Claude, ChatGPT, Kimi, Cursor, and OpenCode Go account switching into one CLI.
 
 ## Status
 
@@ -58,6 +59,7 @@ The background daemon remains Unix-only; Windows uses the foreground CLI.
 | M4 | `subswapd` daemon: periodic poll + auto-swap + Claude token keepalive + zero-config auto-spawn | done |
 | M5 | account-isolated run environments, auto-swap toggle, quota cache, settle-grace | done |
 | M6 | Kimi and Cursor providers, official Codex quota channel, coordinated token recovery | done |
+| M7 | OpenCode Go provider: slot-only `auth.json` swap, 5h/weekly/monthly quota, auto-swap and isolated run | done |
 
 ## Why
 
@@ -216,17 +218,17 @@ No refresh is attempted without a coordination boundary the native client unders
 
 ### Is this only for Claude or Codex?
 
-No. Claude / Anthropic, Codex / ChatGPT, Kimi / Moonshot, and Cursor are supported today.
+No. Claude / Anthropic, Codex / ChatGPT, Kimi / Moonshot, Cursor, and OpenCode Go are supported today.
 
 ### Does it work on Windows?
 
-Yes. The CLI and all four providers are tested on Windows in CI and released as a native zip; the PowerShell installer above handles installation and `PATH`. Only the background daemon is Unix-only.
+Yes. The CLI and all five providers are tested on Windows in CI and released as a native zip; the PowerShell installer above handles installation and `PATH`. Only the background daemon is Unix-only.
 
 ## GitHub topics
 
 Recommended repository topics after publishing:
 
-`claude-code`, `codex-cli`, `chatgpt`, `kimi`, `moonshot-ai`, `cursor`, `anthropic`, `openai`, `account-switcher`, `quota-tracker`, `ai-tools`, `rust-cli`, `automation`
+`claude-code`, `codex-cli`, `chatgpt`, `kimi`, `moonshot-ai`, `cursor`, `opencode`, `anthropic`, `openai`, `account-switcher`, `quota-tracker`, `ai-tools`, `rust-cli`, `automation`
 
 ## Layout
 
@@ -240,6 +242,7 @@ crates/
     codex/             # Codex / ChatGPT provider
     kimi/              # Kimi / Moonshot provider
     cursor/            # Cursor desktop provider
+    opencode/          # OpenCode Go provider
 ```
 
 ## Contributing

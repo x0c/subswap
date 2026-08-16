@@ -1,7 +1,7 @@
 //! 隔离运行的对象安全抽象：让 `subswap run/shell/env` 的 dispatch 不必按 provider 硬编码分支。
 //!
-//! 任何基于 [`crate::FileBlobProvider`] 组装的 provider（Codex、Kimi……）都自动获得本 trait 的实现；
-//! 新增第三个文件型 provider 时，只需在 CLI 侧的查表里插一行，不必再改 `run.rs` 的分支逻辑。
+//! 任何基于 [`crate::FileBlobProvider`] 组装的 provider（Codex、Kimi、OpenCode Go……）都自动获得本 trait 的实现；
+//! 再新增文件型 provider 时，只需在 CLI 侧的查表里插一行，不必再改 `run.rs` 的 dispatch 逻辑。
 
 use std::fs;
 use std::path::Path;
@@ -25,6 +25,8 @@ pub trait IsolatedProvider: Send + Sync {
     fn materialize(&self, id: &AccountId, env_dir: &Path) -> Result<()>;
     /// 隔离会话结束后吸收（可能被原生 CLI 轮换过的）凭证，仅更新该账号的 store 副本。
     fn absorb(&self, id: &AccountId, env_dir: &Path) -> Result<()>;
+    /// 隔离启动时除 home 环境变量外额外注入的变量。
+    fn isolation_extra_env(&self, id: &AccountId) -> Vec<(String, String)>;
 }
 
 impl<A: FileBlobRuntime> IsolatedProvider for FileBlobProvider<A> {
@@ -42,20 +44,31 @@ impl<A: FileBlobRuntime> IsolatedProvider for FileBlobProvider<A> {
 
     fn materialize(&self, id: &AccountId, env_dir: &Path) -> Result<()> {
         let blob = self.export_blob(id)?;
-        let dest = env_dir.join(self.live_rel_path());
-        FileBlobProvider::<A>::write_blob(&dest, &blob)?;
+        let composed = self.compose_live_blob(None, &blob);
+        let dest = env_dir.join(self.isolation_dest_rel());
+        FileBlobProvider::<A>::write_blob(&dest, &composed)?;
         self.materialize_extra_into(env_dir);
         Ok(())
     }
 
     fn absorb(&self, id: &AccountId, env_dir: &Path) -> Result<()> {
-        let dest = env_dir.join(self.live_rel_path());
+        let dest = env_dir.join(self.isolation_dest_rel());
         let raw = fs::read_to_string(&dest).map_err(|e| {
             Error::Provider(format!(
                 "read isolated credentials at {}: {e}",
                 dest.display()
             ))
         })?;
-        self.absorb_blob(id, &raw)
+        let blob = self.extract_live_blob(&raw).ok_or_else(|| {
+            Error::Provider(format!(
+                "isolated credentials at {} have no usable entry",
+                dest.display()
+            ))
+        })?;
+        self.absorb_blob(id, &blob)
+    }
+
+    fn isolation_extra_env(&self, id: &AccountId) -> Vec<(String, String)> {
+        FileBlobProvider::<A>::isolation_extra_env(self, id)
     }
 }
