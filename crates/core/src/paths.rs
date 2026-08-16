@@ -103,5 +103,4 @@ impl AppPaths {
     pub fn quota_cache_file(&self) -> PathBuf {
         self.cache_dir.join("quota_cache.json")
     }
-
 }
