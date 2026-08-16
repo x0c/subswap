@@ -1,18 +1,18 @@
-# subswap - Claude, Codex, ChatGPT, Kimi, Cursor 계정 전환 도구
+# subswap - Claude, Codex, ChatGPT, Kimi, Cursor, OpenCode 계정 전환 도구
 
 Languages: [English](README.md) | [简体中文](README.zh-CN.md) | [日本語](README.ja.md) | 한국어
 
-subswap은 Claude Code, OpenAI Codex / ChatGPT, Kimi Code, Cursor의 여러 AI 구독 계정을 관리하는 Rust CLI입니다. 로컬 로그인 상태와 quota를 읽고 활성 계정을 수동 또는 자동으로 전환합니다.
+subswap은 Claude Code, OpenAI Codex / ChatGPT, Kimi Code, Cursor, OpenCode Go의 여러 AI 구독 계정을 관리하는 Rust CLI입니다. 로컬 로그인 상태와 quota를 읽고 활성 계정을 수동 또는 자동으로 전환합니다.
 
 Claude 계정 전환 도구, Codex 계정 관리자, ChatGPT quota tracker, 또는 여러 Provider를 통합하는 구독 전환 도구로 사용할 수 있습니다.
 
-**플랫폼 지원**: CLI와 네 Provider는 macOS / Linux / Windows CI에서 검증됩니다. 백그라운드 daemon은 Unix 전용이며 Windows에서는 포그라운드 CLI를 사용합니다.
+**플랫폼 지원**: CLI와 다섯 Provider는 macOS / Linux / Windows CI에서 검증됩니다. 백그라운드 daemon은 Unix 전용이며 Windows에서는 포그라운드 CLI를 사용합니다.
 
 ## 기능
 
-- **Claude Code, Codex CLI, Kimi Code, Cursor 다중 계정 전환**: 다시 로그인하지 않고 활성 계정을 바꿉니다.
+- **Claude Code, Codex CLI, Kimi Code, Cursor, OpenCode Go 다중 계정 전환**: 다시 로그인하지 않고 활성 계정을 바꿉니다.
 - **Claude Code 커스텀 API 엔드포인트**: 인터랙티브 위저드로 DeepSeek, Kimi 등 Anthropic 호환 엔드포인트를 추가하고 일반 Claude 계정처럼 전환할 수 있습니다.
-- **Claude / Codex / Kimi 계정 격리 병렬 환경**: `subswap run`·`shell`·`env`로 사용할 수 있습니다. Cursor는 데스크톱 SQLite 상태 때문에 이 모드를 지원하지 않습니다.
+- **Claude / Codex / Kimi / OpenCode 계정 격리 병렬 환경**: `subswap run`·`shell`·`env`로 사용할 수 있습니다. Cursor는 데스크톱 SQLite 상태 때문에 이 모드를 지원하지 않습니다.
 - **Quota-aware status**: Claude / Kimi / Codex window와 Cursor의 `First-Party Models` / `API` 사용률을 표시합니다.
 - **자동 계정 전환**: 백그라운드 daemon이 사용량이 threshold를 초과한 계정에서 전환하고, 매 quota 업데이트 시 재판정하여 항상 최선의 계정을 선택합니다.
 - **자동 전환 토글**: `subswap autoswap on/off`로 설정 파일을 건드리지 않고 자동 전환을 켜거나 끌 수 있습니다.
@@ -30,6 +30,7 @@ Claude 계정 전환 도구, Codex 계정 관리자, ChatGPT quota tracker, 또�
 | Codex / ChatGPT | Codex CLI (`~/.codex`) | `auth.json`, 활성 계정, 공식 app-server quota |
 | Kimi / Moonshot | Kimi Code (`~/.kimi-code`) | OAuth 자격 증명, 활성 계정, 5h / 7d 사용량 |
 | Cursor | Cursor desktop (`state.vscdb`) | 계정 전환, First-Party Models / API 사용률, 결제 주기 reset |
+| OpenCode Go | OpenCode (`~/.local/share/opencode/auth.json`) | `opencode-go` API key만 전환(같은 파일의 다른 provider는 유지), 5h / 주 / 월 quota |
 
 ## 일반적인 사용 사례
 
@@ -49,6 +50,7 @@ Claude 계정 전환 도구, Codex 계정 관리자, ChatGPT quota tracker, 또�
 | M4 | `subswapd` daemon: periodic poll + auto-swap + Claude token keepalive + zero-config auto-spawn | done |
 | M5 | 계정 격리 실행 환경, 자동 전환 토글, quota 캐시, 정착 유예 | done |
 | M6 | Kimi / Cursor Provider, Codex 공식 quota 경로, 안전한 token 복구 | done |
+| M7 | OpenCode Go Provider: `auth.json`의 Go 항목만 전환, 5h/주/월 quota, 자동 전환과 격리 실행 | done |
 
 ## 왜 필요한가
 
@@ -194,7 +196,7 @@ token과 refresh token은 앱 데이터 디렉터리 내 소유자 전용 자격
 
 ### Windows에서 동작하나요?
 
-지원합니다. CLI와 네 Provider는 Windows CI에서 검증되며 위 PowerShell 명령으로 설치할 수 있습니다. daemon만 Unix 전용입니다.
+지원합니다. CLI와 다섯 Provider는 Windows CI에서 검증되며 위 PowerShell 명령으로 설치할 수 있습니다. daemon만 Unix 전용입니다.
 
 ## GitHub topics
 

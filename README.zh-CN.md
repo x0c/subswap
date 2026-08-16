@@ -1,18 +1,18 @@
-# subswap - Claude、Codex、ChatGPT、Kimi 和 Cursor 账号切换器
+# subswap - Claude、Codex、ChatGPT、Kimi、Cursor 和 OpenCode 账号切换器
 
 语言： [English](README.md) | 简体中文 | [日本語](README.ja.md) | [한국어](README.ko.md)
 
-subswap 是一个 Rust CLI，用于管理 Claude Code、OpenAI Codex / ChatGPT、Kimi Code 和 Cursor 的多个 AI 订阅账号。它可以导入本地登录状态，保存私有凭证快照，查询额度窗口，并在用量超过可配置阈值时手动或自动切换当前账号。
+subswap 是一个 Rust CLI，用于管理 Claude Code、OpenAI Codex / ChatGPT、Kimi Code、Cursor 和 OpenCode Go 的多个 AI 订阅账号。它可以导入本地登录状态，保存私有凭证快照，查询额度窗口，并在用量超过可配置阈值时手动或自动切换当前账号。
 
 它既可以作为 Claude / Kimi 账号切换器、Codex 账号管理器、Cursor 额度追踪器，也可以作为统一的多 Provider 订阅切换工具。
 
-**平台支持**：CLI 与四个 Provider 均支持 macOS、Linux、Windows，并由三平台 CI 验证。后台 daemon 仍只支持 Unix；Windows 使用前台 CLI。
+**平台支持**：CLI 与五个 Provider 均支持 macOS、Linux、Windows，并由三平台 CI 验证。后台 daemon 仍只支持 Unix；Windows 使用前台 CLI。
 
 ## 功能
 
-- **Claude Code、Codex CLI、Kimi Code 和 Cursor 多账号切换**：无需重新登录即可切换当前账号。
+- **Claude Code、Codex CLI、Kimi Code、Cursor 和 OpenCode Go 多账号切换**：无需重新登录即可切换当前账号。
 - **Claude Code 自定义 API 端点**：通过终端交互向导添加 DeepSeek、Kimi 或其他 Anthropic 兼容端点，并像 Claude 账号一样双向切换。
-- **Claude、Codex、Kimi 账号隔离的并行环境**：通过 `subswap run`、`shell`、`env` 在不同终端同时使用不同账号，不改全局活账号。Cursor 的桌面 SQLite 状态无法安全投影，因此明确不支持此模式。
+- **Claude、Codex、Kimi、OpenCode 账号隔离的并行环境**：通过 `subswap run`、`shell`、`env` 在不同终端同时使用不同账号，不改全局活账号。Cursor 的桌面 SQLite 状态无法安全投影，因此明确不支持此模式。
 - **额度感知状态**：查看 Claude/Kimi/Codex 窗口，以及 Cursor 的 `First-Party Models` 与 `API` 已用百分比。
 - **自动账号切换**：后台 daemon 在用量超过配置阈值后切走当前账号，并在每次额度更新后重判，始终选出最佳可用账号。
 - **自动换号开关**：`subswap autoswap on/off` 无需改配置文件即可开启或关闭自动切换。
@@ -20,7 +20,7 @@ subswap 是一个 Rust CLI，用于管理 Claude Code、OpenAI Codex / ChatGPT�
 - **不依赖网络的手动切换**：即使额度 API 失败、token 过期或网络不可用，`subswap swap` 仍可工作。
 - **额度结果缓存与 stale fallback**：后台刷新期间直接返回缓存结果，状态界面始终响应。
 - **文件凭证存储**：凭证保存在应用数据目录下仅 owner 可读的 `0600` 文件中，旧 keyring 数据首次读取时自动迁移。
-- **基于 Provider 的架构**：Claude、Codex、Kimi、Cursor 分别位于独立 crate 中，因此可以在不改变 core 策略的情况下添加新的 AI Provider。
+- **基于 Provider 的架构**：Claude、Codex、Kimi、Cursor、OpenCode Go 分别位于独立 crate 中，因此可以在不改变 core 策略的情况下添加新的 AI Provider。
 
 ## 支持的客户端
 
@@ -30,6 +30,7 @@ subswap 是一个 Rust CLI，用于管理 Claude Code、OpenAI Codex / ChatGPT�
 | Codex / ChatGPT | Codex CLI (`~/.codex`) | `auth.json` 透传、当前账号文件、官方 app-server 额度查询 |
 | Kimi / Moonshot | Kimi Code (`~/.kimi-code`) | OAuth 凭证 blob、当前账号文件、5h / 7d 用量、安全协调 token 恢复 |
 | Cursor | Cursor 桌面端（`state.vscdb`） | 账号导入/切换、`First-Party Models` 与 `API` 用量、账单周期重置时间 |
+| OpenCode Go | OpenCode（`~/.local/share/opencode/auth.json`） | 只切换 `opencode-go` API key（同文件其它供应商不动）、5h / 周 / 月额度 |
 
 ## 常见场景
 
@@ -49,6 +50,7 @@ subswap 是一个 Rust CLI，用于管理 Claude Code、OpenAI Codex / ChatGPT�
 | M4 | `subswapd` daemon: periodic poll + auto-swap + Claude token keepalive + zero-config auto-spawn | done |
 | M5 | 账号隔离运行环境、自动换号开关、额度缓存、定居宽限期 | done |
 | M6 | Kimi 与 Cursor Provider、Codex 官方额度通道、协调式 token 恢复 | done |
+| M7 | OpenCode Go Provider：只切换 `auth.json` 的 Go 项、5h/周/月额度、自动换号与隔离运行 | done |
 
 ## 为什么需要它
 
@@ -144,13 +146,13 @@ subswap rm alice@example.com
 subswap doctor
 ```
 
-只要你至少在对应原生客户端登录过一次，第一次运行 `subswap` 时就会自动发现 Claude Code、Codex CLI、Kimi Code 与 Cursor 的当前账号。
+只要你至少在对应原生客户端登录过一次，第一次运行 `subswap` 时就会自动发现 Claude Code、Codex CLI、Kimi Code、Cursor 与 OpenCode Go 的当前账号。
 
 第一次执行 `subswap` 会在非 macOS 的 Unix 平台启动一个分离的后台 daemon。它会轮询额度并在后台自动切换账号，同时保持 Claude OAuth token 新鲜，避免长期闲置账号在刚切换过去时立即返回 401。macOS 需要显式 opt-in，因为后台进程访问 Keychain 容易触发额外授权弹窗：导出 `SUBSWAP_AUTO_DAEMON=1` 即可启用自动拉起。daemon 是单实例（文件锁），并且可以安全终止：`pkill -f 'subswap __daemon'` 或 `pkill subswapd`。如需完全禁用，导出 `SUBSWAP_NO_DAEMON=1`。
 
 ## 账号隔离环境
 
-`subswap run / shell / env` 允许你在不同终端并行使用不同 Claude、Codex 或 Kimi 账号，不改全局活账号。凭证被投影到私有目录，原生 CLI 通过各自配置变量指向该目录。Cursor 身份位于桌面应用 SQLite 状态库，切换还需要协调重启，因此不支持隔离运行。
+`subswap run / shell / env` 允许你在不同终端并行使用不同 Claude、Codex、Kimi 或 OpenCode 账号，不改全局活账号。凭证被投影到私有目录，原生 CLI 通过各自配置变量指向该目录。Cursor 身份位于桌面应用 SQLite 状态库，切换还需要协调重启，因此不支持隔离运行。
 
 ```bash
 subswap run codex 6 -- --version       # 以 6 号账号在隔离环境跑 codex
@@ -178,7 +180,7 @@ eval "$(subswap env codex/bob@x.com)"  # 临时把当前 shell 指向某 codex �
 
 | 工具类型 | 关注点 | subswap 的区别 |
 |---|---|---|
-| 单 Provider 账号切换工具 | 一次只面向一个上游 | subswap 在同一套 Provider 抽象下支持 Claude、Codex / ChatGPT、Kimi 和 Cursor |
+| 单 Provider 账号切换工具 | 一次只面向一个上游 | subswap 在同一套 Provider 抽象下支持 Claude、Codex / ChatGPT、Kimi、Cursor 和 OpenCode Go |
 | 额度看板 | 只展示用量 | subswap 还可以在额度窗口耗尽时激活另一个本地账号 |
 | 手动登录/退出 | 一次只处理一个账号 | subswap 保存私有账号快照，并以事务方式切换原生客户端状态 |
 
@@ -210,7 +212,7 @@ Cursor 退出时可能把内存中的旧登录状态写回 SQLite。subswap 会�
 
 ### 支持 Windows 吗？
 
-支持。CLI 与四个 Provider 都在 Windows CI 中测试并发布原生 zip，上面的 PowerShell 脚本会完成安装和 `PATH` 配置；只有后台 daemon 仍是 Unix-only。
+支持。CLI 与五个 Provider 都在 Windows CI 中测试并发布原生 zip，上面的 PowerShell 脚本会完成安装和 `PATH` 配置；只有后台 daemon 仍是 Unix-only。
 
 ## GitHub topics
 

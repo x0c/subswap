@@ -6,6 +6,8 @@ use async_trait::async_trait;
 use subswap_core::error::Result;
 use subswap_core::{Account, Quota};
 
+use crate::json::extract_access_token;
+
 /// 从凭证 blob 解析出的最小元数据。所有可选字段最终可能进 registry.toml，
 /// 注意：写进 `extra` 的 `Option` 值不要保留 null（引擎只写 `Some`）。
 #[derive(Debug, Clone, Default)]
@@ -77,4 +79,33 @@ pub trait FileBlobRuntime: Send + Sync + 'static {
 
     /// 可选：额外物化（如复制真实 config 进隔离目录）。默认无。
     fn materialize_extra(&self, _home: &Path, _env_dir: &Path) {}
+
+    /// 从 live 文件内容抽出本 provider 应持久化的 blob。默认整文件即 blob。
+    ///
+    /// 多供应商共存的 live 文件（如 OpenCode `auth.json`）覆盖此方法，只抽出自己那一项，
+    /// 避免把别人的 key 写进 store、或整文件覆盖时把别人的 key 抹掉。
+    fn extract_blob(&self, live_contents: &str) -> Option<String> {
+        Some(live_contents.to_string())
+    }
+
+    /// 把账号 blob 合进现有 live 文件，返回应落盘的完整内容。默认整文件覆盖。
+    fn compose_live(&self, _existing_live: Option<&str>, blob: &str) -> String {
+        blob.to_string()
+    }
+
+    /// 从 blob 抽额度查询用的 token。默认找 `access_token`；纯 API key 覆盖为读 `key`。
+    fn access_token(&self, blob: &str) -> Option<String> {
+        extract_access_token(blob)
+    }
+
+    /// 隔离目录内 live 文件相对 env_dir 的路径。默认与 `live_cred_path` 相对 home 的子路径相同。
+    /// OpenCode 隔离设的是 `XDG_DATA_HOME`，live 实际在 `opencode/auth.json`。
+    fn isolation_rel_path(&self) -> Option<PathBuf> {
+        None
+    }
+
+    /// 隔离启动时除 home 环境变量外额外注入的变量（如 `OPENCODE_AUTH_CONTENT`）。
+    fn isolation_extra_env(&self, _composed_live: &str) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }

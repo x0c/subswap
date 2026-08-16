@@ -488,6 +488,105 @@ Kimi 没有官方 CLI 子命令可供 subswap 像 `codex login` / `claude auth l
 
 ---
 
+## OpenCode Go
+
+OpenCode Go 是跑在共享引擎上的第三个文件型 provider，实现在 `crates/providers/opencode/`。
+它**不是**整份 `auth.json` 的切换：官方 `~/.local/share/opencode/auth.json` 是多供应商共存的 map
+（`openai` / `anthropic` / `opencode-go` 等可以同时存在）。subswap 只抽出、只覆盖 `opencode-go`
+这一项，其它条目必须原样保留。引擎为此提供 `extract_blob` / `compose_live` 两个 hook，默认仍是
+整文件覆盖（Codex/Kimi 不用改）。
+
+Go 订阅本身是一把 API key（`{"type":"api","key":"sk-..."}`），没有 refresh token，不刷新。
+
+### 本地凭证路径
+
+| 项 | 值 |
+|---|---|
+| 工作目录 | `SUBSWAP_OPENCODE_HOME` > `XDG_DATA_HOME/opencode` > `~/.local/share/opencode`（Windows 为 `%LOCALAPPDATA%/opencode`）。官方客户端用 xdg-basedir，**macOS 也是 `~/.local/share`，不是 Application Support** |
+| 当前激活凭证文件 | `<home>/auth.json` |
+| live 文件中的键 | `opencode-go` |
+
+### 主键与展示名
+
+- `primary_id` / `dedup_key` = `go-` + API key SHA-256 的前 16 个 hex。同一把 key 重复导入落到同一账号。
+- `label` = `sk-…` + key 末 4 位。
+- store 里只存 `opencode-go` 那一项 JSON，不存整份 `auth.json`。
+
+### Usage 端点与窗口映射
+
+| 用途 | 方法 | URL |
+|---|---|---|
+| 用量查询 | GET | `{SUBSWAP_OPENCODE_GO_BASE:-https://opencode.ai/zen/go/v1}/usage` |
+
+- 请求头：`Authorization: Bearer <api_key>`，`User-Agent: subswap/<version>`。
+- 实测响应：
+
+```json
+{
+  "usage": {
+    "rolling": { "status": "ok", "percent": 4, "resetsAt": "2026-08-13T16:27:38.287Z" },
+    "weekly":  { "status": "ok", "percent": 3, "resetsAt": "2026-08-17T00:00:00.287Z" },
+    "monthly": { "status": "ok", "percent": 1, "resetsAt": "2026-09-13T06:06:01.287Z" }
+  }
+}
+```
+
+- `percent` 是已用百分比（0~100），写入 `Quota.used`，`limit` 固定 100。
+- 窗口：`rolling` → 5 小时，`weekly` → 7 天，`monthly` → 月。
+- `status: "rate-limited"` 视为该窗口 100% 已用。
+- `401` / `403` 表示 key 无效或没有有效 Go 订阅，按「需要重新导入 key」处理；**不得**把 `429` 当成 key 作废。
+- 自动换号：`rolling` 映射为小时级窗口，用量过默认阈值会切走；weekly/monthly 只在明确耗尽时触发/阻断候选。daemon 与默认入口都已注册该 provider，策略本身按 provider 独立决策，不需要单独的 OpenCode 规则。
+- 测试可用 `SUBSWAP_OPENCODE_GO_BASE` 指向 mock。
+
+### 隔离运行
+
+官方客户端没有 `OPENCODE_HOME`。隔离同时做两件事：
+
+1. 设 `XDG_DATA_HOME` 到私有目录，并把合成后的 `auth.json` 写到 `<env>/opencode/auth.json`。
+2. 设 `OPENCODE_AUTH_CONTENT` 为同一份 JSON（`{"opencode-go":{...}}`）。官方客户端在此变量存在时完全忽略磁盘上的 `auth.json`。
+
+### 登录方式
+
+没有可供 subswap 驱动的官方登录子命令。两种导入：
+
+- `subswap login opencode`：从当前 live `auth.json` 的 `opencode-go` 项导入（用户先在 TUI `/connect` 粘贴过 key）。
+- `subswap login opencode -- sk-...`：直接导入粘贴的 API key，并合并写回 live `auth.json`。
+
+`--email` / `--sso` / `--device-auth` 不支持。
+
+### 开源圈「号池」≠ subswap 切号（2026-08-16 调研）
+
+社区里叫 OpenCode 号池的工具很多，但和 subswap 做的不是同一件事。改 OpenCode 自动换号前必须先分清，否则会把「请求途中换 key」误做成「改本地登录文件」。
+
+**A. 登录文件切换器**（和 subswap 同类：一次只让官方客户端认一个 Go 号）
+
+| 项目 | 做法 | 不照搬 |
+|---|---|---|
+| `srmdn/opcode-switch`（已迁 `opcode-kit`） | 每个号一份快照，切换时整份覆盖本地登录文件 | 整文件覆盖会抹掉同文件里其它供应商；subswap 只改 `opencode-go` 那一项 |
+| `@ceritahmt/opencode-as` | 按供应商抽出登录项做 profile；看到「用量上限」文案后可选自动切到同供应商下一个 profile | 靠错误文案，不是额度接口；切完通常要重开客户端 |
+| `farion1231/cc-switch` | 桌面端把 `auth.json` 当独立凭证仓，自定义供应商定义与 key 拆开写 | 管的是「多个供应商配置」，不是 Go 订阅号池 |
+
+**B. 请求途中号池**（社区说的「号池」多半是这类：当前会话不换登录文件，限流时当场换下一把 key 再发）
+
+| 项目 | 做法 | 要点 |
+|---|---|---|
+| `dhaalves/opencode-swap`（`oswap`） | 本机代理挡在官方 Go 接口前，轮询 key，限流当场换下一把再试 | README 写明：插件钩子拦不到限流响应，所以走代理。上游 `Retry-After` 有时给的是**周重置日期**，只是滚动窗口撞限也会被理解成冷却好几天，他们把冷却上限封在 1 小时 |
+| `masrurimz/opencode-go-multi-auth` | OpenCode 插件：进程内粘滞一把 key（保上下文缓存），限流再换 | **不做提前查额度**，只反应限流。号池存在插件自己的配置文件，不改官方登录文件 |
+| `Rishabh-Bajpai/opencode-go-multi-auth` | 插件拉起本机路由 + 看板，402/429 冷却后换 key | 同样不预测额度；要改官方客户端的接口地址指向本机路由 |
+| `bytesifter/opencode-round-robin` | 插件补丁全局请求：随机抽 key；限流只冷却、**当次不重发** | 把「请求太快」和「额度用尽」分成两种冷却时长 |
+| `rahadiana/opencode-multi-account` | 通用多供应商号池插件，限流后按优先级切 | 会回写登录文件里对应供应商项；插件作者自己也在问官方：事件钩子经常看不到 429 |
+
+官方 OpenCode 正在给 **OAuth** 做同供应商多账号轮换（限流换下一份凭证），**不覆盖 Go 这种纯 API key**。Go 号池仍是第三方插件/代理的活。
+
+**对 subswap 的边界**
+
+- 已落地的是 A：查官方用量、过阈值改本地 `opencode-go` 项。这能在下次启动/下次轮询时换号，**挡不住当前这次请求已经撞上的限流**。
+- 社区 B 才是「打着打着自动换下一把、用户无感」。要做到这一点，必须进 OpenCode 进程（插件）或挡在接口前面（本机代理）。subswap 作为外部切号器做不到当场重发。
+- 部分新版本还会在 `account.json` 里再存一份 Go 凭证（`oswap import` 会同时读它）。只写 `auth.json` 时，若官方已改读 `account.json`，切号会看起来没生效。改 OpenCode 切换前先核当前客户端读的是哪份文件。
+- 旧插件文档常写「Go 没有用量接口」。官方已有 `GET …/zen/go/v1/usage`；那是过时结论，不要跟着放弃提前查额度。
+
+---
+
 ## Cursor
 
 Cursor 不是文件型 JSON Provider：登录状态位于本地客户端存储，切换时还可能需要协调 GUI 退出与重启，
@@ -628,6 +727,9 @@ Codex 和 Kimi 都是"凭证是本地一个 JSON 文件、切换 = 原子覆盖�
 | `refresh()` | 刷新一次，返回 `RefreshOutcome` | 真刷（`oauth.rs`） | `Unsupported`（Codex CLI 自己刷，subswap 不做带外刷新） |
 | `fetch_quota()` | 查额度 | `GET /usages` | `openai_usage` + legacy 缓存回退 |
 | `isolation()` | 隔离环境变量名 + 原生 CLI 名 | `KIMI_CODE_HOME` / `kimi` | `CODEX_HOME` / `codex` |
+| `extract_blob()` / `compose_live()`（可选，默认整文件） | 多供应商共存的 live 文件只抽出/写回本 provider 那一项 | 不覆盖 | 不覆盖 |
+| `access_token()`（可选，默认找 `access_token`） | 从 blob 抽额度查询 token | 不覆盖 | 不覆盖 |
+| `isolation_rel_path()` / `isolation_extra_env()`（可选） | 隔离目录内相对路径、额外环境变量 | 不覆盖 | 不覆盖 |
 | `store_field()`（可选，默认 `"blob"`） | 凭证仓库里存 blob 的字段名 | 不覆盖，用默认 `"blob"` | 覆盖为 `"auth_json"`——兼容迁移前已写在 keyring/FileStore 里的存量字段名 |
 | `dedup_extra_key()`（可选，默认 `"dedup_key"`） | `registry.toml extra` 里去重键的字段名 | 不覆盖（Kimi 本就无 dedup_key 需求） | 覆盖为 `"chatgpt_account_id"`——迁移前 `registry.toml` 里已有这个键名，沿用旧名免去给所有存量账号重新导入 |
 | `recover_legacy()`（可选，默认 `None`） | store/live 都拿不到时的私有兜底恢复 | 未用 | 从 `~/.codex/accounts/registry.json` + `accounts/<key>/auth.json` 恢复（`legacy.rs`） |

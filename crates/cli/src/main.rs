@@ -113,7 +113,7 @@ enum Cmd {
 
     /// Log in through the native provider CLI, then import and activate that account.
     Login {
-        /// Provider to log in: claude, codex, kimi, or cursor.
+        /// Provider to log in: claude, codex, kimi, cursor, or opencode.
         provider: String,
 
         /// Pre-populate Claude login email.
@@ -141,7 +141,7 @@ enum Cmd {
 
     /// Launch a provider CLI in an account-isolated environment without changing the global active account.
     Run {
-        /// Provider to launch: codex or claude.
+        /// Provider to launch: codex, claude, kimi, or opencode.
         provider: String,
 
         /// Account index (e.g. `3`), id, label, or `<provider>/<id>`.

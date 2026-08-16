@@ -1,4 +1,10 @@
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::{fs, path::Path};
 
 fn subswap() -> Command {
@@ -20,6 +26,8 @@ fn isolated_subswap(tmp: &tempfile::TempDir) -> Command {
         .env("CODEX_HOME", tmp.path().join("codex"))
         // 隔离测试专用一次性目录，绝不碰真实 `~/.kimi-code`。
         .env("KIMI_CODE_HOME", tmp.path().join("kimi"))
+        // 隔离测试专用一次性目录，绝不碰真实 `~/.local/share/opencode/auth.json`。
+        .env("SUBSWAP_OPENCODE_HOME", tmp.path().join("opencode"))
         // Cursor 的平台默认路径不受 HOME/SUBSWAP_HOME 统一覆盖，必须显式指向临时目录。
         .env(
             "SUBSWAP_CURSOR_STATE_DB_PATH",
@@ -537,4 +545,295 @@ priority = 100
         default_stdout.contains("kimi-user"),
         "no tombstone should block re-import on the very next run: {default_stdout}"
     );
+}
+
+#[test]
+fn login_opencode_imports_go_key_and_preserves_other_providers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let auth = tmp.path().join("opencode").join("auth.json");
+    write(
+        &auth,
+        r#"{"openai":{"type":"api","key":"sk-keep"},"opencode-go":{"type":"api","key":"sk-test-key-1234"}}"#,
+    );
+
+    let stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["login", "opencode"])
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        stdout.contains("login → opencode/go-"),
+        "expected imported OpenCode Go account, got: {stdout}"
+    );
+
+    let live: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&auth).unwrap()).unwrap();
+    assert_eq!(live["openai"]["key"], "sk-keep");
+    assert_eq!(live["opencode-go"]["key"], "sk-test-key-1234");
+}
+
+#[test]
+fn run_opencode_unknown_account_reports_not_found() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = isolated_subswap(&tmp)
+        .args(["run", "opencode", "ghost-go"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("account not found"),
+        "expected account-not-found error, got: {stderr}"
+    );
+}
+
+#[test]
+fn run_opencode_materializes_isolated_auth_via_generic_dispatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["login", "opencode", "--", "sk-test-key-1234"])
+            .output()
+            .unwrap(),
+    );
+    let id = stdout
+        .trim()
+        .strip_prefix("login → opencode/")
+        .unwrap_or_else(|| panic!("unexpected login output: {stdout}"));
+
+    let env_out = assert_success(isolated_subswap(&tmp).args(["env", id]).output().unwrap());
+    assert!(
+        env_out.contains("XDG_DATA_HOME="),
+        "env should export XDG_DATA_HOME: {env_out}"
+    );
+    assert!(
+        env_out.contains("OPENCODE_AUTH_CONTENT="),
+        "env should export OPENCODE_AUTH_CONTENT: {env_out}"
+    );
+    assert!(
+        env_out.contains("opencode-go"),
+        "OPENCODE_AUTH_CONTENT should contain the Go slot: {env_out}"
+    );
+
+    let output = isolated_subswap(&tmp)
+        .args(["run", "opencode", id, "--", "--version"])
+        .output()
+        .unwrap();
+    let run_stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        run_stdout.contains("isolated XDG_DATA_HOME="),
+        "materialize/env_vars should have resolved XDG_DATA_HOME via IsolatedProvider; stdout: {run_stdout}, stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("isolation not supported for provider opencode"),
+        "opencode must be dispatched through ctx.isolated: {stderr}"
+    );
+}
+
+const OPENCODE_EXHAUSTED_KEY: &str = "sk-test-exhausted-0000";
+const OPENCODE_HEALTHY_KEY: &str = "sk-test-healthy-9999";
+const OPENCODE_DEAD_KEY: &str = "sk-test-deadkey-1111";
+const OPENCODE_EXHAUSTED_USAGE: &str = r#"{"usage":{"rolling":{"status":"rate-limited","percent":100},"weekly":{"status":"ok","percent":3},"monthly":{"status":"ok","percent":1}}}"#;
+const OPENCODE_HEALTHY_USAGE: &str = r#"{"usage":{"rolling":{"status":"ok","percent":4},"weekly":{"status":"ok","percent":3},"monthly":{"status":"ok","percent":1}}}"#;
+
+fn login_opencode_key(tmp: &tempfile::TempDir, key: &str) -> String {
+    let stdout = assert_success(
+        isolated_subswap(tmp)
+            .args(["login", "opencode", "--", key])
+            .output()
+            .unwrap(),
+    );
+    stdout
+        .trim()
+        .strip_prefix("login → opencode/")
+        .unwrap_or_else(|| panic!("unexpected login output: {stdout}"))
+        .to_string()
+}
+
+#[test]
+fn default_entry_auto_swaps_exhausted_opencode_go_and_keeps_neighbor_providers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let auth = tmp.path().join("opencode").join("auth.json");
+    write(&auth, r#"{"openai":{"type":"api","key":"sk-keep-other"}}"#);
+
+    let exhausted_id = login_opencode_key(&tmp, OPENCODE_EXHAUSTED_KEY);
+    let healthy_id = login_opencode_key(&tmp, OPENCODE_HEALTHY_KEY);
+    assert_ne!(exhausted_id, healthy_id);
+
+    assert_success(
+        isolated_subswap(&tmp)
+            .args(["swap", &format!("opencode/{exhausted_id}")])
+            .output()
+            .unwrap(),
+    );
+
+    let mut bodies = HashMap::new();
+    bodies.insert(
+        OPENCODE_EXHAUSTED_KEY.to_string(),
+        (200_u16, OPENCODE_EXHAUSTED_USAGE.to_string()),
+    );
+    bodies.insert(
+        OPENCODE_HEALTHY_KEY.to_string(),
+        (200, OPENCODE_HEALTHY_USAGE.to_string()),
+    );
+    let server = KeyedUsageServer::start(bodies);
+
+    write(
+        &app_config_dir(&tmp).join("config.toml"),
+        "[quota]\nmin_refresh_interval_ms = 0\nfetch_retries = 0\n",
+    );
+
+    let stdout = assert_success(
+        isolated_subswap(&tmp)
+            .env("SUBSWAP_OPENCODE_GO_BASE", server.base_url())
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        stdout.contains("auto: swapped to sk-…9999"),
+        "exhausted 5h window must auto-swap to the healthy Go key: {stdout}"
+    );
+
+    let live: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&auth).unwrap()).unwrap();
+    assert_eq!(live["openai"]["key"], "sk-keep-other");
+    assert_eq!(live["opencode-go"]["key"], OPENCODE_HEALTHY_KEY);
+}
+
+#[test]
+fn default_entry_does_not_auto_swap_opencode_to_401_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let auth = tmp.path().join("opencode").join("auth.json");
+
+    let exhausted_id = login_opencode_key(&tmp, OPENCODE_EXHAUSTED_KEY);
+    let _dead_id = login_opencode_key(&tmp, OPENCODE_DEAD_KEY);
+    assert_success(
+        isolated_subswap(&tmp)
+            .args(["swap", &format!("opencode/{exhausted_id}")])
+            .output()
+            .unwrap(),
+    );
+
+    let mut bodies = HashMap::new();
+    bodies.insert(
+        OPENCODE_EXHAUSTED_KEY.to_string(),
+        (200_u16, OPENCODE_EXHAUSTED_USAGE.to_string()),
+    );
+    bodies.insert(
+        OPENCODE_DEAD_KEY.to_string(),
+        (401, r#"{"error":"invalid_api_key"}"#.to_string()),
+    );
+    let server = KeyedUsageServer::start(bodies);
+
+    write(
+        &app_config_dir(&tmp).join("config.toml"),
+        "[quota]\nmin_refresh_interval_ms = 0\nfetch_retries = 0\n",
+    );
+
+    let stdout = assert_success(
+        isolated_subswap(&tmp)
+            .env("SUBSWAP_OPENCODE_GO_BASE", server.base_url())
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        !stdout.contains("auto: swapped"),
+        "401 Go key must not become an auto-swap target: {stdout}"
+    );
+
+    let live: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&auth).unwrap()).unwrap();
+    assert_eq!(live["opencode-go"]["key"], OPENCODE_EXHAUSTED_KEY);
+}
+
+/// 按 Bearer API key 返回不同 `/usage` 响应；并发可重入，供默认入口同时查多个账号。
+struct KeyedUsageServer {
+    addr: std::net::SocketAddr,
+    base_url: String,
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl KeyedUsageServer {
+    fn start(bodies: HashMap<String, (u16, String)>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base_url = format!("http://{addr}");
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let handle = std::thread::spawn(move || {
+            while !flag.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let bodies = bodies.clone();
+                        std::thread::spawn(move || serve_go_usage(stream, &bodies));
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        Self {
+            addr,
+            base_url,
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    fn base_url(&self) -> &str {
+        &self.base_url
+    }
+}
+
+impl Drop for KeyedUsageServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect_timeout(&self.addr, std::time::Duration::from_millis(100));
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn serve_go_usage(mut stream: TcpStream, bodies: &HashMap<String, (u16, String)>) {
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+    let mut buffer = [0_u8; 8192];
+    let count = stream.read(&mut buffer).unwrap_or(0);
+    let request = String::from_utf8_lossy(&buffer[..count]);
+    let key = bearer_key(&request).unwrap_or_default();
+    let (code, body) = bodies
+        .get(&key)
+        .cloned()
+        .unwrap_or((401, r#"{"error":"unknown_key"}"#.into()));
+    let reason = match code {
+        200 => "OK",
+        401 => "Unauthorized",
+        429 => "Too Many Requests",
+        _ => "Error",
+    };
+    let _ = write!(
+        stream,
+        "HTTP/1.1 {code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+}
+
+fn bearer_key(request: &str) -> Option<String> {
+    request.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if !name.eq_ignore_ascii_case("authorization") {
+            return None;
+        }
+        let value = value.trim();
+        value
+            .strip_prefix("Bearer ")
+            .or_else(|| value.strip_prefix("bearer "))
+            .map(|s| s.trim().to_string())
+    })
 }

@@ -5,7 +5,7 @@
 use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
-use subswap_core::AuditEvent;
+use subswap_core::{AuditEvent, Provider};
 
 use crate::app::AppContext;
 use crate::render::account_ref;
@@ -92,6 +92,41 @@ pub async fn run(
             println!("login → kimi/{}", account_ref(&account.id.0));
             Ok(())
         }
+        "opencode" | "opencode-go" => {
+            if email.is_some() || sso || device_auth {
+                bail!("--email/--sso/--device-auth are not supported for opencode login");
+            }
+            let account = if let Some(key) = extra_args
+                .first()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                let blob = subswap_provider_opencode::blob_from_key(key);
+                let account = ctx
+                    .opencode
+                    .import_raw(blob, None, Some(true))
+                    .context("import OpenCode Go API key")?;
+                ctx.opencode
+                    .activate(&account.id)
+                    .await
+                    .context("write OpenCode Go key into auth.json")?;
+                account
+            } else {
+                ctx.opencode.import_active(None).context(
+                    "import OpenCode Go login; connect OpenCode Go in the TUI or pass the API key after `--`",
+                )?
+            };
+            ctx.registry
+                .set_active("opencode", &account.id)
+                .context("mark OpenCode Go login active")?;
+            ctx.audit.append(AuditEvent::ok(
+                "login",
+                "opencode",
+                Some(account.id.0.as_str()),
+            ));
+            println!("login → opencode/{}", account_ref(&account.id.0));
+            Ok(())
+        }
         "cursor" => {
             if email.is_some() || sso || device_auth || !extra_args.is_empty() {
                 bail!("login options are not supported for cursor login");
@@ -109,7 +144,9 @@ pub async fn run(
             println!("login → cursor/{}", account_ref(&account.id.0));
             Ok(())
         }
-        other => bail!("unknown provider: {other} (expected claude, codex, kimi or cursor)"),
+        other => {
+            bail!("unknown provider: {other} (expected claude, codex, kimi, cursor or opencode)")
+        }
     }
 }
 

@@ -138,6 +138,7 @@ crates/providers/common/  文件型 OAuth 账号切换共享引擎（FileBlobPro
 crates/providers/codex/   Codex / ChatGPT Provider（adapter，跑在 common 引擎上）
 crates/providers/claude/  Claude / Anthropic Provider（keychain 特化，独立于 common 引擎）
 crates/providers/kimi/    Kimi / Moonshot Provider（adapter，跑在 common 引擎上）
+crates/providers/opencode/ OpenCode Go Provider（adapter，跑在 common 引擎上；只改 auth.json 的 opencode-go 项）
 crates/providers/cursor/  Cursor Provider（SQLite + GUI 生命周期特化，独立于 common 引擎）
 docs/                     中文项目文档
 ```
@@ -146,7 +147,7 @@ docs/                     中文项目文档
 
 | 文档 | 用途 |
 |---|---|
-| [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) | 改、评审、分析或排查 Provider 切换、认证、额度、refresh token、自定义 API、Claude/Codex/Kimi/Cursor 本地激活状态、原生客户端并发协调、或文件型 OAuth 切换共享引擎（`crates/providers/common`）前必读 |
+| [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) | 改、评审、分析或排查 Provider 切换、认证、额度、refresh token、自定义 API、Claude/Codex/Kimi/Cursor/OpenCode Go 本地激活状态、OpenCode 号池（登录文件切换 vs 请求途中换 key）、原生客户端并发协调、或文件型 OAuth 切换共享引擎（`crates/providers/common`）前**必读**。不读会把社区「号池限流当场换 key」误做成只改本地登录文件 |
 | [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) | 改、评审或分析 workspace 分层、Provider 抽象、核心数据流、凭证文件布局、新 Provider 接入前必读 |
 | [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md) | 改、评审或排查自动切换候选筛选、阈值、manual_only、防抖/振荡刹车、daemon token 保活，或排查「默认入口渐进式重判 / 一次 subswap 多次切换 / 连跑结果不同 / 卡在耗尽号 / 账号间无限横跳(A→B→A 振荡)」前必读 |
 | [docs/design/PREWARM_DESIGN.md](docs/design/PREWARM_DESIGN.md) | 设计、评审或实现窗口预热、预热阈值、预热通知与自动切换协同时必读 |
