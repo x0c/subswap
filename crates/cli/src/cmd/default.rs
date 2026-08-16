@@ -12,7 +12,7 @@ use futures::future::join_all;
 use subswap_core::{
     auto_decide, is_authentication_failure, paths::AppPaths, query_quota_with_retry, settings,
     AccountId, AccountWithQuotas, AuditEvent, AuditLog, PolicyConfig, PolicyDecision,
-    ProviderRegistry, ProviderSnapshot, Quota, QuotaCache, QuotaFetchState, RemovedAccounts,
+    ProviderRegistry, ProviderSnapshot, Quota, QuotaCache, QuotaFetchState,
 };
 
 use crate::app::AppContext;
@@ -20,8 +20,9 @@ use crate::daemon_spawn::ensure_daemon_running;
 use crate::render::{compact_error, compact_policy_reason, AutoLine, AutoLineKind, InlineRenderer};
 
 pub async fn run(ctx: &AppContext, json: bool) -> Result<()> {
-    // 1. 自动 import 本地激活账号（如果没记录过）。
-    sync_local_active(ctx).await;
+    // 1. 自动 import 本地激活账号（如果没记录过）；客户端明明登录着但同步失败的，
+    //    收集成提示行随最终渲染一起打出来，不再静默吞掉。
+    let mut auto_lines: Vec<AutoLine> = sync_local_active(ctx).await;
 
     // 2. 先输出账号骨架，再随 quota 请求完成原地刷新。
     // JSON 模式强制走非交互路径（不渲染 ANSI 骨架），最后统一以 JSON 输出。
@@ -29,10 +30,9 @@ pub async fn run(ctx: &AppContext, json: bool) -> Result<()> {
     let mut snapshots = build_loading_snapshots(&ctx.providers).await;
     let mut renderer = InlineRenderer::new(interactive);
     if interactive {
-        renderer.render(&snapshots, &[])?;
+        renderer.render(&snapshots, &auto_lines)?;
     }
     let cfg = PolicyConfig::default();
-    let mut auto_lines: Vec<AutoLine> = Vec::new();
     let cache_path = AppPaths::resolve()
         .map(|p| p.quota_cache_file())
         .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/subswap_quota_cache.json"));
@@ -131,138 +131,112 @@ fn auto_swap_success_text(snap: &ProviderSnapshot, to: &AccountId) -> String {
     }
 }
 
-/// 扫本地 ~/.claude / ~/.codex；如果有当前激活账号则 import 到 registry（已存在时 upsert）。
-/// 用户刚 `rm` 掉的账号会留墓碑，这里跳过，避免删了又被自动加回来。
-/// 任一 provider 失败（用户没登录过）静默跳过。
-async fn sync_local_active(ctx: &AppContext) {
-    let removed = load_removed_accounts();
+/// 客户端确实登录着（`live_account_id` 命中）、但同步/导入失败时给出的提示行，
+/// 取代过去的 `tracing::debug!` 静默吞掉——那种吞法正是「整段 provider 无声消失」反复出现的根因。
+fn signed_in_but_untracked(provider: &str, id: &AccountId, err: impl std::fmt::Display) -> AutoLine {
+    AutoLine {
+        provider: provider.to_string(),
+        text: format!(
+            "signed in as {id} but not tracked ({}); run `subswap login {provider}`",
+            compact_error(&err.to_string())
+        ),
+        kind: AutoLineKind::Error,
+    }
+}
+
+/// 扫本地 ~/.claude / ~/.codex / ~/.cursor 等；如果有当前激活账号则 import 到 registry（已存在时 upsert）。
+/// 客户端没登录过是正常状态，静默跳过；客户端明明登录着但同步失败的，收集成提示行返回给调用方渲染。
+async fn sync_local_active(ctx: &AppContext) -> Vec<AutoLine> {
     if default_entry_avoids_keychain_sync() {
-        sync_local_active_metadata(ctx, &removed).await;
-        return;
+        return sync_local_active_metadata(ctx).await;
     }
+    let mut notices = Vec::new();
     if let Ok(id) = ctx.claude.live_account_id() {
-        if removed.contains("claude", &id.0) {
-            tracing::debug!(id = %id, "skip tombstoned claude auto-import");
-        } else {
-            match ctx.claude.import_active(None) {
-                Ok(account) => {
-                    if let Err(e) = ctx.registry.set_active("claude", &account.id) {
-                        tracing::debug!(err=%e, "skip claude active marker");
-                    }
+        match ctx.claude.import_active(None) {
+            Ok(account) => {
+                if let Err(e) = ctx.registry.set_active("claude", &account.id) {
+                    tracing::debug!(err=%e, "skip claude active marker");
                 }
-                Err(e) => tracing::debug!(err=%e, "skip claude auto-import"),
             }
+            Err(e) => notices.push(signed_in_but_untracked("claude", &id, e)),
         }
     }
     if let Ok(id) = ctx.codex.live_account_id() {
-        if removed.contains("codex", &id.0) {
-            tracing::debug!(id = %id, "skip tombstoned codex auto-import");
-        } else {
-            match ctx.codex.sync_active_metadata(None) {
-                Ok(account) => {
-                    if let Err(e) = ctx.registry.set_active("codex", &account.id) {
-                        tracing::debug!(err=%e, "skip codex active marker");
-                    }
+        match ctx.codex.sync_active_metadata(None) {
+            Ok(account) => {
+                if let Err(e) = ctx.registry.set_active("codex", &account.id) {
+                    tracing::debug!(err=%e, "skip codex active marker");
                 }
-                Err(e) => tracing::debug!(err=%e, "skip codex auto-import"),
             }
+            Err(e) => notices.push(signed_in_but_untracked("codex", &id, e)),
         }
     }
     if let Ok(id) = ctx.kimi.live_account_id() {
-        if removed.contains("kimi", &id.0) {
-            tracing::debug!(id = %id, "skip tombstoned kimi auto-import");
-        } else {
-            match ctx.kimi.sync_active_metadata(None) {
-                Ok(account) => {
-                    if let Err(e) = ctx.registry.set_active("kimi", &account.id) {
-                        tracing::debug!(err=%e, "skip kimi active marker");
-                    }
+        match ctx.kimi.sync_active_metadata(None) {
+            Ok(account) => {
+                if let Err(e) = ctx.registry.set_active("kimi", &account.id) {
+                    tracing::debug!(err=%e, "skip kimi active marker");
                 }
-                Err(e) => tracing::debug!(err=%e, "skip kimi auto-import"),
             }
+            Err(e) => notices.push(signed_in_but_untracked("kimi", &id, e)),
         }
     }
-    match ctx.cursor.live_account_id().await {
-        Ok(id) if removed.contains("cursor", &id.0) => {
-            tracing::debug!(id = %id, "skip tombstoned cursor auto-import");
-        }
-        _ => match ctx.cursor.sync_active_metadata(None).await {
+    if let Ok(id) = ctx.cursor.live_account_id().await {
+        match ctx.cursor.sync_active_metadata(None).await {
             Ok(account) => {
                 if let Err(e) = ctx.registry.set_active("cursor", &account.id) {
                     tracing::debug!(err=%e, "skip cursor active marker");
                 }
             }
-            Err(e) => tracing::debug!(err=%e, "skip cursor auto-import"),
-        },
+            Err(e) => notices.push(signed_in_but_untracked("cursor", &id, e)),
+        }
     }
+    notices
 }
 
-async fn sync_local_active_metadata(ctx: &AppContext, removed: &RemovedAccounts) {
+async fn sync_local_active_metadata(ctx: &AppContext) -> Vec<AutoLine> {
+    let mut notices = Vec::new();
     if let Ok(id) = ctx.claude.live_account_id() {
-        if removed.contains("claude", &id.0) {
-            tracing::debug!(id = %id, "skip tombstoned claude active metadata sync");
-        } else {
-            match ctx.claude.sync_active_metadata(None) {
-                Ok(account) => {
-                    if let Err(e) = ctx.registry.set_active("claude", &account.id) {
-                        tracing::debug!(err=%e, "skip claude active marker");
-                    }
+        match ctx.claude.sync_active_metadata(None) {
+            Ok(account) => {
+                if let Err(e) = ctx.registry.set_active("claude", &account.id) {
+                    tracing::debug!(err=%e, "skip claude active marker");
                 }
-                Err(e) => tracing::debug!(err=%e, "skip claude active metadata sync"),
             }
+            Err(e) => notices.push(signed_in_but_untracked("claude", &id, e)),
         }
     }
     if let Ok(id) = ctx.codex.live_account_id() {
-        if removed.contains("codex", &id.0) {
-            tracing::debug!(id = %id, "skip tombstoned codex active metadata sync");
-        } else {
-            match ctx.codex.sync_active_metadata(None) {
-                Ok(account) => {
-                    if let Err(e) = ctx.registry.set_active("codex", &account.id) {
-                        tracing::debug!(err=%e, "skip codex active marker");
-                    }
+        match ctx.codex.sync_active_metadata(None) {
+            Ok(account) => {
+                if let Err(e) = ctx.registry.set_active("codex", &account.id) {
+                    tracing::debug!(err=%e, "skip codex active marker");
                 }
-                Err(e) => tracing::debug!(err=%e, "skip codex active metadata sync"),
             }
+            Err(e) => notices.push(signed_in_but_untracked("codex", &id, e)),
         }
     }
     if let Ok(id) = ctx.kimi.live_account_id() {
-        if removed.contains("kimi", &id.0) {
-            tracing::debug!(id = %id, "skip tombstoned kimi active metadata sync");
-        } else {
-            match ctx.kimi.sync_active_metadata(None) {
-                Ok(account) => {
-                    if let Err(e) = ctx.registry.set_active("kimi", &account.id) {
-                        tracing::debug!(err=%e, "skip kimi active marker");
-                    }
+        match ctx.kimi.sync_active_metadata(None) {
+            Ok(account) => {
+                if let Err(e) = ctx.registry.set_active("kimi", &account.id) {
+                    tracing::debug!(err=%e, "skip kimi active marker");
                 }
-                Err(e) => tracing::debug!(err=%e, "skip kimi active metadata sync"),
             }
+            Err(e) => notices.push(signed_in_but_untracked("kimi", &id, e)),
         }
     }
-    match ctx.cursor.live_account_id().await {
-        Ok(id) if removed.contains("cursor", &id.0) => {
-            tracing::debug!(id = %id, "skip tombstoned cursor active metadata sync");
-        }
-        _ => match ctx.cursor.sync_active_metadata(None).await {
+    if let Ok(id) = ctx.cursor.live_account_id().await {
+        match ctx.cursor.sync_active_metadata(None).await {
             Ok(account) => {
                 if let Err(e) = ctx.registry.set_active("cursor", &account.id) {
                     tracing::debug!(err=%e, "skip cursor active marker");
                 }
             }
-            Err(e) => tracing::debug!(err=%e, "skip cursor active metadata sync"),
-        },
+            Err(e) => notices.push(signed_in_but_untracked("cursor", &id, e)),
+        }
     }
-}
-
-fn load_removed_accounts() -> RemovedAccounts {
-    AppPaths::resolve()
-        .map(|paths| RemovedAccounts::load(&paths.removed_file()))
-        .unwrap_or_else(|_| {
-            RemovedAccounts::load(&std::path::PathBuf::from(
-                "/tmp/subswap-removed-missing.json",
-            ))
-        })
+    notices
 }
 
 #[cfg(target_os = "macos")]

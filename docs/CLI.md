@@ -51,7 +51,8 @@ eval "$(subswap env codex/bob@x.com)"   # 临时把当前 shell 指向某 codex 
 
 `subswap login cursor` 不打开浏览器或复制 Cursor 的登录流程：先在 Cursor 桌面端或 `cursor-agent` 完成登录，再运行
 该命令导入当前账号。之后可用通用编号或 `cursor/<邮箱>` 执行 `swap` / `rm`。
-没删过的当前登录，打开列表会像 Claude / Codex / Kimi 一样自动收入；只有你显式删除过的号不会因为客户端还登录着就回来，要再纳入请执行一次 `subswap login cursor`。
+只要客户端仍登录着，打开列表就会像 Claude / Codex / Kimi 一样自动收入——包括 `rm` 删过的号：`rm` 只清掉 subswap 这边的
+记录，不会记住「这个号被删过」，客户端不登出，下次运行就会自动收回来。要让某个号彻底不再出现，请先在客户端登出。
 只装命令行、没装桌面应用时同样能导入：macOS 读官方钥匙串，Linux 读命令行登录文件。若命令行已登录但列表仍没有
 Cursor，见 [troubleshooting/2026-08-14-cursor-quota-missing-cli-keychain.md](troubleshooting/2026-08-14-cursor-quota-missing-cli-keychain.md)。
 若多个 Cursor 账号余量数字完全一样，见

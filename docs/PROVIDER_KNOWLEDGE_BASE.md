@@ -549,7 +549,9 @@ JSON blob，registry 只存邮箱、稳定身份与展示元数据。
 
 `subswap login cursor` 不复制 Cursor OAuth，也不驱动网页登录：用户先在 Cursor 客户端登录（桌面端登录，
 或 `cursor-agent login`），命令只读取本地凭证、导入/覆盖账号并标记 active。默认入口会同步当前 live 账号（与
-Claude / Codex / Kimi 相同）；显式 `rm` 过的号对照墓碑跳过，不会自动加回，直到再次 `subswap login cursor`。
+Claude / Codex / Kimi 相同）；`rm` 过的号只要客户端仍登录着，下次默认入口就会照常收回来——不再有「记住删除」
+的墓碑机制拦截（2026-08-14 引入、2026-08-15 因导致 Cursor 账号无声消失而移除，见
+[troubleshooting/2026-08-15-cursor-section-silently-missing.md](troubleshooting/2026-08-15-cursor-section-silently-missing.md)）。
 
 **agent 来源的切换**是纯本地凭证写回：capture-on-leave 回灌当前 agent 登录 → 快照旧令牌、`cli-config.json` 与 registry →
 把目标账号的令牌写回当前后端（文件或 macOS 钥匙串）并同步 `authInfo` → 标记 registry active；失败则令牌、配置与

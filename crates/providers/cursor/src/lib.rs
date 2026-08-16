@@ -222,7 +222,8 @@ impl CursorProvider {
             .map_err(join_error)?
     }
 
-    /// 当前客户端登录账号的 registry id。默认入口用它对照墓碑，避免 `rm` 后被自动导入加回。
+    /// 当前客户端登录账号的 registry id。`rm` 用它判断删除的号是否仍在客户端登录着，
+    /// 默认入口用它判断「客户端登录着但同步失败」要不要提示。
     pub async fn live_account_id(&self) -> Result<AccountId> {
         let this = self.clone();
         tokio::task::spawn_blocking(move || this.live_account_id_blocking())
@@ -239,7 +240,7 @@ impl CursorProvider {
     }
 
     /// 对齐当前 Cursor 登录账号。已导入则回灌；列表里没有则像 Claude/Codex/Kimi 一样自动收入。
-    /// 显式 `rm` 过的号由默认入口对照墓碑跳过，不会走到这里。
+    /// 显式 `rm` 过的号只要客户端仍登录着，下次默认入口就会经这里重新收入——不再有墓碑拦截。
     pub async fn sync_active_metadata(&self, label_hint: Option<String>) -> Result<Account> {
         let this = self.clone();
         tokio::task::spawn_blocking(move || this.sync_active_metadata_blocking(label_hint))

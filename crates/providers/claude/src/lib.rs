@@ -264,7 +264,8 @@ impl ClaudeProvider {
         self.store_account(creds, oauth_account, label_hint)
     }
 
-    /// 当前 Claude 登录账号的 registry id。默认入口用它对照墓碑，避免 `rm` 后被自动导入加回。
+    /// 当前 Claude 登录账号的 registry id。`rm` 用它判断删除的号是否仍在客户端登录着，
+    /// 默认入口用它判断「客户端登录着但同步失败」要不要提示。
     pub fn live_account_id(&self) -> Result<AccountId> {
         self.reconcile_api_external_login()?;
         if let Some(account) = self.active_api_account()? {

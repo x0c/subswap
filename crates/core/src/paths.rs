@@ -104,9 +104,4 @@ impl AppPaths {
         self.cache_dir.join("quota_cache.json")
     }
 
-    /// 用户显式删除过的账号墓碑：`<config_dir>/removed.json`。
-    /// 默认入口自动导入会跳过这些 id，直到 `subswap login` 再导入。
-    pub fn removed_file(&self) -> PathBuf {
-        self.config_dir.join("removed.json")
-    }
 }

@@ -270,7 +270,8 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
         self.store_account(raw, label_hint, Some(true))
     }
 
-    /// 当前 live 凭证对应的 registry id。默认入口用它对照墓碑，避免 `rm` 后被自动导入加回。
+    /// 当前 live 凭证对应的 registry id。`rm` 用它判断删除的号是否仍在客户端登录着，
+    /// 默认入口用它判断「客户端登录着但同步失败」要不要提示。
     pub fn live_account_id(&self) -> Result<AccountId> {
         let raw = fs::read_to_string(self.live_path())
             .map_err(|e| Error::Provider(format!("read live credentials failed: {e}")))?;
