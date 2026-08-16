@@ -672,8 +672,9 @@ mod tests {
         };
         let notices = [AutoLine {
             provider: "cursor".into(),
-            text: "signed in as auth0|u1 but not tracked (bad response); run `subswap login cursor`"
-                .into(),
+            text:
+                "signed in as auth0|u1 but not tracked (bad response); run `subswap login cursor`"
+                    .into(),
             kind: AutoLineKind::Error,
         }];
         let text = render_to_string(&[claude, cursor], &notices, false);

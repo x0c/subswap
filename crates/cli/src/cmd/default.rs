@@ -133,7 +133,11 @@ fn auto_swap_success_text(snap: &ProviderSnapshot, to: &AccountId) -> String {
 
 /// 客户端确实登录着（`live_account_id` 命中）、但同步/导入失败时给出的提示行，
 /// 取代过去的 `tracing::debug!` 静默吞掉——那种吞法正是「整段 provider 无声消失」反复出现的根因。
-fn signed_in_but_untracked(provider: &str, id: &AccountId, err: impl std::fmt::Display) -> AutoLine {
+fn signed_in_but_untracked(
+    provider: &str,
+    id: &AccountId,
+    err: impl std::fmt::Display,
+) -> AutoLine {
     AutoLine {
         provider: provider.to_string(),
         text: format!(
