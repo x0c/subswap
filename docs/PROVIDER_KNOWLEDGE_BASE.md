@@ -15,7 +15,7 @@
 | 上游字段 | **已用 %**（0~100） | Claude `utilization`（`oauth.rs::WindowUsage`）；Codex `used_percent` / `percent`（`openai_usage.rs`，注释原文「已用百分比」） |
 | `Quota` 模型 | **已用**：`used`(0~100) + `limit`(固定 100) | `make_quota`（claude）/ `query_quota`（codex）都把已用% 写进 `Quota.used` |
 | 状态判定 | 基于**已用%**：`used ≥ quota.warn_pct`(默认 90)→Warn，`≥ quota.exhausted_pct`(默认 100)→Exhausted | `QuotaStatus::from_percent` |
-| CLI 展示 | 所有 Provider 统一显示**余量** `{limit - used}% left`（含 Cursor 的 `First-Party Models` / `API`） | `render.rs::format_quota_compact` |
+| CLI 展示 | 所有 Provider 统一显示**余量** `{limit - used}% left`（含 Cursor 的 `1st` / `API`） | `render.rs::format_quota_compact` |
 
 记忆点：**所有 Provider 的数据语义都是已用**，CLI 展示层统一翻成余量。Cursor 上游字段仍是
 `autoPercentUsed` / `apiPercentUsed`，写入 `Quota.used` 后展示时再算 `{100 - used}% left`，与
@@ -678,7 +678,7 @@ macOS 用系统退出事件，Linux 用 TERM，Windows 用不强杀的 `taskkill
 usage 查询从 access token 的 WorkOS subject 生成官方 session cookie，不使用 Bearer header。解析
 `individualUsage.plan`（兼容 snake_case / `planUsage`）里的：
 
-- `autoPercentUsed` → `First-Party Models`，写入 `Quota.used` 后 CLI 按 `{100-N}% left` 展示；
+- `autoPercentUsed` → 展示标签 `1st`（Cursor 官方模型窗口），写入 `Quota.used` 后 CLI 按 `{100-N}% left` 展示；
 - `apiPercentUsed` → `API`，写入 `Quota.used` 后 CLI 按 `{100-N}% left` 展示；
 - `billingCycleEnd` → 两个窗口共同的 reset 时间。
 

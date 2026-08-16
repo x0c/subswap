@@ -65,7 +65,7 @@ Cursor，见 [troubleshooting/2026-08-14-cursor-quota-missing-cli-keychain.md](t
 
 Cursor 正在运行时，`swap` 会先请求它正常退出，等待进程完全结束后再切换账号，成功后自动重新打开；任一步失败
 都会恢复原账号状态，避免 Cursor 退出时把内存中的旧凭证写回磁盘。默认入口对两个官方窗口统一显示**余量**：
-`First-Party Models [ 41% left ]` 与 `API [ 43% left ]`（上游仍是已用百分比，展示层翻转），并显示同一账单周期的重置时间。
+`1st [ 41% left ]` 与 `API [ 43% left ]`（上游仍是已用百分比，展示层翻转），并显示同一账单周期的重置时间。`1st` 是 Cursor 官方模型窗口的短标签，避免把整行撑爆。
 
 ## Claude 自定义 API
 

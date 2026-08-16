@@ -385,7 +385,8 @@ pub fn format_quota_compact(q: &Quota, color: bool) -> String {
         QuotaWindow::FiveHour => "5h",
         QuotaWindow::SevenDay => "7d",
         QuotaWindow::Month => "mo",
-        QuotaWindow::FirstPartyModels => "First-Party Models",
+        // Cursor 官方模型窗口；必须短标签，否则默认入口一行会被撑爆。
+        QuotaWindow::FirstPartyModels => "1st",
         QuotaWindow::Api => "API",
         QuotaWindow::Custom => "--",
     };
@@ -539,7 +540,7 @@ mod tests {
             false,
         );
         let api = format_quota_compact(&quota(QuotaWindow::Api, 57, 100, QuotaStatus::Ok), false);
-        assert!(first_party.starts_with("First-Party Models [ 41% left"));
+        assert!(first_party.starts_with("1st [ 41% left"));
         assert!(api.starts_with("API [ 43% left"));
         assert!(!first_party.contains("used"));
         assert!(!api.contains("used"));
