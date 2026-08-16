@@ -17,7 +17,7 @@ Windows: %APPDATA%\subswap\subswap\config\config.toml
 
 | 逻辑目录 | 设置后的实际位置 | 主要内容 |
 |---|---|---|
-| 配置 | `<SUBSWAP_HOME>/config/` | `config.toml`、`registry.toml`、`removed.json`（显式删除过的账号，避免默认入口再自动加回） |
+| 配置 | `<SUBSWAP_HOME>/config/` | `config.toml`、`registry.toml` |
 | 数据 | `<SUBSWAP_HOME>/data/` | `credentials.json`、审计与 daemon 日志、隔离运行目录 |
 | 状态 | `<SUBSWAP_HOME>/data/state/` | 切换快照、daemon PID、Provider 跨进程协调状态 |
 | 缓存 | `<SUBSWAP_HOME>/cache/` | `quota_cache.json` |

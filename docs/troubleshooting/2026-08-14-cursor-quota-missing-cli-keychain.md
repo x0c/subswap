@@ -63,6 +63,7 @@ Cursor 命令行（`cursor-agent`）在 macOS 上的默认凭证后端是钥匙�
 
 ## 关联
 
+- [2026-08-15 整段 Cursor 无声消失（症状族汇总）](2026-08-15-cursor-section-silently-missing.md)
 - [PROVIDER_KNOWLEDGE_BASE.md](../PROVIDER_KNOWLEDGE_BASE.md) 的「Cursor」
 - [2026-06-11 Claude Code keychain ACL 中毒](2026-06-11-claude-code-keychain-acl-poisoning.md)
 - [CLI.md](../CLI.md) 的「Cursor」

@@ -4,6 +4,7 @@
 
 | 文档 | 排查场景 |
 |---|---|
+| [2026-08-15 整段 Cursor 无声消失（症状族汇总）](2026-08-15-cursor-section-silently-missing.md) | 默认入口整段 Cursor（或任何 provider）都不见了，不是某个账号余量查不出来；先读此文分辨三种已知根因，不要直接扎进额度接口 |
 | [2026-08-14 Cursor 多个账号额度数字完全一样](2026-08-14-cursor-quota-cloned-across-accounts.md) | 默认入口里好几个 Cursor 账号余量、重置时间一模一样，或切命令行账号后其它号额度跟着变时必读；改命令行切换、live 回灌、额度查询归属或 macOS 钥匙串写入前也读此 |
 | [2026-08-14 本机 Cursor 命令行已登录但 subswap 没有 Cursor 额度](2026-08-14-cursor-quota-missing-cli-keychain.md) | `subswap` 列表里整段 Cursor 都不出现、导入报「请先登录」，但 `cursor-agent` 已登录且能对话时必读；改 Cursor 命令行凭证探测、macOS 钥匙串来源或 `auth.json` 路径前也读此 |
 | [2026-07-28 Claude 能正常使用但 subswap 仍显示旧 401 / 空 access 被回灌](2026-07-28-claude-working-but-quota-stale-401.md) | Claude Code 已恢复登录、对话正常但 subswap 仍显示十几分钟前的 `401 auth failed`，或 parked 账号长期 429 且凭据里的 access token 变空时必读；改鉴权失败退避、Claude live→store 回灌或空 access 判定前也读此 |

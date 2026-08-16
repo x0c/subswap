@@ -472,3 +472,69 @@ priority = 100
         );
     }
 }
+
+#[test]
+fn rm_leaves_no_tombstone_signed_in_account_reappears_on_next_run() {
+    // 2026-08-14 引入的删除墓碑会让「删过、但客户端还登录着」的账号永久消失且零提示——
+    // 这正是用户反馈「Cursor 又不见了」的真正根因。墓碑已整体移除：
+    // 只要客户端仍登录着，下次默认入口必须能把账号收回来；`rm` 也要如实说明这一点。
+    let tmp = tempfile::tempdir().unwrap();
+    let registry = app_config_dir(&tmp).join("registry.toml");
+    let credentials = app_data_dir(&tmp).join("credentials.json");
+    // Kimi 官方客户端真正落盘的「当前登录」凭证，独立于 subswap 自己的可切换副本。
+    let live_cred = tmp
+        .path()
+        .join("kimi")
+        .join("credentials")
+        .join("kimi-code.json");
+
+    write(
+        &registry,
+        r#"[[accounts]]
+provider = "kimi"
+id = "kimi-user"
+label = "Kimi User"
+active = true
+created_at = "2026-07-01T00:00:00Z"
+priority = 100
+"#,
+    );
+    write(
+        &credentials,
+        r#"{"kimi:kimi-user:blob":"{\"user_id\":\"kimi-user\",\"access_token\":\"AT\"}"}"#,
+    );
+    // header.{"user_id":"kimi-user"}.sig,让 parse_metadata 能从 JWT 里解出 user_id。
+    write(
+        &live_cred,
+        r#"{"access_token":"header.eyJ1c2VyX2lkIjogImtpbWktdXNlciJ9.sig"}"#,
+    );
+
+    let rm_stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["rm", "kimi-user"])
+            .output()
+            .unwrap(),
+    );
+    assert!(rm_stdout.contains("removed kimi/kimi-user"), "{rm_stdout}");
+    assert!(
+        rm_stdout.contains("still signed in as this account")
+            && rm_stdout.contains("picked up again on the next run"),
+        "rm must say the account will come back, not that it's gone for good: {rm_stdout}"
+    );
+
+    let after_rm = fs::read_to_string(&registry).unwrap();
+    assert!(
+        !after_rm.contains("kimi-user"),
+        "account must actually be removed from the registry: {after_rm}"
+    );
+
+    write(
+        &app_config_dir(&tmp).join("config.toml"),
+        "[quota]\nfetch_timeout_ms = 1\nfetch_retries = 0\n",
+    );
+    let default_stdout = assert_success(isolated_subswap(&tmp).output().unwrap());
+    assert!(
+        default_stdout.contains("kimi-user"),
+        "no tombstone should block re-import on the very next run: {default_stdout}"
+    );
+}

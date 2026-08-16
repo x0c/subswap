@@ -151,7 +151,7 @@ pub fn render_to_string(
     color: bool,
 ) -> String {
     let mut out = String::new();
-    let has_any = snapshots.iter().any(|s| !s.accounts.is_empty());
+    let has_any = snapshots.iter().any(|s| !s.accounts.is_empty()) || !auto_lines.is_empty();
     if !has_any {
         out.push_str(
             "No accounts. Sign in to a supported client, then run `subswap login <provider>`.\n",
@@ -162,7 +162,8 @@ pub fn render_to_string(
     let layout = render_layout(snapshots);
     let mut global_index: usize = 0;
     for snap in snapshots {
-        if snap.accounts.is_empty() {
+        let has_notice = auto_lines.iter().any(|line| line.provider == snap.provider);
+        if snap.accounts.is_empty() && !has_notice {
             continue;
         }
         out.push_str(&format!("{}\n", style(color, "1", &snap.provider)));
@@ -655,6 +656,35 @@ mod tests {
         assert!(text.contains(" 1 a@x.com"), "{text}");
         assert!(text.contains(" 2 b@x.com"), "{text}");
         assert!(text.contains(" 3 c@x.com"), "{text}");
+    }
+
+    #[test]
+    fn render_to_string_shows_notice_for_provider_with_zero_accounts() {
+        // 客户端登录着但同步失败:该 provider 一个账号都没有,但必须有一行说明原因,
+        // 不能像过去那样整段静默消失(见 sync_local_active 的 signed_in_but_untracked)。
+        let claude = ProviderSnapshot {
+            provider: "claude".into(),
+            accounts: vec![make_awq("a@x.com", true, QuotaFetchState::Ready)],
+        };
+        let cursor = ProviderSnapshot {
+            provider: "cursor".into(),
+            accounts: Vec::new(),
+        };
+        let notices = [AutoLine {
+            provider: "cursor".into(),
+            text: "signed in as auth0|u1 but not tracked (bad response); run `subswap login cursor`"
+                .into(),
+            kind: AutoLineKind::Error,
+        }];
+        let text = render_to_string(&[claude, cursor], &notices, false);
+        assert!(
+            text.contains("cursor"),
+            "provider header must still print: {text}"
+        );
+        assert!(
+            text.contains("signed in as auth0|u1 but not tracked"),
+            "notice line must print even with zero accounts: {text}"
+        );
     }
 
     #[test]
