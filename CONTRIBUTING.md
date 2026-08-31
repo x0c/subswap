@@ -1,97 +1,53 @@
 # Contributing to subswap
 
-subswap is a small Rust workspace. Read this before opening a PR — most rejections are about scope.
-
-## Project model
-
-- **Cargo workspace** rooted at `Cargo.toml`. Members:
-  - `crates/core` — data model, `Provider` trait, credential store, paths, audit log, auto-swap policy.
-  - `crates/cli` — `subswap` binary (the user-facing CLI).
-  - `crates/daemon` — `subswapd` binary (background poller, auto-spawned by the CLI).
-  - `crates/providers/<id>` — one crate per upstream (`claude`, `codex`).
-- Internal collaboration docs live in `docs/` and are written in **Chinese**. Code comments are in **Chinese**. Everything user-visible (CLI output, error messages, tracing logs, Cargo descriptions) is in **English**.
+Thank you for improving subswap. It manages local credentials and native client state, so correctness and scope matter more than feature count.
 
 ## Before you start
 
-Read [`AGENTS.md`](AGENTS.md) — it codifies the load-bearing invariants. The ones most likely to bite you:
-- Manual `swap` must never depend on the network or quota lookups.
-- Secrets only live in the OS keyring; `registry.toml`, the audit log, and snapshots must never contain plaintext tokens or refresh tokens.
-- `async fn` must not do blocking IO directly — wrap `fs2`, `std::fs`, `keyring` calls in `tokio::task::spawn_blocking`.
-- Don't poll high-frequency to "probe" rate limits.
+- Read [AGENTS.md](AGENTS.md). It contains the project's non-negotiable safety, release, and verification rules.
+- Never commit credentials, refresh tokens, API keys, complete login files, real email addresses, or billing screenshots.
+- Do not add behavior intended to share credentials, bypass limits, evade provider policies, or aggressively probe quota endpoints.
+- User-visible CLI text, errors, and logs are English. Internal collaboration docs and code comments are Chinese.
 
-If you're adding a new provider, read [`docs/PROVIDER_KNOWLEDGE_BASE.md`](docs/PROVIDER_KNOWLEDGE_BASE.md) and [`docs/design/ARCHITECTURE.md`](docs/design/ARCHITECTURE.md) first.
+## Project shape
+
+subswap is a Rust workspace with a small core, a CLI, a background daemon, and one adapter per native client:
+
+- Claude Code, Codex / ChatGPT, Kimi Code, Cursor, and OpenCode Go are supported.
+- File-based OAuth clients share the common switching engine where their safety boundary permits it.
+- Claude and Cursor keep dedicated adapters because their credential storage, API mode, desktop lifecycle, and refresh coordination are different.
+
+When adding or changing a provider, read [the provider knowledge base](docs/PROVIDER_KNOWLEDGE_BASE.md) and [the architecture guide](docs/design/ARCHITECTURE.md) first. Do not force a provider into the shared engine when it needs a different native-client safety boundary.
 
 ## Local checks
 
-Run these locally before opening a PR — CI runs the same ones and will reject on diff.
+Run these before opening a pull request:
 
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
+cargo build --workspace
 ```
 
-Quick sanity for the CLI surface:
+For a CLI-facing change, also run `subswap --help` or the affected command in the project's isolated test environment. Tests must never touch a real login keychain or local credential file.
 
-```bash
-cargo run -p subswap-cli -- --help
-cargo run -p subswap-cli -- doctor
-```
+## Pull request expectations
 
-When iterating on the daemon, kill any stale background instance first:
-
-```bash
-pkill subswapd 2>/dev/null
-```
-
-## Adding a new provider
-
-1. Create `crates/providers/<id>/` mirroring `claude` / `codex`. Implement `subswap_core::Provider`.
-2. Register the crate in the root `Cargo.toml` `members` list and `[workspace.dependencies]`.
-3. Wire it into `crates/cli/src/main.rs::AppContext::build()` and `sync_local_active()`.
-4. Wire it into `crates/daemon/src/main.rs::main()` if it benefits from periodic polling.
-5. Document the upstream endpoints, local files, and quirks in `docs/PROVIDER_KNOWLEDGE_BASE.md`.
-6. Add unit tests in the provider crate. Integration tests should use a mock HTTP server, not real upstream.
-
-## Style
-
-- **Code comments in Chinese.** Don't translate existing Chinese comments; do match the style when writing new ones.
-- **User-visible strings in English, terse.** Success path one short line (e.g. `swap → claude/alice`). Verbose hints only on failure.
-- **Document the "why", not the "what".** Names should carry "what".
-- Run `rustfmt`; the CI gate is strict.
-
-## Commit messages and PRs
-
-- Subject line: short, imperative ("add codex rate-limit cache" rather than "added").
-- Body: explain the *why* and any non-obvious tradeoffs. Don't paste the diff.
-- One logical change per PR. If a refactor is bundled with a behavior change, split the PR.
-- Reference issue numbers if applicable.
-
-## Scope guidance
-
-Out of scope without prior discussion:
-
-- New external dependencies (especially those pulling C libraries).
-- New top-level CLI subcommands. The surface is intentionally tiny.
-- Provider-specific logic in `crates/core`. Keep it abstract.
-- Anything that bypasses upstream rate limits, terms of service, or scrapes opaque endpoints aggressively.
-
-In scope:
-
-- Bug fixes (with a regression test).
-- New providers behind the existing `Provider` trait.
-- Better error messages, doctor checks, and tracing context.
-- Docs improvements.
+- Keep one user-visible behavior change per pull request.
+- Add a regression test for every bug fix.
+- Explain user impact, safety trade-offs, and verification in the pull request description.
+- Update the public README, supported-client matrix, translations, and release notes whenever a provider, platform, installation path, or user-visible boundary changes.
+- Do not add a new dependency or top-level command without first explaining why the existing surface cannot cover the need.
 
 ## Reporting bugs
 
-Open a GitHub issue with:
+Use the bug-report form and include a redacted `subswap doctor` result, operating system, native client version, expected and actual behavior, and whether the background daemon was enabled. Never paste secrets or complete native login files into a public issue.
 
-1. Output of `subswap doctor`.
-2. `subswap --log debug` for the failing invocation (redact tokens).
-3. OS + Rust version (`rustc --version`).
-4. Whether the issue reproduces with `SUBSWAP_NO_DAEMON=1`.
+## Security issues
+
+Do not report a vulnerability in a public issue. Follow [SECURITY.md](SECURITY.md) instead.
 
 ## License
 
-By contributing, you agree your contributions are licensed under the MIT license (see [`LICENSE`](LICENSE)).
+By contributing, you agree that your contributions are licensed under the [MIT License](LICENSE).

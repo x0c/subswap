@@ -316,7 +316,8 @@ fn account_needs_swap(a: &AccountWithQuotas, threshold: f64) -> bool {
     // 只看「已耗尽」或「小时级窗口达到 threshold」。Provider 自己的 Warn 标记仅作
     // 展示用途的着色不耦合到自动切换决策；7d/月度这类长窗口接近阈值仍有
     // 很多实际余量，不作为自动切换触发条件。
-    a.quotas.iter().any(|q| {
+    // Cursor 的 API 窗口与官方模型相互独立，不参与判定（见 `auto_swap_quotas`）。
+    auto_swap_quotas(&a.quotas).any(|q| {
         matches!(q.status, QuotaStatus::Exhausted) || quota_exceeds_auto_threshold(q, threshold)
     })
 }
@@ -348,20 +349,25 @@ fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: boo
         return allow_unknown;
     }
     // 候选不能有小时级窗口达到/超过 threshold，否则切过去仍无法正常承接流量。
-    // 长窗口只在明确 Exhausted 时阻断。
-    let no_above_threshold = a
-        .quotas
+    // 长窗口只在明确 Exhausted 时阻断。Cursor API 窗口不参与（见 `auto_swap_quotas`）。
+    let quotas: Vec<&Quota> = auto_swap_quotas(&a.quotas).collect();
+    if quotas.is_empty() {
+        return allow_unknown;
+    }
+    let no_above_threshold = quotas
         .iter()
         .all(|q| !quota_exceeds_auto_threshold(q, threshold));
-    let no_exhausted = a
-        .quotas
+    let no_exhausted = quotas
         .iter()
         .all(|q| !matches!(q.status, QuotaStatus::Exhausted));
     if allow_unknown {
         no_above_threshold && no_exhausted
     } else {
-        let any_ok = a.quotas.iter().any(|q| matches!(q.status, QuotaStatus::Ok));
-        any_ok && no_above_threshold && no_exhausted
+        // Warn 只是展示着色（`quota.warn_pct` 不参与决策）。未知窗口不能当可用证据。
+        let any_usable = quotas
+            .iter()
+            .any(|q| matches!(q.status, QuotaStatus::Ok | QuotaStatus::Warn));
+        any_usable && no_above_threshold && no_exhausted
     }
 }
 
@@ -386,10 +392,11 @@ fn reset_ready_at(
     let mut has_blocking_window = false;
     let mut has_known_ok_after_reset = false;
 
-    for q in &a.quotas {
+    for q in auto_swap_quotas(&a.quotas) {
         let blocking = quota_blocks_candidate(q, threshold);
         has_blocking_window |= blocking;
-        has_known_ok_after_reset |= blocking || matches!(q.status, QuotaStatus::Ok);
+        has_known_ok_after_reset |=
+            blocking || matches!(q.status, QuotaStatus::Ok | QuotaStatus::Warn);
 
         if blocking {
             let reset_at = q.reset_at?;
@@ -413,6 +420,23 @@ fn quota_blocks_candidate(q: &Quota, threshold: f64) -> bool {
 
 fn quota_exceeds_auto_threshold(q: &Quota, threshold: f64) -> bool {
     matches!(q.window, QuotaWindow::FiveHour) && q.is_above(threshold)
+}
+
+/// 自动切换只看会真正挡住「被切换产品」流量的窗口。
+///
+/// Cursor 的 `Api` 与官方模型（`FirstPartyModels`）是并行产品配额：API 耗尽
+/// 不妨碍 IDE 继续用 Auto/Composer。若响应里根本没有官方模型窗口，才回退到
+/// 全部窗口（纯 API 账号仍按 API 耗尽切换）。Claude 5h/7d、Codex 月度仍是
+/// 同一产品的叠加上限，全部参与判定。
+fn quota_gates_auto_swap(q: &Quota) -> bool {
+    !matches!(q.window, QuotaWindow::Api)
+}
+
+fn auto_swap_quotas(quotas: &[Quota]) -> impl Iterator<Item = &Quota> {
+    let has_gating = quotas.iter().any(quota_gates_auto_swap);
+    quotas
+        .iter()
+        .filter(move |q| !has_gating || quota_gates_auto_swap(q))
 }
 
 fn compare_candidates(a: &AccountWithQuotas, b: &AccountWithQuotas) -> std::cmp::Ordering {
@@ -991,5 +1015,188 @@ mod tests {
         };
         let d = decide(&snap, &PolicyConfig::default());
         assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
+    }
+
+    fn cursor_account(
+        id: &str,
+        active: bool,
+        first_used: u64,
+        first_status: QuotaStatus,
+        api_used: u64,
+        api_status: QuotaStatus,
+        reset_days: i64,
+    ) -> AccountWithQuotas {
+        let reset_at = Some(Utc::now() + chrono::Duration::days(reset_days));
+        AccountWithQuotas {
+            account: mk_account(id, active),
+            quotas: vec![
+                mk_quota_with_window(
+                    first_used,
+                    first_status,
+                    QuotaWindow::FirstPartyModels,
+                    reset_at,
+                ),
+                mk_quota_with_window(api_used, api_status, QuotaWindow::Api, reset_at),
+            ],
+            fetch_state: QuotaFetchState::Ready,
+        }
+    }
+
+    /// Cursor API 与官方模型是并行配额。两边 API 都是 0% 时，不能把「1st 还有余量」
+    /// 的号和「1st 也耗尽」的号一视同仁，再按 billing cycle 谁先重置就切到全空号。
+    #[test]
+    fn cursor_api_exhausted_does_not_block_first_party_candidate() {
+        let snap = ProviderSnapshot {
+            provider: "cursor".into(),
+            accounts: vec![
+                cursor_account(
+                    "caleb",
+                    true,
+                    100,
+                    QuotaStatus::Exhausted,
+                    100,
+                    QuotaStatus::Exhausted,
+                    19,
+                ),
+                cursor_account(
+                    "kimberly",
+                    false,
+                    88,
+                    QuotaStatus::Ok,
+                    100,
+                    QuotaStatus::Exhausted,
+                    25,
+                ),
+            ],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(
+            matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "kimberly"),
+            "got {d:?}"
+        );
+    }
+
+    #[test]
+    fn cursor_stays_on_first_party_headroom_even_if_api_exhausted() {
+        let snap = ProviderSnapshot {
+            provider: "cursor".into(),
+            accounts: vec![
+                cursor_account(
+                    "kimberly",
+                    true,
+                    88,
+                    QuotaStatus::Ok,
+                    100,
+                    QuotaStatus::Exhausted,
+                    25,
+                ),
+                cursor_account(
+                    "caleb",
+                    false,
+                    100,
+                    QuotaStatus::Exhausted,
+                    100,
+                    QuotaStatus::Exhausted,
+                    19,
+                ),
+            ],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
+    }
+
+    /// 用户 2026-08-21 现场：1st 6% left（已用 94% → Warn）对全空号 19d reset。
+    #[test]
+    fn cursor_six_percent_first_party_beats_empty_sooner_reset() {
+        let snap = ProviderSnapshot {
+            provider: "cursor".into(),
+            accounts: vec![
+                cursor_account(
+                    "caleb",
+                    true,
+                    100,
+                    QuotaStatus::Exhausted,
+                    100,
+                    QuotaStatus::Exhausted,
+                    19,
+                ),
+                cursor_account(
+                    "kimberly",
+                    false,
+                    94,
+                    QuotaStatus::Warn,
+                    100,
+                    QuotaStatus::Exhausted,
+                    24,
+                ),
+            ],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(
+            matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "kimberly"),
+            "got {d:?}"
+        );
+    }
+
+    /// `quota.warn_pct` 只影响展示着色。1st 已 Warn 但仍有余量时，必须能胜过全空号。
+    #[test]
+    fn cursor_warn_only_first_party_is_still_a_candidate() {
+        let snap = ProviderSnapshot {
+            provider: "cursor".into(),
+            accounts: vec![
+                cursor_account(
+                    "dead",
+                    true,
+                    100,
+                    QuotaStatus::Exhausted,
+                    100,
+                    QuotaStatus::Exhausted,
+                    19,
+                ),
+                cursor_account(
+                    "warn",
+                    false,
+                    92,
+                    QuotaStatus::Warn,
+                    100,
+                    QuotaStatus::Exhausted,
+                    25,
+                ),
+            ],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(
+            matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "warn"),
+            "got {d:?}"
+        );
+    }
+
+    /// 响应里没有官方模型窗口时，纯 API 账号仍按 API 耗尽切换。
+    #[test]
+    fn cursor_api_only_account_still_swaps_when_api_exhausted() {
+        let reset_at = Some(Utc::now() + chrono::Duration::days(19));
+        let mut active = mk_awq("api-dead", true, 100, QuotaStatus::Exhausted);
+        active.quotas = vec![mk_quota_with_window(
+            100,
+            QuotaStatus::Exhausted,
+            QuotaWindow::Api,
+            reset_at,
+        )];
+        let mut candidate = mk_awq("api-ok", false, 10, QuotaStatus::Ok);
+        candidate.quotas = vec![mk_quota_with_window(
+            10,
+            QuotaStatus::Ok,
+            QuotaWindow::Api,
+            Some(Utc::now() + chrono::Duration::days(25)),
+        )];
+        let snap = ProviderSnapshot {
+            provider: "cursor".into(),
+            accounts: vec![active, candidate],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(
+            matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "api-ok"),
+            "got {d:?}"
+        );
     }
 }

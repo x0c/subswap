@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest a user problem or supported-client improvement.
+title: "feature: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the workflow and who benefits, not just an implementation idea.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed outcome
+      description: Explain the result you expect and any native client or platform involved.
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: Safety boundary
+      options:
+        - label: This request does not require sharing credentials, evading provider limits, or bypassing provider policies.
+          required: true

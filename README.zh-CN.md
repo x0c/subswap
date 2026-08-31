@@ -1,98 +1,55 @@
-# subswap - Claude、Codex、ChatGPT、Kimi、Cursor 和 OpenCode 账号切换器
+# subswap
 
-语言： [English](README.md) | 简体中文 | [日本語](README.ja.md) | [한국어](README.ko.md)
+[![CI](https://github.com/x0c/subswap/actions/workflows/ci.yml/badge.svg)](https://github.com/x0c/subswap/actions/workflows/ci.yml)
+[![Release](https://github.com/x0c/subswap/actions/workflows/release.yml/badge.svg)](https://github.com/x0c/subswap/actions/workflows/release.yml)
+[![License](https://img.shields.io/github/license/x0c/subswap)](LICENSE)
 
-subswap 是一个 Rust CLI，用于管理 Claude Code、OpenAI Codex / ChatGPT、Kimi Code、Cursor 和 OpenCode Go 的多个 AI 订阅账号。它可以导入本地登录状态，保存私有凭证快照，查询额度窗口，并在用量超过可配置阈值时手动或自动切换当前账号。
+语言：[English](README.md) | 简体中文 | [日本語](README.ja.md) | [한국어](README.ko.md)
 
-它既可以作为 Claude / Kimi 账号切换器、Codex 账号管理器、Cursor 额度追踪器，也可以作为统一的多 Provider 订阅切换工具。
+**一个尊重各客户端原生登录状态与额度边界的本地多账号切换工具。**
 
-**平台支持**：CLI 与五个 Provider 均支持 macOS、Linux、Windows，并由三平台 CI 验证。后台 daemon 仍只支持 Unix；Windows 使用前台 CLI。
+subswap 可以安全切换 Claude Code、OpenAI Codex / ChatGPT、Kimi Code、Cursor 和 OpenCode Go 账号。它把私有凭证快照留在本地，显示额度状态，并可在用量到达你的阈值时自动切到另一个符合条件的账号。
 
-## 功能
+## 为什么用 subswap
 
-- **Claude Code、Codex CLI、Kimi Code、Cursor 和 OpenCode Go 多账号切换**：无需重新登录即可切换当前账号。
-- **Claude Code 自定义 API 端点**：通过终端交互向导添加 DeepSeek、Kimi 或其他 Anthropic 兼容端点，并像 Claude 账号一样双向切换。
-- **Claude、Codex、Kimi、OpenCode 账号隔离的并行环境**：通过 `subswap run`、`shell`、`env` 在不同终端同时使用不同账号，不改全局活账号。Cursor 的桌面 SQLite 状态无法安全投影，因此明确不支持此模式。
-- **额度感知状态**：查看 Claude/Kimi/Codex 窗口，以及 Cursor 的 `First-Party Models` 与 `API` 已用百分比。
-- **自动账号切换**：后台 daemon 在用量超过配置阈值后切走当前账号，并在每次额度更新后重判，始终选出最佳可用账号。
-- **自动换号开关**：`subswap autoswap on/off` 无需改配置文件即可开启或关闭自动切换。
-- **手动切换后的定居宽限期**：手动选定账号后，daemon 会等待一段宽限时间再做自动换号，防止你的操作被立即覆盖。
-- **不依赖网络的手动切换**：即使额度 API 失败、token 过期或网络不可用，`subswap swap` 仍可工作。
-- **额度结果缓存与 stale fallback**：后台刷新期间直接返回缓存结果，状态界面始终响应。
-- **文件凭证存储**：凭证保存在应用数据目录下仅 owner 可读的 `0600` 文件中，旧 keyring 数据首次读取时自动迁移。
-- **基于 Provider 的架构**：Claude、Codex、Kimi、Cursor、OpenCode Go 分别位于独立 crate 中，因此可以在不改变 core 策略的情况下添加新的 AI Provider。
+- **工作、个人和客户账号互不混淆。** 无需反复登出、再登录。
+- **一眼看到可用额度。** 在一个界面查看 Claude、Codex、Kimi、Cursor 与 OpenCode 的额度窗口。
+- **始终由你决定。** 手动 `swap` 不等待网络或额度接口；自动换号可选，并会排除只允许手动选择的账号。
+- **安全时才并行。** Claude、Codex、Kimi、OpenCode 能在隔离环境并行运行，不改变全局当前账号。
 
 ## 支持的客户端
 
-| Provider | 本地客户端 | subswap 管理内容 |
-|---|---|---|
-| Claude / Anthropic | Claude Code (`~/.claude`) | OAuth 凭证、自定义 API 端点、当前账号文件、5h / 7d 额度、token 保活 |
-| Codex / ChatGPT | Codex CLI (`~/.codex`) | `auth.json` 透传、当前账号文件、官方 app-server 额度查询 |
-| Kimi / Moonshot | Kimi Code (`~/.kimi-code`) | OAuth 凭证 blob、当前账号文件、5h / 7d 用量、安全协调 token 恢复 |
-| Cursor | Cursor 桌面端（`state.vscdb`） | 账号导入/切换、`First-Party Models` 与 `API` 用量、账单周期重置时间 |
-| OpenCode Go | OpenCode（`~/.local/share/opencode/auth.json`） | 只切换 `opencode-go` API key（同文件其它供应商不动）、5h / 周 / 月额度 |
+| 客户端 | 导入与切换 | 额度与自动换号 | 隔离运行 | 重要边界 |
+|---|---:|---:|---:|---|
+| Claude Code | 是 | 是 | 是 | 自定义 API 端点只能手动选择。 |
+| Codex CLI / ChatGPT | 是 | 是 | 是 | 额度查询走官方 app-server 通道。 |
+| Kimi Code | 是 | 是 | 是 | 先在原生客户端登录，再导入。 |
+| Cursor 桌面端 | 是 | 是 | 否 | 切换会协调桌面应用重启和 SQLite 状态。 |
+| OpenCode Go | 是 | 是 | 是 | 只修改 `opencode-go` 项，其它项保持不变。 |
 
-## 常见场景
-
-- 在多个 Claude Pro、Claude Max、ChatGPT Plus 或 ChatGPT Team 席位之间切换。
-- 当前账号达到使用限制时，随时切换到备用 AI 订阅。
-- 在不同终端同时使用两个账号，互不干扰。
-- 开始长时间编码会话前，检查各账号用量。
-- 用一个 CLI 统一管理 Claude、ChatGPT、Kimi 和 Cursor 账号切换。
-
-## 状态
-
-| 里程碑 | 范围 | 状态 |
-|---|---|---|
-| M1 | workspace + core trait/model + minimal CLI | done |
-| M2 | Claude provider：凭证仓库切换、5h/7d quota、best-effort token refresh | done |
-| M3 | Codex provider：opaque auth.json 透传、原子写、官方额度 + 兼容回退 | done |
-| M4 | `subswapd` daemon: periodic poll + auto-swap + Claude token keepalive + zero-config auto-spawn | done |
-| M5 | 账号隔离运行环境、自动换号开关、额度缓存、定居宽限期 | done |
-| M6 | Kimi 与 Cursor Provider、Codex 官方额度通道、协调式 token 恢复 | done |
-| M7 | OpenCode Go Provider：只切换 `auth.json` 的 Go 项、5h/周/月额度、自动换号与隔离运行 | done |
-
-## 为什么需要它
-
-如果你同时付费使用多个 AI 订阅，可能会遇到：
-
-- Claude Pro 用量耗尽后，希望无需重新登录就切到 ChatGPT；
-- 持有两个 ChatGPT 席位，希望用一行命令切换当前账号；
-- 希望两个账号同时跑在不同终端里互不干扰；
-- 希望查看所有账号在各个窗口（5h / 7d）中的剩余额度。
-
-subswap 会把每个账号的凭证保存到应用数据目录下的 `0600` 文件（首次运行时自动迁移旧 keyring 数据），以事务方式更新各原生客户端的当前账号状态，并且永远不会让额度查询阻塞手动切换；额度只作为参考信息。
+CLI 已在 macOS、Linux、Windows CI 中测试。后台 daemon 仅支持 Unix：Linux 自动启动，macOS 需显式开启，Windows 仅使用前台 CLI。
 
 ## 安装
 
-### macOS / Linux（Homebrew）
-
-使用 Homebrew：
+### macOS / Linux
 
 ```bash
 brew install x0c/tap/subswap
 ```
 
-或先添加 tap，再按名称安装：
+也可以从[最新 GitHub Release](https://github.com/x0c/subswap/releases/latest)下载，并在安装前校验随附 SHA-256 文件。
 
-```bash
-brew tap x0c/tap
-brew install subswap
-```
-
-### Windows（PowerShell）
-
-一条命令安装最新版本：
+### Windows
 
 ```powershell
 irm https://raw.githubusercontent.com/x0c/subswap/main/install.ps1 | iex
 ```
 
-脚本会安装 `subswap.exe` 并加入当前用户的 `PATH`。Windows 不包含 Unix-only 的 `subswapd`；需要刷新状态或执行自动换号判断时运行 `subswap` 即可。
+安装器会下载最新 Windows Release、校验 SHA-256，并将 `subswap.exe` 加入当前用户的 `PATH`。也可以从[最新 Release](https://github.com/x0c/subswap/releases/latest)手动下载 zip 与校验和。
 
 ### 从源码安装
 
-从源码安装需要 Rust 1.80+。
+适合开发或尝鲜未发布版本，要求 Rust 1.80+：
 
 ```bash
 git clone https://github.com/x0c/subswap
@@ -101,146 +58,82 @@ cargo install --path crates/cli
 subswap --help
 ```
 
-也可以直接从 Git 安装：
-
-```bash
-cargo install --git https://github.com/x0c/subswap --path crates/cli
-```
+`cargo install --git` 跟随仓库源码，并不等同于已验证的 Release；普通使用优先选择 Homebrew 或 Release 附件。
 
 ## 快速开始
 
+### 导入已经在原生客户端登录的账号
+
 ```bash
-# 默认入口：同步本地活账号、拉取额度、超阈值自动换号、打印一屏状态
-# 想了解当前状态时随时运行
+# 导入当前本地登录状态、显示额度和当前账号。
 subswap
 
-# 手动切换到指定账号（逃生通道——永不依赖网络）
-subswap swap alice@example.com
-# 同一 id 存在于多个 provider 时消歧义：
-subswap swap claude/alice@example.com
-
-# 交互式添加 DeepSeek 或其他 Claude Code 兼容 API
-subswap add-api
-# 自定义 API 只能手动切换，不参与自动换号
-subswap swap deepseek
-
-# Kimi 与 Cursor 先在原生客户端登录，这两个命令只导入当前账号
+# 需要时明确导入原生登录状态。
 subswap login kimi
 subswap login cursor
-# 导入后与其他 Provider 一样切换
-subswap swap cursor/alice@example.com
+subswap login opencode
 
-# 在隔离环境里使用账号，不改全局活账号
-subswap run codex bob@example.com -- --version   # 以 bob 账号隔离启动 codex
-subswap shell alice@example.com                  # 打开隔离到 alice 账号的子 shell
-eval "$(subswap env codex/bob@example.com)"      # 把当前 shell 临时指向某 codex 账号
-
-# 开启或关闭自动换号
-subswap autoswap on
-subswap autoswap off
-
-# 从 registry 和私有凭证仓库删除账号
-subswap rm alice@example.com
-
-# 环境自检（客户端文件、keyring、配置目录）
-subswap doctor
+# 按账号 id 切换；重名时加客户端前缀。
+subswap swap alice@example.com
+subswap swap claude/alice@example.com
 ```
 
-只要你至少在对应原生客户端登录过一次，第一次运行 `subswap` 时就会自动发现 Claude Code、Codex CLI、Kimi Code、Cursor 与 OpenCode Go 的当前账号。
-
-第一次执行 `subswap` 会在非 macOS 的 Unix 平台启动一个分离的后台 daemon。它会轮询额度并在后台自动切换账号，同时保持 Claude OAuth token 新鲜，避免长期闲置账号在刚切换过去时立即返回 401。macOS 需要显式 opt-in，因为后台进程访问 Keychain 容易触发额外授权弹窗：导出 `SUBSWAP_AUTO_DAEMON=1` 即可启用自动拉起。daemon 是单实例（文件锁），并且可以安全终止：`pkill -f 'subswap __daemon'` 或 `pkill subswapd`。如需完全禁用，导出 `SUBSWAP_NO_DAEMON=1`。
-
-## 账号隔离环境
-
-`subswap run / shell / env` 允许你在不同终端并行使用不同 Claude、Codex、Kimi 或 OpenCode 账号，不改全局活账号。凭证被投影到私有目录，原生 CLI 通过各自配置变量指向该目录。Cursor 身份位于桌面应用 SQLite 状态库，切换还需要协调重启，因此不支持隔离运行。
+### 新增 Claude 或 Codex 账号
 
 ```bash
-subswap run codex 6 -- --version       # 以 6 号账号在隔离环境跑 codex
-subswap run claude alice@x.com         # 隔离启动 claude（按 id 引用）
-subswap shell 3                         # 进子 shell，环境已隔离到 3 号账号
-eval "$(subswap env codex/bob@x.com)"  # 临时把当前 shell 指向某 codex 账号
+subswap login claude
+subswap login codex
+subswap
 ```
 
-- **并发取舍**：同一账号允许被多个隔离会话借用，以保证全局切换始终可用；极少数同时刷新场景可能让其中一个会话需要重新登录。
-- **全局活账号告警**：对当前全局 active 账号起隔离会话会告警——若同时被非隔离客户端使用，可能作废其 refresh token。
+### 不改全局当前账号，直接运行一个账号
 
-## 设计不变量
-
-这些约束很关键，贡献代码前值得了解：
-
-1. **`swap` 永远不依赖额度查询。** 如果 API 不可用、keyring 无法访问或 token 过期，手动切换仍必须尝试激活本地账号。
-2. **密钥不进入 registry 元数据，快照仅 owner 可读。** OAuth/API 密钥保存在 `0600` 凭证文件中；自定义 API active 时，Claude Code 还要求 API Key 写入 `~/.claude/settings.json`，subswap 会原子保存并在切回 OAuth 时恢复。
-3. **切换是原子的，并且可以回滚。** 每次 `activate` 在修改任何文件之前都会把快照写入 `state_dir/snapshots/<ts>/`；任一写入失败都会回滚。
-4. **新增 Provider = 新增 `crates/providers/<id>` crate + 在 `cli/src/app.rs::AppContext::build()` 中注册。** `core` 中不放 Provider 特定逻辑。
-5. **自动切换阈值集中管理且可配置。** 编译期默认值位于 `crates/core/src/defaults.rs`，运行时配置可以覆盖它。
-
-更多内容见 [`docs/`](docs/)（中文内部协作文档）。
-
-## 对比
-
-| 工具类型 | 关注点 | subswap 的区别 |
-|---|---|---|
-| 单 Provider 账号切换工具 | 一次只面向一个上游 | subswap 在同一套 Provider 抽象下支持 Claude、Codex / ChatGPT、Kimi、Cursor 和 OpenCode Go |
-| 额度看板 | 只展示用量 | subswap 还可以在额度窗口耗尽时激活另一个本地账号 |
-| 手动登录/退出 | 一次只处理一个账号 | subswap 保存私有账号快照，并以事务方式切换原生客户端状态 |
-
-## FAQ
-
-### `subswap swap` 会调用额度 API 吗？
-
-不会。手动切换是逃生通道，永远不依赖额度查询。即使上游 API 不可用或 token 过期，`subswap swap claude/alice@example.com` 也会尝试激活该本地账号。
-
-### token 存在哪里？
-
-token 和 refresh token 存在应用数据目录下仅 owner 可读的凭证文件中。自定义 API active 时，Claude Code 还要求 API Key 出现在 `~/.claude/settings.json`；切换快照同样收紧为 `0600`。
-
-### 为什么切换 Cursor 时会短暂关闭再打开？
-
-Cursor 退出时可能把内存中的旧登录状态写回 SQLite。subswap 会先请求它正常退出，在一个事务内写入新账号，再重新打开；写入或重启失败都会恢复原账号状态。
-
-### subswap 刷新 token 会不会与原生客户端抢刷？
-
-没有原生客户端认可的协调边界就不会刷新。Codex 只通过官方 app-server 刷新，Kimi 使用对应版本的官方锁，Cursor active 账号只重读不刷新；旧版或无法识别的客户端宁可保留 401，也不冒险消耗一次性 refresh token。
-
-### 自定义 API 会参与自动换号吗？
-
-不会。自定义 API 是 `manual_only`：subswap 不会自动选中它；它处于 active 时，自动换号也完全停用。手动切回 OAuth 账号时，会恢复进入 API 模式前的 Claude Code 设置。
-
-### 这只适用于 Claude 或 Codex 吗？
-
-不是。目前已支持 Claude / Anthropic、Codex / ChatGPT、Kimi / Moonshot 和 Cursor。
-
-### 支持 Windows 吗？
-
-支持。CLI 与五个 Provider 都在 Windows CI 中测试并发布原生 zip，上面的 PowerShell 脚本会完成安装和 `PATH` 配置；只有后台 daemon 仍是 Unix-only。
-
-## GitHub topics
-
-发布后推荐设置的仓库 topics：
-
-`claude-code`, `codex-cli`, `chatgpt`, `kimi`, `moonshot-ai`, `cursor`, `anthropic`, `openai`, `account-switcher`, `quota-tracker`, `ai-tools`, `rust-cli`, `automation`
-
-## 目录结构
-
-```
-crates/
-  core/                # data model, Provider trait, CredentialStore, paths
-  cli/                 # `subswap` binary
-  daemon/              # `subswapd` binary
-  providers/
-    claude/            # Claude / Anthropic provider
-    codex/             # Codex / ChatGPT provider
-    kimi/              # Kimi / Moonshot provider
-    cursor/            # Cursor 桌面端 provider
+```bash
+subswap run codex bob@example.com -- --version
+subswap shell claude/alice@example.com
+eval "$(subswap env codex/bob@example.com)"
 ```
 
-## 贡献
+## 使用前请了解
 
-欢迎提交 issues 和 PR。注意：
+- 只管理你本人拥有或获授权使用的账号。subswap 不共享凭证、不绕过服务限制，也不保证任何用法符合上游服务条款。
+- Cursor 的身份在桌面应用状态中，不能隔离运行；切换 Cursor 时会协调关闭并重新打开应用。
+- Linux 上首次运行 `subswap` 会启动一个单实例后台 daemon，用于额度查询和可选自动换号。macOS 须设置 `SUBSWAP_AUTO_DAEMON=1` 才启用；设置 `SUBSWAP_NO_DAEMON=1` 可完全关闭。
+- 凭证数据位于应用数据目录。macOS/Linux 的私有凭证文件强制为 `0600`；Windows 使用当前用户应用数据目录的系统权限。
 
-- `docs/` 和 `AGENTS.md` 中的内部文档使用中文；代码注释使用中文；所有用户可见内容（CLI 文案、错误消息、tracing 日志、crate description）使用英文。
-- 提交 PR 前请运行 `cargo check --workspace` 和 `cargo test --workspace`。
+## 安全保证
+
+1. **手动切换不依赖网络。** 额度数据仅供参考；网络异常或 token 失效不会阻止 `subswap swap` 尝试本地切换。
+2. **切换可回滚。** 修改原生客户端状态前会先写入私有快照；目标写入失败时会回滚。
+3. **自动换号有护栏。** 只允许手动选择的账号永不自动选中；刚手动选择的账号会有宽限期；未知或失败的额度数据会被保守处理。
+4. **遵守原生客户端边界。** Codex 通过官方 app-server 刷新，Cursor 协调桌面生命周期；无法安全刷新时宁可失败也不和一次性 token 竞争。
+
+## 常见问题
+
+### 手动换号会查询额度接口吗？
+
+不会。`subswap swap` 是不依赖网络的逃生通道。
+
+### 凭证保存在哪里？
+
+私有凭证数据保存在 subswap 应用数据目录，和账号元数据分开。Unix 上凭证与快照文件使用 `0600` 权限。Claude 自定义 API 模式还需要把 API key 写入 Claude Code 设置；切回 OAuth 时 subswap 会恢复受管设置。
+
+### 可以关闭自动换号吗？
+
+可以。运行 `subswap autoswap off`，或设置 `SUBSWAP_NO_DAEMON=1` 关闭后台 daemon。
+
+### Cursor 和命令行客户端一样吗？
+
+不完全一样。Cursor 支持导入、切换与额度状态，但不支持 `run`、`shell`、`env` 隔离，因为它的身份与桌面应用 SQLite 状态协同管理。
+
+### 它只支持 Claude 或 Codex 吗？
+
+不是。当前支持 Claude Code、Codex / ChatGPT、Kimi Code、Cursor 和 OpenCode Go。
+
+## 贡献与安全
+
+贡献方式与本地检查见 [CONTRIBUTING.md](CONTRIBUTING.md)。不要在公开 issue 中贴凭证、refresh token、登录文件、真实邮箱或账单截图；私密漏洞报告见 [SECURITY.md](SECURITY.md)。
 
 ## License
 
-MIT — 见 [`LICENSE`](LICENSE)。
+MIT，见 [LICENSE](LICENSE)。

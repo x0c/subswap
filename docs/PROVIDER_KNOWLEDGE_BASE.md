@@ -684,6 +684,12 @@ usage 查询从 access token 的 WorkOS subject 生成官方 session cookie，�
 
 这两个百分比写入统一 `Quota.used`，没有额外翻转；CLI 展示层与其他 Provider 一样转成余量。
 
+自动切换只看 `1st`。`1st` 与 `API` 是并行产品配额，不是同一流量的叠加上限：API 耗尽不妨碍
+IDE 继续用 Auto/Composer，因此不触发、不阻断自动切换。两边 API 都是 0% 时若仍按「任一窗口
+Exhausted 即整号不可用」处理，重置兜底会选 billing cycle 更早结束的号，可能切到 `1st` 也是
+0% 的账号。见 [AUTO_SWAP_DESIGN.md](design/AUTO_SWAP_DESIGN.md) §1.1 与
+[2026-08-21-cursor-auto-swap-to-zero-over-remaining.md](troubleshooting/2026-08-21-cursor-auto-swap-to-zero-over-remaining.md)。
+
 active 查询 401 时**绝不刷新**：只重读 live 数据库。若 Cursor 已经自行轮换 access token，则 capture 回仓库并
 用新 token 重试一次；否则返回认证错误。parked 账号没有原生客户端维护，允许在 subswap 自己的跨进程文件锁
 内刷新：锁内重读仓库，若另一进程已轮换就直接复用；否则只刷新一次并持久化完整 token pair。401/403 或
