@@ -44,18 +44,17 @@ jobs:
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=true
           else
-            gh release create "${TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --draft \
-              --title "${TAG}" \
-              --notes "Automated release for ${TAG}."
+              gh release create "${TAG}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --draft \
+                --title "${TAG}" \
+                --generate-notes
           fi
 
   build:
     name: build ${{ matrix.target }}
     needs: prepare
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
@@ -64,27 +63,22 @@ jobs:
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
             include_daemon: true
-            experimental: false
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
             include_daemon: true
-            experimental: true
           - os: macos-14
             target: x86_64-apple-darwin
             archive: tar.gz
             include_daemon: true
-            experimental: true
           - os: macos-14
             target: aarch64-apple-darwin
             archive: tar.gz
             include_daemon: true
-            experimental: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
             include_daemon: false
-            experimental: false
 
     steps:
       - uses: actions/checkout@v5
@@ -170,9 +164,30 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --clobber
 
+  verify-windows-installer:
+    name: verify Windows installer for this release
+    needs: [prepare, build]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: install and verify draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SUBSWAP_INSTALL_DIR: ${{ runner.temp }}\subswap-install\bin
+        run: |
+          $version = $env:TAG.TrimStart("v")
+          .\install.ps1 -Version $version -SkipPathUpdate
+          $installedVersion = & "$env:SUBSWAP_INSTALL_DIR\subswap.exe" --version
+          if ($LASTEXITCODE -ne 0 -or $installedVersion -notmatch [regex]::Escape($version)) {
+            throw "Unexpected installed version: $installedVersion"
+          }
+          Write-Host $installedVersion
+
   publish:
     name: publish release
-    needs: [prepare, build]
+    needs: [prepare, build, verify-windows-installer]
     runs-on: ubuntu-latest
     if: always() && needs.build.result == 'success'
     steps:

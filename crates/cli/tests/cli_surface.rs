@@ -454,7 +454,10 @@ priority = 100
         r#"{"kimi:kimi-user:blob":"{\"user_id\":\"kimi-user\",\"access_token\":\"AT\"}"}"#,
     );
 
+    // 测试的断言依赖原生命令不存在；显式置空 PATH，避免开发机恰好安装 kimi-code 时
+    // 进入其交互流程而把测试挂住。
     let output = isolated_subswap(&tmp)
+        .env("PATH", tmp.path().join("missing-bin"))
         .args(["run", "kimi", "kimi-user"])
         .output()
         .unwrap();
@@ -475,8 +478,8 @@ priority = 100
     );
     if !output.status.success() {
         assert!(
-            stderr.contains("failed to start `kimi`"),
-            "expected native_cli dispatch to attempt spawning `kimi`; stderr: {stderr}"
+            format!("{stdout}\n{stderr}").contains("failed to start `kimi`"),
+            "expected native_cli dispatch to attempt spawning `kimi`; stdout: {stdout}, stderr: {stderr}"
         );
     }
 }

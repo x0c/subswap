@@ -1,4 +1,4 @@
-# subswap - Claude、Codex、ChatGPT、Kimi、Cursor、OpenCode アカウント切り替えツール
+# subswap
 
 Languages: [English](README.md) | [简体中文](README.zh-CN.md) | 日本語 | [한국어](README.ko.md)
 
@@ -19,8 +19,8 @@ Claude アカウント切り替えツール、Codex アカウント管理ツー�
 - **手動切り替え後のセトルグレース**：手動でアカウントを選んだ後、daemon はグレース期間を置いてから自動切り替えを行い、意図がすぐに上書きされることを防ぎます。
 - **ネットワークに依存しない手動切り替え**：クォータ API の失敗、token の期限切れ、ネットワーク切断があっても `subswap swap` は動作します。
 - **クォータ結果キャッシュと stale fallback**：バックグラウンド取得中もキャッシュ結果を返すため、ステータス画面は常に応答します。
-- **ファイルベースの認証情報保存**：トークンはアプリデータディレクトリ内のオーナーのみ読み取り可能な `0600` ファイルに保存されます。古い keyring ベースのインストールからの移行は初回実行時に自動で行われます。
-- **Provider ベースのアーキテクチャ**：Claude、Codex、Kimi、Cursor は別々の crate です。
+- **ファイルベースの認証情報保存**：macOS/Linux では認証情報ファイルを `0600` に強制します。Windows では現在のユーザーのアプリデータ権限を使用します。古い keyring ベースのインストールからの移行は初回実行時に自動で行われます。
+- **Provider ベースのアーキテクチャ**：Claude、Codex、Kimi、Cursor、OpenCode Go は別々の crate です。
 
 ## 対応クライアント
 
@@ -38,7 +38,7 @@ Claude アカウント切り替えツール、Codex アカウント管理ツー�
 - 現在のアカウントが利用上限に達したときのために、予備の AI サブスクリプションを待機させておく。
 - 異なるターミナルで 2 つのアカウントを同時に使う。
 - 長いコーディングセッションを始める前に、各アカウントの使用量を確認する。
-- Claude、ChatGPT、Kimi、Cursor のアカウント切り替えを 1 つの CLI にまとめる。
+- Claude、ChatGPT、Kimi、Cursor、OpenCode Go のアカウント切り替えを 1 つの CLI にまとめる。
 
 ## ステータス
 
@@ -105,6 +105,8 @@ Git から直接インストールすることもできます。
 cargo install --git https://github.com/x0c/subswap --path crates/cli
 ```
 
+この方法は検証済み Release ではなくリポジトリのソースを追います。通常利用では Homebrew または [最新 Release](https://github.com/x0c/subswap/releases/latest) を優先してください。
+
 ## クイックスタート
 
 ```bash
@@ -121,6 +123,11 @@ subswap swap claude/alice@example.com
 subswap add-api
 # カスタム API エンドポイントは手動専用 — 自動切り替えには参加しない
 subswap swap deepseek
+
+# Kimi、Cursor、OpenCode はネイティブクライアントでログイン後に明示的に取り込めます
+subswap login kimi
+subswap login cursor
+subswap login opencode
 
 # グローバルのアクティブアカウントを変えずに分離環境でアカウントを使う
 subswap run codex bob@example.com -- --version   # bob のアカウントで codex を分離起動
@@ -144,7 +151,7 @@ subswap doctor
 
 ## アカウント分離環境
 
-`subswap run / shell / env` は Claude、Codex、Kimi をグローバルのアクティブアカウントを変えずに並列使用します。Cursor は SQLite とアプリ再起動の協調が必要なため対象外です。
+`subswap run / shell / env` は Claude、Codex、Kimi、OpenCode をグローバルのアクティブアカウントを変えずに並列使用します。Cursor は SQLite とアプリ再起動の協調が必要なため対象外です。
 
 ```bash
 subswap run codex 6 -- --version       # アカウント #6 で分離して codex を実行
@@ -172,7 +179,7 @@ eval "$(subswap env codex/bob@x.com)"  # 現在のシェルを一時的に codex
 
 | ツール | 主な用途 | subswap との違い |
 |---|---|---|
-| 単一 Provider のアカウント切り替えツール | 1 つの上流のみを対象 | subswap は Claude、Codex / ChatGPT、Kimi、Cursor をサポート |
+| 単一 Provider のアカウント切り替えツール | 1 つの上流のみを対象 | subswap は Claude、Codex / ChatGPT、Kimi、Cursor、OpenCode Go をサポート |
 | クォータダッシュボード | 使用量の可視化のみ | subswap はクォータウィンドウが埋まったときに別のローカルアカウントをアクティブ化可能 |
 | 手動ログイン/ログアウト | 一度に 1 アカウント | subswap は登録済みアカウントを保持し、ローカルファイルをアトミックに切り替え |
 
@@ -184,7 +191,7 @@ eval "$(subswap env codex/bob@x.com)"  # 現在のシェルを一時的に codex
 
 ### token はどこに保存されますか？
 
-token と refresh token はアプリデータディレクトリ内のオーナーのみ読み取り可能な認証情報ファイルに保存されます。カスタム API がアクティブな間は、Claude Code も `~/.claude/settings.json` に API キーが必要です。切り替えスナップショットも同様に `0600` に制限されます。
+token と refresh token はアプリデータディレクトリ内の認証情報ファイルに保存されます。macOS/Linux の認証情報とスナップショットは `0600` に制限されます。カスタム API がアクティブな間は、Claude Code も `~/.claude/settings.json` に API キーが必要です。
 
 ### カスタム API は自動切り替えに参加しますか？
 
@@ -202,7 +209,7 @@ token と refresh token はアプリデータディレクトリ内のオーナ�
 
 公開後に推奨するリポジトリ topics：
 
-`claude-code`, `codex-cli`, `chatgpt`, `kimi`, `moonshot-ai`, `cursor`, `anthropic`, `openai`, `account-switcher`, `quota-tracker`, `ai-tools`, `rust-cli`, `automation`
+`claude-code`, `codex-cli`, `chatgpt`, `kimi`, `moonshot-ai`, `cursor`, `opencode`, `anthropic`, `openai`, `account-switcher`, `quota-tracker`, `ai-tools`, `rust-cli`, `automation`
 
 ## レイアウト
 
@@ -216,6 +223,7 @@ crates/
     codex/             # Codex / ChatGPT provider
     kimi/              # Kimi / Moonshot provider
     cursor/            # Cursor provider
+    opencode/          # OpenCode Go provider
 ```
 
 ## コントリビューション

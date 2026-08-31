@@ -1,0 +1,52 @@
+name: Bug report
+description: Report a reproducible problem without exposing account data.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include access tokens, refresh tokens, API keys, full login files, real email addresses, or billing screenshots. Use the Security page for sensitive reports.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the expected and actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Use fake account names and redact local paths where needed.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: subswap version
+      placeholder: "subswap --version"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Operating system and native client version
+      placeholder: "macOS 15, Cursor 1.x"
+    validations:
+      required: true
+  - type: dropdown
+    id: daemon
+    attributes:
+      label: Was the background daemon enabled?
+      options:
+        - "Yes"
+        - "No"
+        - "I do not know"
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Redacted doctor output
+      description: Paste only output that contains no account identifiers or secrets.

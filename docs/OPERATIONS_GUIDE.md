@@ -136,9 +136,12 @@ Release workflow 在 Linux runner 上把 `apt-get update` 与 `libdbus-1-dev pkg
 **不能**依赖 `release: published`（历史上 v1.1.0 及更早都是发布后手动补跑的）。现在改为在同一次
 release run 内直接调用：
 
-1. `release.yml` 的 `publish` 作业把 draft 切成 published（`gh release edit ... --draft=false`）
-2. `publish` 成功后，`release.yml` 的 `homebrew` 作业以 `workflow_call`（`uses: ./.github/workflows/update-homebrew.yml`、`secrets: inherit`）在同一次 run 内调用 formula 更新，绕开递归防护
-3. `update-homebrew.yml` 从 release assets 下载各平台的 `.sha256` 文件，用 Python 渲染新 formula，通过 GitHub API PUT 到 `homebrew-tap` 仓库
+1. `release.yml` 创建 draft 时由 GitHub 自动生成 Release notes；维护者在发布前补充用户可见的限制、升级动作或人工验证说明，禁止再以一行自动文本代替版本说明。
+2. 所有公开承诺平台的构建（Linux x86/ARM、macOS Intel/Apple Silicon、Windows x86）都必须成功；任一个失败时 draft 不得发布。
+3. Windows 资产上传到 draft 后，`verify-windows-installer` 会用该次 tag 真实运行 `install.ps1`、校验 SHA-256 并检查安装后的版本号；这是发布前门槛，不用历史版本安装烟雾替代。
+4. `publish` 仅在上述门槛成功后把 draft 切成 published（`gh release edit ... --draft=false`）。
+5. `publish` 成功后，`release.yml` 的 `homebrew` 作业以 `workflow_call`（`uses: ./.github/workflows/update-homebrew.yml`、`secrets: inherit`）在同一次 run 内调用 formula 更新，绕开递归防护。
+6. `update-homebrew.yml` 从 Release assets 下载各平台的 `.sha256` 文件，用 Python 渲染新 formula，通过 GitHub API PUT 到 `homebrew-tap` 仓库。
 
 `update-homebrew.yml` 另保留 `workflow_dispatch`（手动补跑某个 tag：`gh workflow run update-homebrew.yml -f tag=vX.Y.Z`）
 与 `release: published`（仅人工在 Release 页面手动发布时兜底）两个入口。
@@ -172,7 +175,7 @@ irm https://raw.githubusercontent.com/x0c/subswap/main/install.ps1 | iex
 ```
 
 脚本从最新 GitHub Release 下载 Windows zip，安装到当前用户的 LocalAppData 程序目录并更新用户 `PATH`。
-改脚本后必须在 Windows CI 的临时安装目录真实跑一遍，再执行 `subswap --version`；仅做 PowerShell 语法检查不算验收。
+改脚本后必须在 Windows CI 的临时安装目录真实跑一遍，再执行 `subswap --version`；常规 CI 保留已发布历史版本的回归烟雾，Release workflow 还必须对本次 draft tag 真实安装并核版本。仅做 PowerShell 语法检查不算验收。
 Windows release 只有 CLI，文档和安装脚本都不得暗示包含后台 daemon。
 
 ## 通用改动验证套路
@@ -183,7 +186,7 @@ Windows release 只有 CLI，文档和安装脚本都不得暗示包含后台 da
 - 改隔离运行：跑 CLI 集成测试；macOS 钥匙串相关验证必须使用一次性 keychain；同步 `docs/design/ACCOUNT_ISOLATION_DESIGN.md`。
 - 改应用目录解析或原生客户端路径探测：跑三平台 CLI 集成测试，确认 `SUBSWAP_HOME` 与各客户端专属覆盖仍完整隔离真实用户状态；同步 `docs/CONFIG.md` 和本 Guide。
 - 改配置字段或默认值：同步 `docs/CONFIG.md`；确认默认值只从 `crates/core/src/defaults.rs` 或 settings 入口读取。
-- 改 release 产物或版本：跑 locked release build，安装到本机，验证版本与哈希，再走 tag 和 GitHub Release。
+- 改 release 产物或版本：跑 locked release build，安装到本机，验证版本与哈希，再走 tag 和 GitHub Release；发布前确认每个 README 承诺平台都有资产与校验和、Windows draft 安装验收通过、Release notes 可供用户阅读。
 
 ## 未确认项
 
