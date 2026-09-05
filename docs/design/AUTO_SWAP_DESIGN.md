@@ -13,7 +13,10 @@
 - 适用窗口：阈值触发只看小时级窗口（当前可可靠识别的是 `FiveHour`）。Claude 的 7d、Codex 月度、
   OpenCode Go 的 weekly/monthly 等长窗口即使接近阈值也不触发自动切换，避免把长窗口里仍然可观的余量过早浪费掉。
   OpenCode Go 的 `rolling`（约 5 小时额度）映射为 `FiveHour`，因此走这条阈值触发。
-- 硬阻断：任一窗口明确 `status == Exhausted` 仍触发/阻断候选，因为这表示账号实际不可承接流量。
+- 硬阻断：任一**参与自动切换**的窗口明确 `status == Exhausted` 仍触发/阻断候选，因为这表示账号实际不可承接流量。
+  Cursor 例外：`API` 窗口永不参与（与官方模型并行、耗尽仍可用 Auto/Composer）；**`Credits`（套餐美元账本）参与**，
+  与 `1st` 同属 gating——耗尽即触发/阻断，但不走小时级 threshold 提前切（账单周期长窗口）。
+  实现：`auto_policy::quota_gates_auto_swap` 排除 `QuotaWindow::Api`。
 - 不适用条件：`Quota.limit == 0` 或 `status == Unknown` 时**不触发**（无法判断，保守不动）。
 
 ### 1.2 限流触发

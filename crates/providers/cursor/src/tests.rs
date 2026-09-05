@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine;
 use rusqlite::Connection;
-use subswap_core::{AccountRegistry, CredentialStore, FileStore, Provider, QuotaWindow};
+use subswap_core::{AccountRegistry, CredentialStore, FileStore, Provider, QuotaStatus, QuotaWindow};
 
 use super::*;
 
@@ -230,6 +230,55 @@ fn parses_first_party_and_api_as_used_percentages() {
     assert_eq!(quotas[1].window, QuotaWindow::Api);
     assert_eq!(quotas[1].used, 57);
     assert!(quotas.iter().all(|quota| quota.reset_at.is_some()));
+}
+
+#[test]
+fn parses_credits_from_plan_spend_fields_in_cents() {
+    let id = AccountId("account".into());
+    let value = serde_json::json!({
+        "billingCycleEnd": "2026-08-01T00:00:00Z",
+        "individualUsage": {"plan": {
+            "autoPercentUsed": 4.0,
+            "apiPercentUsed": 3.0,
+            "totalSpend": 1288,
+            "includedSpend": 1288,
+            "remaining": 712,
+            "limit": 2000
+        }}
+    });
+    let quotas = parse_usage(&id, &value).unwrap();
+    assert_eq!(quotas.len(), 3);
+    let credits = quotas
+        .iter()
+        .find(|q| q.window == QuotaWindow::Credits)
+        .expect("credits window");
+    assert_eq!(credits.used, 1288);
+    assert_eq!(credits.limit, 2000);
+    assert_eq!(credits.status, QuotaStatus::Ok);
+}
+
+#[test]
+fn prefers_overall_bucket_for_credits_when_present() {
+    let id = AccountId("account".into());
+    let value = serde_json::json!({
+        "billingCycleEnd": "2026-08-01T00:00:00Z",
+        "individualUsage": {
+            "overall": {"enabled": true, "used": 450, "limit": 2000, "remaining": 1550},
+            "plan": {
+                "autoPercentUsed": 10,
+                "apiPercentUsed": 20,
+                "totalSpend": 1288,
+                "limit": 2000
+            }
+        }
+    });
+    let quotas = parse_usage(&id, &value).unwrap();
+    let credits = quotas
+        .iter()
+        .find(|q| q.window == QuotaWindow::Credits)
+        .expect("credits window");
+    assert_eq!(credits.used, 450);
+    assert_eq!(credits.limit, 2000);
 }
 
 #[test]
