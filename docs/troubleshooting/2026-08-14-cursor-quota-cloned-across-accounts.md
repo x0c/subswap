@@ -2,50 +2,32 @@
 
 ## 现象
 
-默认入口列出多个 Cursor 账号，但 **First-Party Models / API 余量和重置时间全部一样**。
-用户确认不是巧合同一天用完。常见于刚导入或刚切换过命令行账号之后。
-
-## 一句话结论
-
-不是额度接口把缓存键写错了。命令行把「令牌」和「现在是谁」分开放：切换时如果只换令牌、不换身份文件，
-回灌和查额度会把**当前这一份令牌**算到每个邮箱头上，仓库里的其它号也会被这份令牌覆盖。
+多个 Cursor 账号 First-Party / API 余量与重置时间全部一样。常见于刚导入或刚切换 CLI 账号后。
 
 ## 根因
 
-Cursor 命令行登录拆成两半：
+CLI 登录拆两半：令牌（Linux 登录文件；macOS 钥匙串 `cursor-access-token` / `cursor-refresh-token`）与邮箱（`~/.cursor/cli-config.json` 的 `authInfo`，不含令牌）。旧切换只写令牌、留下上一号身份 → 按身份文件认主人，把当前令牌灌进「邮箱对、令牌是别人的」仓库副本 → 额度查询打到同一令牌。
 
-- 令牌：Linux 在登录文件里；macOS 默认在钥匙串（`cursor-access-token` / `cursor-refresh-token`）
-- 邮箱 / 身份：在 `~/.cursor/cli-config.json` 的 `authInfo`，**不含令牌**
+更危险：停用号拿外来令牌刷新会刷废真正主人的一次性 refresh token。macOS 若「删掉再建」钥匙串条目，ACL 收成仅切换工具可读——必须只改内容、保留 Cursor 读取权限。
 
-旧切换只写令牌、留下上一号的身份。之后默认入口按身份文件认主人，把当前令牌灌进「邮箱对得上、令牌其实是别人的」那个仓库副本。
-几个号的额度查询于是打到同一份令牌上，数字必然相同。
+## 排查
 
-更危险的连带：停用号若拿这份外来令牌去刷新，会把真正主人的一次性 refresh token 刷废，那个号需要重新登录。
-
-macOS 上还有第二层：官方钥匙串条目若用「删掉再建」的方式写入，解密权限会收成只有切换工具能读，
-桌面版界面邮箱对了、请求却报未登录。必须只改条目内容、保留 Cursor 自己的读取权限。
-
-## 排查方法
-
-1. 几个 Cursor 行的余量、重置时间是否字节级相同。是，先怀疑串号，不要先查额度接口。
-2. 当前命令行身份文件里的邮箱，是否和钥匙串 / 登录文件里令牌真正所属的账号一致。
-3. 各账号仓库副本里的令牌是否已经变成同一份（不要把 secret 打到终端，比对指纹即可）。
-4. 本机版本是否 ≥ 1.4.17。更旧版本命令行切换不会同步身份文件；1.4.15 及更早会在打开列表时把已删除的当前登录账号再加回来。
+1. 余量/重置时间字节级相同 → 先疑串号，勿先查额度接口。
+2. 身份文件邮箱是否与令牌真正所属账号一致。
+3. 各仓库副本令牌是否同一份（比对指纹，勿打 secret）。
+4. 版本是否 ≥ 1.4.17（更旧不写身份文件；≤1.4.15 打开列表会把已删当前登录再加回）。
 
 ## 当前状态
 
-**已修复（1.4.17）。** 命令行切换成套写令牌和身份；live 主人只认令牌 JWT；仓库里令牌与账号对不上时显示
-`needs re-login`，不再拿去查额度或刷新。macOS 已有钥匙串条目只更新内容、不删建。
-只要客户端仍登录着，打开列表就会自动收入（与其他 runtime 相同）——包括 `rm` 删过的号，这条曾在 1.4.17 里由
-「删除墓碑」拦截，1.5.0 起已移除，见
-[2026-08-15 整段 Cursor 无声消失](2026-08-15-cursor-section-silently-missing.md)。
+**已修复（1.4.17）。** 切换成套写令牌+身份；live 主人只认令牌 JWT；令牌与账号对不上显示 `needs re-login`，不再查额度/刷新。已有钥匙串条目只更新、不删建。客户端仍登录则打开列表自动收入——含 `rm` 过的号（1.4.17 曾用删除墓碑拦截，**1.5.0 已移除**，见 [2026-08-15](2026-08-15-cursor-section-silently-missing.md)）。
 
-已经被写坏的停用号**不能从仓库里救回来**，删掉即可；当前正在用、令牌仍完整的那一个号可以留下，或删掉后用
-`subswap login cursor` 再导入。
+写坏的停用号**不能从仓库救回**，删掉即可；当前令牌完整的号可留，或 `subswap login cursor` 再导入。
 
 ## 关联
 
-- [PROVIDER_KNOWLEDGE_BASE.md](../PROVIDER_KNOWLEDGE_BASE.md) 的「Cursor」
-- [2026-08-14 本机 Cursor 命令行已登录但 subswap 没有 Cursor 额度](2026-08-14-cursor-quota-missing-cli-keychain.md)
-- [2026-06-18 live capture 覆盖 refresh token](2026-06-18-live-capture-clobbers-refresh-token.md)
-- [2026-06-11 Claude Code keychain ACL 中毒](2026-06-11-claude-code-keychain-acl-poisoning.md)
+- [PROVIDER_KNOWLEDGE_BASE.md](../PROVIDER_KNOWLEDGE_BASE.md)「Cursor」
+- [2026-08-14 CLI 已登录但无 Cursor 额度](2026-08-14-cursor-quota-missing-cli-keychain.md)
+- [2026-06-18 live capture 覆盖 refresh](2026-06-18-live-capture-clobbers-refresh-token.md)
+- [2026-06-11 keychain ACL 中毒](2026-06-11-claude-code-keychain-acl-poisoning.md)
+
+<!-- 该文档整理/压缩于 2026-09-05 -->

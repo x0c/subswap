@@ -10,3 +10,5 @@
 | M5 | 账号隔离运行、quota 缓存、自动换号开关与手动切换宽限期 | ✅ 已完成 |
 | M6 | Kimi / Cursor Provider、Codex 官方额度通道、三平台 CLI/Provider 支持 | ✅ 已完成 |
 | M7 | OpenCode Go Provider：只切换 `auth.json` 的 `opencode-go` 项、5h/周/月额度、自动换号与隔离运行 | ✅ 已完成 |
+
+<!-- 该文档整理/压缩于 2026-09-05 -->

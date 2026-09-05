@@ -152,18 +152,20 @@ docs/                     中文项目文档
 | 文档 | 用途 |
 |---|---|
 | [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) | 改、评审、分析或排查 Provider 切换、认证、额度、refresh token、自定义 API、Claude/Codex/Kimi/Cursor/OpenCode Go 本地激活状态、OpenCode 号池（登录文件切换 vs 请求途中换 key）、原生客户端并发协调、文件型 OAuth 切换共享引擎（`crates/providers/common`）、或排查 Cursor **缺 Credits/`$` 列**（是否没余额）前**必读**。不读会把社区「号池限流当场换 key」误做成只改本地登录文件，或把「无赠送不画列」误修成硬显示 `$0.00` |
-| [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) | 改、评审或分析 workspace 分层、Provider 抽象、核心数据流、凭证文件布局、新 Provider 接入前必读 |
-| [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md) | 改、评审或排查自动切换候选筛选、阈值、manual_only、防抖/振荡刹车、daemon token 保活，或排查「默认入口渐进式重判 / 一次 subswap 多次切换 / 连跑结果不同 / 卡在耗尽号 / 自动切到 0% 号（Cursor 1st 还有余量却切到全空） / Cursor 全员 1st 见底却切到全空号放过 API 余量 / Cursor 1st·Credits·API 三池并行 / 账号间无限横跳(A→B→A 振荡)」前必读 |
-| [docs/design/PREWARM_DESIGN.md](docs/design/PREWARM_DESIGN.md) | 设计、评审或实现窗口预热、预热阈值、预热通知与自动切换协同时必读 |
-| [docs/design/ACCOUNT_ISOLATION_DESIGN.md](docs/design/ACCOUNT_ISOLATION_DESIGN.md) | 改、评审、分析或排查 `subswap run`/`shell`/`env` 账号环境隔离、checkout 锁、daemon 避让、macOS 钥匙串命名空间、Claude resume 会话共享前必读 |
-| [docs/CONFIG.md](docs/CONFIG.md) | 改、评审或排查 `config.toml` 字段、热加载、默认阈值、轮询间隔、quota 查询节流、应用目录覆盖、便携运行或配置生效问题前必读 |
-| [docs/CLI.md](docs/CLI.md) | 改、评审、分析或排查 CLI 命令面、Provider 登录/导入语义、默认入口额度输出、写操作后余量表（status-after-action）、`subswapd` 辅助进程、账号环境隔离命令或 Cursor 不支持隔离运行的边界前必读 |
-| [docs/OPERATIONS_GUIDE.md](docs/OPERATIONS_GUIDE.md) | 改、评审或排查本地构建、三平台测试隔离、release 构建、本机覆盖安装、daemon 冒烟、Linux 发布依赖安装、CI/Release 发布流程、Homebrew tap formula 更新机制或 `HOMEBREW_TAP_TOKEN` 配置前必读 |
-| [docs/OSS_READINESS_REVIEW.md](docs/OSS_READINESS_REVIEW.md) | 优化、评审或发布 GitHub 对外呈现、README、安装入口、Release notes、贡献或安全入口前必读。不读会让公开描述、支持范围与实际行为再次失真 |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | 开始、评审或合并外部贡献前必读。不读会让凭证安全边界、测试隔离或公开文档同步在贡献中被遗漏 |
-| [SECURITY.md](SECURITY.md) | 处理安全漏洞、凭证泄露、安装完整性或私密披露前必读。不读会把应私下处理的敏感问题暴露到公开 issue |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | 规划、评审或同步里程碑范围、已完成能力和后续功能优先级前必读 |
+| [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) | 改、评审或分析 workspace 分层、Provider 抽象、核心数据流、凭证文件布局、新 Provider 接入前**必读**。不读会把新 Provider 塞错引擎（文件型 vs keychain/SQLite 特化）或改坏激活/回滚边界 |
+| [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md) | 改、评审或排查自动切换候选筛选、阈值、manual_only、防抖/振荡刹车、daemon token 保活，或排查「默认入口渐进式重判 / 一次 subswap 多次切换 / 连跑结果不同 / 卡在耗尽号 / 自动切到 0% 号（Cursor 1st 还有余量却切到全空） / Cursor 全员 1st 见底却切到全空号放过 API 余量 / Cursor 1st·Credits·API 三池并行 / 账号间无限横跳(A→B→A 振荡)」前**必读**。不读会改错候选窗或阈值语义，把可切号切成卡死/横跳 |
+| [docs/design/PREWARM_DESIGN.md](docs/design/PREWARM_DESIGN.md) | 设计、评审或实现窗口预热、预热阈值、预热通知与自动切换协同时**必读**。不读会把预热做成高频打额度或与 AutoSwap 抢触发 |
+| [docs/design/ACCOUNT_ISOLATION_DESIGN.md](docs/design/ACCOUNT_ISOLATION_DESIGN.md) | 改、评审、分析或排查 `subswap run`/`shell`/`env` 账号环境隔离、checkout 锁、daemon 避让、macOS 钥匙串命名空间、Claude resume 会话共享前**必读**。不读会漏 `hasCompletedOnboarding`、污染宿主钥匙串或让 Cursor 误接隔离命令 |
+| [docs/CONFIG.md](docs/CONFIG.md) | 改、评审或排查 `config.toml` 字段、热加载、默认阈值、轮询间隔、quota 查询节流、应用目录覆盖、便携运行或配置生效问题前**必读**（配置数字权威源）。不读会把阈值/节流改到打爆上游或热加载不生效 |
+| [docs/CLI.md](docs/CLI.md) | 改、评审、分析或排查 CLI 命令面、Provider 登录/导入语义、默认入口额度输出、写操作后余量表（status-after-action）、`subswapd` 辅助进程、账号环境隔离命令或 Cursor 不支持隔离运行的边界前**必读**。不读会改丢写操作后状态面，或给 Cursor 加上不存在的隔离入口 |
+| [docs/OPERATIONS_GUIDE.md](docs/OPERATIONS_GUIDE.md) | 改、评审或排查本地构建、三平台测试隔离、release 构建、本机覆盖安装、daemon 冒烟、Linux 发布依赖安装、CI/Release 发布流程、Homebrew tap formula 更新机制或 `HOMEBREW_TAP_TOKEN` 配置前**必读**。不读会漏覆盖安装/版本哈希核对，或手动乱改已自动更新的 Homebrew tap |
+| [docs/OSS_READINESS_REVIEW.md](docs/OSS_READINESS_REVIEW.md) | 优化、评审或发布 GitHub 对外呈现、README、安装入口、Release notes、贡献或安全入口前**必读**。不读会让公开描述、支持范围与实际行为再次失真 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 开始、评审或合并外部贡献前**必读**。不读会让凭证安全边界、测试隔离或公开文档同步在贡献中被遗漏 |
+| [SECURITY.md](SECURITY.md) | 处理安全漏洞、凭证泄露、安装完整性或私密披露前**必读**。不读会把应私下处理的敏感问题暴露到公开 issue |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | 规划、评审或同步里程碑范围、已完成能力和后续功能优先级前**必读**。不读会把已完成能力当待办，或把未打磨半成品写进对外承诺 |
 | [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（含 Codex 两个 `7d`/附加 gpt-reserve、keychain ACL 中毒、Cursor 命令行钥匙串登录查不到额度、Cursor 多个账号额度完全一样、Cursor 自动切到 1st 0% 号、access/refresh token 覆写、429 vs invalid_grant、TOML null、Claude/Codex 用量 401 但客户端能正常用等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
+| [docs/superpowers/specs/2026-07-17-kimi-provider-and-shared-engine-design.md](docs/superpowers/specs/2026-07-17-kimi-provider-and-shared-engine-design.md) | 追溯 2026-07-17 Kimi Provider / 文件型共享引擎**历史设计决策**时可读；日常改代码以 PROVIDER_KB 与 ARCHITECTURE 为准。不读历史稿不会挡日常开发 |
+| [docs/superpowers/plans/2026-07-17-kimi-provider-and-shared-engine.md](docs/superpowers/plans/2026-07-17-kimi-provider-and-shared-engine.md) | 仅追溯同日实现清单 / 验收步骤时可读；日常无需翻阅。权威行为与现状以 PROVIDER_KB、ARCHITECTURE、源码为准 |
 
 ## 领域地图（doc-init）
 
