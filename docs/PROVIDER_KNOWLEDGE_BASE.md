@@ -693,6 +693,13 @@ usage 查询从 access token 的 WorkOS subject 生成官方 session cookie，�
 
 - `totalSpend` / `includedSpend` / `remaining` / `limit`：套餐周期内已含用量的金额账本。
   单位是**分**（Pro 的 `limit` 常为 `2000` = $20.00）；CLI 展示前 ÷100。
+- **`breakdown.bonus` / `bonusSpend` 是已消耗的赠送用量，不是剩余 Credits。**
+  是否还有赠送余量看 `remainingBonus`（及有则看正的 `remaining`）；勿把 `bonus` 大数当成「还能花」。
+  权威交叉校验可用 Bearer
+  `POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage`
+  （`Connect-Protocol-Version: 1`），其 `displayMessage` / `remainingBonus` 与 usage-summary 的
+  `remaining` 一致时以「已撞上限」为准。踩坑见
+  [troubleshooting/2026-09-05-cursor-credits-zero-despite-claimed-remaining.md](troubleshooting/2026-09-05-cursor-credits-zero-despite-claimed-remaining.md)。
 - 官方 staff 明确：`autoPercentUsed` / `apiPercentUsed` / `totalPercentUsed` **不是**
   `totalSpend / limit` 的简单商，是另一套内部指标；仪表盘文案「You’ve used N% of your included usage」
   用的是 `includedSpend / limit`。因此只看 `1st`/`API` 百分比时，可能与 Spending 页的美元余量严重偏离。
