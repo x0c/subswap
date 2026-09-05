@@ -703,11 +703,14 @@ macOS 用系统退出事件，Linux 用 TERM，Windows 用不强杀的 `taskkill
 ```
 
 - 字段常为**字符串**分；`creditBalanceCents` 为剩余，`usedCents`/`totalCents` 为已用/上限。
-- `hasCreditGrants != true` 或空对象 `{}` → 不展示 Credits 窗口。
+- `hasCreditGrants != true` 或空对象 `{}` → **不展示** Credits 窗口（缺 `$` 列 = 无赠送，不是漏查）。
+  禁止为对齐硬画 `$0.00`。有 `$` 列且余量为 0 才是「有过赠送、已用尽」。
 - 写入 `QuotaWindow::Credits`：`used`/`limit` 存分；CLI 标签 `$`，展示如 `$11.10 left`，排在 `1st`/`API` 之后。
 - 【裁定 · 2026-09-05】用户纠正：Credits ≠ Pro 的 $20 API 已含池。曾误用 usage-summary 的
   `used`/`limit` 当 Credits，会导致全员 `$0.00` 并误导自动换号；以本接口为准。
   见 [troubleshooting/2026-09-05-cursor-credits-zero-despite-claimed-remaining.md](troubleshooting/2026-09-05-cursor-credits-zero-despite-claimed-remaining.md)。
+- 【问答 · 2026-09-05】`hillarderdmanpm@outlook.com` 仅 `1st`/`API` 0%、无 `$` 列：Credits 接口
+  实测 `200 {}`，三池皆空。
 
 ### 自动切换
 

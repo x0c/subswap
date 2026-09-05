@@ -79,7 +79,8 @@ Cursor，见 [troubleshooting/2026-08-14-cursor-quota-missing-cli-keychain.md](t
 Cursor 正在运行时，`swap` 会先请求它正常退出，等待进程完全结束后再切换账号，成功后自动重新打开；任一步失败
 都会恢复原账号状态，避免 Cursor 退出时把内存中的旧凭证写回磁盘。默认入口显示：
 `1st` / `API`（来自 `usage-summary` 百分比）以及 Spending 页的 **Credits 赠送余额**
-（`get-credit-grants-balance`，如 `$ [$11.10 left]`）。**Credits ≠ Pro 的 $20 API 已含池**——后者与
+（`get-credit-grants-balance`，如 `$ [$11.10 left]`）。**无赠送时不显示 `$` 列**（官方返回 `{}`），
+不是漏查；有列且 `$0.00` 才表示「曾有赠送、现已用尽」。**Credits ≠ Pro 的 $20 API 已含池**——后者与
 `API` 列是同一池。自动换号把 `1st` / Credits / `API` 当**并行可用池**（任一有余量即可用）。口径见
 [PROVIDER_KNOWLEDGE_BASE.md](PROVIDER_KNOWLEDGE_BASE.md)「额度与刷新边界」。
 
