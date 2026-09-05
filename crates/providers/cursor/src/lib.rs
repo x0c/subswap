@@ -29,6 +29,8 @@ use subswap_core::{
 pub const PROVIDER_ID: &str = "cursor";
 const STORE_FIELD: &str = "blob";
 const USAGE_URL: &str = "https://cursor.com/api/usage-summary";
+/// Spending 页 Credits 赠送余额（与 Pro `$20` API 已含池无关）。
+const CREDITS_URL: &str = "https://cursor.com/api/dashboard/get-credit-grants-balance";
 const TOKEN_URL: &str = "https://api2.cursor.sh/oauth/token";
 const CLIENT_ID: &str = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB";
 
@@ -152,6 +154,8 @@ pub struct CursorProvider {
     registry: Arc<AccountRegistry>,
     source: CredentialSource,
     usage_url: String,
+    /// 空字符串表示跳过 Credits 查询（测试用）；生产必填真实 URL。
+    credits_url: String,
     token_url: String,
     client: reqwest::Client,
     process_control: Arc<dyn CursorProcessControl>,
@@ -162,6 +166,7 @@ pub struct CursorProvider {
 struct CursorProviderConfig {
     source: CredentialSource,
     usage_url: String,
+    credits_url: String,
     token_url: String,
     process_control: Arc<dyn CursorProcessControl>,
     refresh_lock_dir: PathBuf,
@@ -184,6 +189,7 @@ impl CursorProvider {
             CursorProviderConfig {
                 source: default_credential_source()?,
                 usage_url: USAGE_URL.to_string(),
+                credits_url: CREDITS_URL.to_string(),
                 token_url: TOKEN_URL.to_string(),
                 process_control: Arc::new(SystemCursorProcessControl),
                 refresh_lock_dir,
@@ -206,6 +212,7 @@ impl CursorProvider {
             registry,
             source: config.source,
             usage_url: config.usage_url,
+            credits_url: config.credits_url,
             token_url: config.token_url,
             client,
             process_control: config.process_control,
@@ -731,7 +738,7 @@ impl CursorProvider {
             .client
             .get(&self.usage_url)
             .header("Accept", "application/json")
-            .header("Cookie", cookie)
+            .header("Cookie", &cookie)
             .header("User-Agent", "Mozilla/5.0 (subswap Cursor quota)")
             .send()
             .await
@@ -749,7 +756,52 @@ impl CursorProvider {
             .json()
             .await
             .map_err(|error| UsageError::Other(format!("invalid usage response: {error}")))?;
-        parse_usage(id, &body)
+        let mut quotas = parse_usage(id, &body)?;
+        if let Some(credits) = self.fetch_credit_grants(id, &cookie, quotas_reset_at(&quotas)).await?
+        {
+            quotas.push(credits);
+        }
+        Ok(quotas)
+    }
+
+    /// Spending 页 Credits；失败时：401/403 冒泡，其它错误跳过（仍返回 1st/API）。
+    async fn fetch_credit_grants(
+        &self,
+        id: &AccountId,
+        cookie: &str,
+        reset_at: Option<DateTime<Utc>>,
+    ) -> std::result::Result<Option<Quota>, UsageError> {
+        if self.credits_url.is_empty() {
+            return Ok(None);
+        }
+        let response = self
+            .client
+            .post(&self.credits_url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .header("Cookie", cookie)
+            .header("Origin", "https://cursor.com")
+            .header("Referer", "https://cursor.com/dashboard/spending")
+            .header("User-Agent", "Mozilla/5.0 (subswap Cursor quota)")
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .map_err(|error| UsageError::Other(format!("credits request failed: {error}")))?;
+        if matches!(response.status().as_u16(), 401 | 403) {
+            return Err(UsageError::Unauthorized);
+        }
+        if !response.status().is_success() {
+            tracing::warn!(
+                account = %id.0,
+                status = response.status().as_u16(),
+                "Cursor credits API failed; continuing with 1st/API only"
+            );
+            return Ok(None);
+        }
+        let body: Value = response.json().await.map_err(|error| {
+            UsageError::Other(format!("invalid credits response: {error}"))
+        })?;
+        Ok(parse_credit_grants(id, &body, reset_at))
     }
 
     async fn refresh_parked(
@@ -1592,67 +1644,44 @@ fn parse_usage(id: &AccountId, root: &Value) -> std::result::Result<Vec<Quota>, 
     if let Some(used) = pick_number(plan, &["apiPercentUsed", "api_percent_used"]) {
         quotas.push(percent_quota(id, QuotaWindow::Api, used, reset_at));
     }
-    if let Some(credits) = parse_credits_quota(id, root, plan, reset_at) {
-        quotas.push(credits);
-    }
     if quotas.is_empty() {
         return Err(UsageError::Other(
-            "usage response contains neither percent windows nor credits".into(),
+            "usage response contains neither autoPercentUsed nor apiPercentUsed".into(),
         ));
     }
     Ok(quotas)
 }
 
-/// 从 usage-summary 解析套餐 Credits（分）。优先 `individualUsage` 下的 overall/plan/onDemand 桶，
-/// 再回落 plan 上的 totalSpend/includedSpend + limit。
-fn parse_credits_quota(
-    id: &AccountId,
-    root: &Value,
-    plan: &Value,
-    reset_at: Option<DateTime<Utc>>,
-) -> Option<Quota> {
-    let individual = root
-        .pointer("/individualUsage")
-        .or_else(|| root.pointer("/individual_usage"));
-    if let Some(individual) = individual {
-        for key in ["overall", "plan", "onDemand", "on_demand"] {
-            if let Some(bucket) = individual.get(key) {
-                if let Some((used, limit)) = credits_amounts_from_value(bucket) {
-                    return Some(credits_quota(id, used, limit, reset_at));
-                }
-            }
-        }
-    }
-    let (used, limit) = credits_amounts_from_value(plan)?;
-    Some(credits_quota(id, used, limit, reset_at))
+fn quotas_reset_at(quotas: &[Quota]) -> Option<DateTime<Utc>> {
+    quotas.iter().find_map(|q| q.reset_at)
 }
 
-fn credits_amounts_from_value(value: &Value) -> Option<(u64, u64)> {
-    if value.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
+/// Spending 页 Credits 赠送余额。`plan.used/limit`（$20 API 池）禁止走这里。
+fn parse_credit_grants(
+    id: &AccountId,
+    root: &Value,
+    reset_at: Option<DateTime<Utc>>,
+) -> Option<Quota> {
+    if root.get("hasCreditGrants").and_then(|v| v.as_bool()) != Some(true) {
         return None;
     }
-    let limit = pick_number(value, &["limit"])?;
-    if !(limit.is_finite() && limit > 0.0) {
+    let total = pick_number(root, &["totalCents", "total_cents"])?;
+    if !(total.is_finite() && total > 0.0) {
         return None;
     }
-    // 百分比窗口也会出现在 plan 上，但没有金额账本字段；缺 spend/used/remaining 则不当 Credits。
-    let used = pick_number(
-        value,
-        &[
-            "used",
-            "totalSpend",
-            "total_spend",
-            "includedSpend",
-            "included_spend",
-        ],
-    )
-    .or_else(|| {
-        pick_number(value, &["remaining"]).map(|remaining| (limit - remaining).max(0.0))
+    let used = pick_number(root, &["usedCents", "used_cents"]).or_else(|| {
+        pick_number(root, &["creditBalanceCents", "credit_balance_cents"])
+            .map(|balance| (total - balance).max(0.0))
     })?;
     if !used.is_finite() || used < 0.0 {
         return None;
     }
-    Some((used.round() as u64, limit.round() as u64))
+    Some(credits_quota(
+        id,
+        used.round() as u64,
+        total.round() as u64,
+        reset_at,
+    ))
 }
 
 fn credits_quota(

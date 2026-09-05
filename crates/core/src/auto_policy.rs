@@ -313,11 +313,22 @@ fn account_needs_swap(a: &AccountWithQuotas, threshold: f64) -> bool {
     if a.quotas.is_empty() {
         return false; // 无窗口数据时不主动切（保守）
     }
-    // 只看「已耗尽」或「小时级窗口达到 threshold」。Provider 自己的 Warn 标记仅作
-    // 展示用途的着色不耦合到自动切换决策；7d/月度这类长窗口接近阈值仍有
-    // 很多实际余量，不作为自动切换触发条件。
-    // Cursor 的 API 窗口与官方模型相互独立，不参与判定（见 `auto_swap_quotas`）。
-    auto_swap_quotas(&a.quotas).any(|q| {
+    let quotas: Vec<&Quota> = auto_swap_quotas(&a.quotas).collect();
+    if quotas.is_empty() {
+        return false;
+    }
+    // Cursor 的 1st / Credits 并行：任一池仍可用就不必切；全部耗尽才切。
+    if cursor_parallel_pools(&quotas) {
+        let fivehour_over = quotas
+            .iter()
+            .any(|q| quota_exceeds_auto_threshold(q, threshold));
+        let any_usable = quotas
+            .iter()
+            .any(|q| matches!(q.status, QuotaStatus::Ok | QuotaStatus::Warn));
+        return fivehour_over || !any_usable;
+    }
+    // 叠加池（Claude 等）：任一耗尽或小时级超阈值即切。
+    quotas.iter().any(|q| {
         matches!(q.status, QuotaStatus::Exhausted) || quota_exceeds_auto_threshold(q, threshold)
     })
 }
@@ -349,7 +360,7 @@ fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: boo
         return allow_unknown;
     }
     // 候选不能有小时级窗口达到/超过 threshold，否则切过去仍无法正常承接流量。
-    // 长窗口只在明确 Exhausted 时阻断。Cursor API 窗口不参与（见 `auto_swap_quotas`）。
+    // 长窗口只在明确 Exhausted 时阻断。Cursor 走并行池（见 `cursor_parallel_pools`）。
     let quotas: Vec<&Quota> = auto_swap_quotas(&a.quotas).collect();
     if quotas.is_empty() {
         return allow_unknown;
@@ -357,6 +368,16 @@ fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: boo
     let no_above_threshold = quotas
         .iter()
         .all(|q| !quota_exceeds_auto_threshold(q, threshold));
+    if cursor_parallel_pools(&quotas) {
+        let any_usable = quotas
+            .iter()
+            .any(|q| matches!(q.status, QuotaStatus::Ok | QuotaStatus::Warn));
+        return if allow_unknown {
+            no_above_threshold
+        } else {
+            no_above_threshold && any_usable
+        };
+    }
     let no_exhausted = quotas
         .iter()
         .all(|q| !matches!(q.status, QuotaStatus::Exhausted));
@@ -388,11 +409,26 @@ fn reset_ready_at(
         return None;
     }
 
+    let quotas: Vec<&Quota> = auto_swap_quotas(&a.quotas).collect();
+    if quotas.is_empty() {
+        return None;
+    }
+
+    // Cursor 并行池：只要还有可用窗口，就不走「等重置」兜底。
+    if cursor_parallel_pools(&quotas) {
+        let any_usable = quotas
+            .iter()
+            .any(|q| matches!(q.status, QuotaStatus::Ok | QuotaStatus::Warn));
+        if any_usable {
+            return None;
+        }
+    }
+
     let mut ready_at: Option<DateTime<Utc>> = None;
     let mut has_blocking_window = false;
     let mut has_known_ok_after_reset = false;
 
-    for q in auto_swap_quotas(&a.quotas) {
+    for q in &quotas {
         let blocking = quota_blocks_candidate(q, threshold);
         has_blocking_window |= blocking;
         has_known_ok_after_reset |=
@@ -422,15 +458,23 @@ fn quota_exceeds_auto_threshold(q: &Quota, threshold: f64) -> bool {
     matches!(q.window, QuotaWindow::FiveHour) && q.is_above(threshold)
 }
 
-/// 自动切换只看会真正挡住「被切换产品」流量的窗口。
+/// 自动切换参与判定的窗口。
 ///
-/// Cursor 的 `Api` 与官方模型（`FirstPartyModels`）是并行产品配额：API 耗尽
-/// 不妨碍 IDE 继续用 Auto/Composer，故排除。`Credits`（套餐美元账本）耗尽会
-/// 挡住已含用量，**参与**判定。若响应里根本没有 gating 窗口，才回退到全部
-/// 窗口（纯 API 账号仍按 API 耗尽切换）。Claude 5h/7d、Codex 月度仍是
-/// 同一产品的叠加上限，全部参与判定。
-fn quota_gates_auto_swap(q: &Quota) -> bool {
-    !matches!(q.window, QuotaWindow::Api)
+/// Cursor 的 `1st` / Credits / `API` 全部参与，靠 `cursor_parallel_pools` 做「任一可用即可」；
+/// 不再排除 `API`（否则全员 1st 见底时会退化成只按重置时间挑全空号）。
+/// Claude 5h/7d、Codex 月度仍是叠加上限，全部参与且任一耗尽即切。
+fn quota_gates_auto_swap(_q: &Quota) -> bool {
+    true
+}
+
+/// Cursor：带有 `1st` / Credits / `API` 任一产品池时走并行语义（见 `account_needs_swap`）。
+fn cursor_parallel_pools(quotas: &[&Quota]) -> bool {
+    quotas.iter().any(|q| {
+        matches!(
+            q.window,
+            QuotaWindow::FirstPartyModels | QuotaWindow::Credits | QuotaWindow::Api
+        )
+    })
 }
 
 fn auto_swap_quotas(quotas: &[Quota]) -> impl Iterator<Item = &Quota> {
@@ -1241,19 +1285,142 @@ mod tests {
         account
     }
 
-    /// Credits 耗尽即使 1st 仍有余量也要换号。
+    /// 用户 2026-09-05：全员 1st 见底时必须切到仍有 API 余量的号，不能按重置挑全空号。
     #[test]
-    fn cursor_credits_exhausted_triggers_swap_despite_first_party_headroom() {
+    fn cursor_prefers_api_remaining_over_sooner_reset_empty_account() {
+        let snap = ProviderSnapshot {
+            provider: "cursor".into(),
+            accounts: vec![
+                cursor_account(
+                    "kimberly",
+                    true,
+                    100,
+                    QuotaStatus::Exhausted,
+                    100,
+                    QuotaStatus::Exhausted,
+                    9,
+                ),
+                cursor_account(
+                    "terry",
+                    false,
+                    100,
+                    QuotaStatus::Exhausted,
+                    100,
+                    QuotaStatus::Exhausted,
+                    16,
+                ),
+                cursor_account(
+                    "hillard",
+                    false,
+                    100,
+                    QuotaStatus::Exhausted,
+                    100,
+                    QuotaStatus::Exhausted,
+                    25,
+                ),
+                cursor_account(
+                    "kochis",
+                    false,
+                    100,
+                    QuotaStatus::Exhausted,
+                    90,
+                    QuotaStatus::Ok,
+                    25,
+                ),
+            ],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(
+            matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "kochis"),
+            "got {d:?}"
+        );
+    }
+
+    /// Cursor 并行池：Credits 耗尽但 1st 仍有余量时不换号。
+    #[test]
+    fn cursor_credits_exhausted_keeps_active_when_first_party_ok() {
+        let snap = ProviderSnapshot {
+            provider: "cursor".into(),
+            accounts: vec![
+                cursor_account_with_credits(
+                    "spent-credits",
+                    true,
+                    10,
+                    QuotaStatus::Ok,
+                    20,
+                    QuotaStatus::Ok,
+                    2000,
+                    2000,
+                    QuotaStatus::Exhausted,
+                    20,
+                ),
+                cursor_account_with_credits(
+                    "fresh",
+                    false,
+                    5,
+                    QuotaStatus::Ok,
+                    5,
+                    QuotaStatus::Ok,
+                    100,
+                    2000,
+                    QuotaStatus::Ok,
+                    25,
+                ),
+            ],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
+    }
+
+    /// Cursor 并行池：1st 耗尽但 Credits 仍有余量时不换号。
+    #[test]
+    fn cursor_first_party_exhausted_keeps_active_when_credits_ok() {
+        let snap = ProviderSnapshot {
+            provider: "cursor".into(),
+            accounts: vec![
+                cursor_account_with_credits(
+                    "spent-1st",
+                    true,
+                    100,
+                    QuotaStatus::Exhausted,
+                    20,
+                    QuotaStatus::Ok,
+                    500,
+                    2000,
+                    QuotaStatus::Ok,
+                    20,
+                ),
+                cursor_account_with_credits(
+                    "fresh",
+                    false,
+                    5,
+                    QuotaStatus::Ok,
+                    5,
+                    QuotaStatus::Ok,
+                    100,
+                    2000,
+                    QuotaStatus::Ok,
+                    25,
+                ),
+            ],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
+    }
+
+    /// Cursor 并行池：1st 与 Credits 都耗尽、且 API 也耗尽才换号。
+    #[test]
+    fn cursor_both_gating_pools_exhausted_triggers_swap() {
         let snap = ProviderSnapshot {
             provider: "cursor".into(),
             accounts: vec![
                 cursor_account_with_credits(
                     "spent",
                     true,
-                    10,
-                    QuotaStatus::Ok,
-                    20,
-                    QuotaStatus::Ok,
+                    100,
+                    QuotaStatus::Exhausted,
+                    100,
+                    QuotaStatus::Exhausted,
                     2000,
                     2000,
                     QuotaStatus::Exhausted,
@@ -1316,9 +1483,9 @@ mod tests {
         assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
     }
 
-    /// Credits 耗尽的候选不可选，即使 1st 仍有余量。
+    /// 候选仅 Credits 耗尽、1st 仍可用时仍可选；三池都耗尽的候选被跳过。
     #[test]
-    fn cursor_credits_exhausted_blocks_candidate() {
+    fn cursor_candidate_with_only_credits_exhausted_is_still_viable() {
         let snap = ProviderSnapshot {
             provider: "cursor".into(),
             accounts: vec![
@@ -1335,7 +1502,7 @@ mod tests {
                     10,
                 ),
                 cursor_account_with_credits(
-                    "spent-candidate",
+                    "credits-spent-1st-ok",
                     false,
                     5,
                     QuotaStatus::Ok,
@@ -1347,22 +1514,22 @@ mod tests {
                     5,
                 ),
                 cursor_account_with_credits(
-                    "fresh",
+                    "both-spent",
                     false,
-                    8,
-                    QuotaStatus::Ok,
-                    8,
-                    QuotaStatus::Ok,
-                    200,
+                    100,
+                    QuotaStatus::Exhausted,
+                    100,
+                    QuotaStatus::Exhausted,
                     2000,
-                    QuotaStatus::Ok,
-                    30,
+                    2000,
+                    QuotaStatus::Exhausted,
+                    3,
                 ),
             ],
         };
         let d = decide(&snap, &PolicyConfig::default());
         assert!(
-            matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "fresh"),
+            matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "credits-spent-1st-ok"),
             "got {d:?}"
         );
     }
