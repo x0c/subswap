@@ -388,10 +388,20 @@ pub fn format_quota_compact(q: &Quota, color: bool) -> String {
         // Cursor 官方模型窗口；必须短标签，否则默认入口一行会被撑爆。
         QuotaWindow::FirstPartyModels => "1st",
         QuotaWindow::Api => "API",
+        // Cursor 套餐 Credits；`$` 短标签，余量按分→美元展示。
+        QuotaWindow::Credits => "$",
         QuotaWindow::Custom => "--",
     };
-    // 所有 Provider 统一显示余量；数据层 `Quota.used` 仍是已用百分比，仅在展示层翻转。
-    let usage_plain = if q.limit > 0 {
+    // 百分比窗口：数据层 `Quota.used` 仍是已用百分比，仅在展示层翻转成余量。
+    // Credits：`used`/`limit` 存分，展示美元余量。
+    let usage_plain = if matches!(q.window, QuotaWindow::Credits) {
+        if q.limit > 0 {
+            let remaining_cents = q.limit.saturating_sub(q.used);
+            format!("${:.2} left", remaining_cents as f64 / 100.0)
+        } else {
+            "--".into()
+        }
+    } else if q.limit > 0 {
         format!("{:>3}% left", q.limit.saturating_sub(q.used))
     } else {
         "--".into()
@@ -435,7 +445,9 @@ fn window_display_order(window: QuotaWindow) -> u8 {
         QuotaWindow::Month => 2,
         QuotaWindow::FirstPartyModels => 3,
         QuotaWindow::Api => 4,
-        QuotaWindow::Custom => 5,
+        // Credits 追加在 1st / API 之后。
+        QuotaWindow::Credits => 5,
+        QuotaWindow::Custom => 6,
     }
 }
 
@@ -544,6 +556,16 @@ mod tests {
         assert!(api.starts_with("API [ 43% left"));
         assert!(!first_party.contains("used"));
         assert!(!api.contains("used"));
+    }
+
+    #[test]
+    fn cursor_credits_shows_dollar_remaining() {
+        let text = format_quota_compact(
+            &quota(QuotaWindow::Credits, 1288, 2000, QuotaStatus::Ok),
+            false,
+        );
+        assert!(text.starts_with("$  [$7.12 left"), "got {text:?}");
+        assert!(!text.contains('%'));
     }
 
     #[test]

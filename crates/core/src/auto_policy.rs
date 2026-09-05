@@ -425,8 +425,9 @@ fn quota_exceeds_auto_threshold(q: &Quota, threshold: f64) -> bool {
 /// 自动切换只看会真正挡住「被切换产品」流量的窗口。
 ///
 /// Cursor 的 `Api` 与官方模型（`FirstPartyModels`）是并行产品配额：API 耗尽
-/// 不妨碍 IDE 继续用 Auto/Composer。若响应里根本没有官方模型窗口，才回退到
-/// 全部窗口（纯 API 账号仍按 API 耗尽切换）。Claude 5h/7d、Codex 月度仍是
+/// 不妨碍 IDE 继续用 Auto/Composer，故排除。`Credits`（套餐美元账本）耗尽会
+/// 挡住已含用量，**参与**判定。若响应里根本没有 gating 窗口，才回退到全部
+/// 窗口（纯 API 账号仍按 API 耗尽切换）。Claude 5h/7d、Codex 月度仍是
 /// 同一产品的叠加上限，全部参与判定。
 fn quota_gates_auto_swap(q: &Quota) -> bool {
     !matches!(q.window, QuotaWindow::Api)
@@ -486,8 +487,13 @@ fn compare_unknown_candidates(a: &AccountWithQuotas, b: &AccountWithQuotas) -> s
         .then(a.account.id.0.cmp(&b.account.id.0))
 }
 
+/// 最忙窗口的使用率分数（万分比）。Credits 存分、百分比窗口存 0~100，
+/// 直接比 `used` 会让金额窗口永远显得更忙；只看 gating 窗口。
 fn busiest_used(quotas: &[Quota]) -> u64 {
-    quotas.iter().map(|q| q.used).max().unwrap_or(0)
+    auto_swap_quotas(quotas)
+        .filter_map(|q| q.usage_ratio().map(|r| (r * 10_000.0).round() as u64))
+        .max()
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -1196,6 +1202,167 @@ mod tests {
         let d = decide(&snap, &PolicyConfig::default());
         assert!(
             matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "api-ok"),
+            "got {d:?}"
+        );
+    }
+
+    fn cursor_account_with_credits(
+        id: &str,
+        active: bool,
+        first_used: u64,
+        first_status: QuotaStatus,
+        api_used: u64,
+        api_status: QuotaStatus,
+        credits_used: u64,
+        credits_limit: u64,
+        credits_status: QuotaStatus,
+        reset_days: i64,
+    ) -> AccountWithQuotas {
+        let mut account = cursor_account(
+            id,
+            active,
+            first_used,
+            first_status,
+            api_used,
+            api_status,
+            reset_days,
+        );
+        let reset_at = account.quotas[0].reset_at;
+        account.quotas.push(Quota {
+            provider: "test".into(),
+            account_id: AccountId(id.into()),
+            window: QuotaWindow::Credits,
+            used: credits_used,
+            limit: credits_limit,
+            reset_at,
+            status: credits_status,
+            note: None,
+        });
+        account
+    }
+
+    /// Credits 耗尽即使 1st 仍有余量也要换号。
+    #[test]
+    fn cursor_credits_exhausted_triggers_swap_despite_first_party_headroom() {
+        let snap = ProviderSnapshot {
+            provider: "cursor".into(),
+            accounts: vec![
+                cursor_account_with_credits(
+                    "spent",
+                    true,
+                    10,
+                    QuotaStatus::Ok,
+                    20,
+                    QuotaStatus::Ok,
+                    2000,
+                    2000,
+                    QuotaStatus::Exhausted,
+                    20,
+                ),
+                cursor_account_with_credits(
+                    "fresh",
+                    false,
+                    5,
+                    QuotaStatus::Ok,
+                    5,
+                    QuotaStatus::Ok,
+                    100,
+                    2000,
+                    QuotaStatus::Ok,
+                    25,
+                ),
+            ],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(
+            matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "fresh"),
+            "got {d:?}"
+        );
+    }
+
+    /// Credits 未耗尽（仅 Warn）不因长窗口接近阈值提前切。
+    #[test]
+    fn cursor_credits_warn_does_not_trigger_early_swap() {
+        let snap = ProviderSnapshot {
+            provider: "cursor".into(),
+            accounts: vec![
+                cursor_account_with_credits(
+                    "active",
+                    true,
+                    10,
+                    QuotaStatus::Ok,
+                    20,
+                    QuotaStatus::Ok,
+                    1900,
+                    2000,
+                    QuotaStatus::Warn,
+                    20,
+                ),
+                cursor_account_with_credits(
+                    "other",
+                    false,
+                    5,
+                    QuotaStatus::Ok,
+                    5,
+                    QuotaStatus::Ok,
+                    100,
+                    2000,
+                    QuotaStatus::Ok,
+                    25,
+                ),
+            ],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
+    }
+
+    /// Credits 耗尽的候选不可选，即使 1st 仍有余量。
+    #[test]
+    fn cursor_credits_exhausted_blocks_candidate() {
+        let snap = ProviderSnapshot {
+            provider: "cursor".into(),
+            accounts: vec![
+                cursor_account_with_credits(
+                    "spent-active",
+                    true,
+                    100,
+                    QuotaStatus::Exhausted,
+                    100,
+                    QuotaStatus::Exhausted,
+                    2000,
+                    2000,
+                    QuotaStatus::Exhausted,
+                    10,
+                ),
+                cursor_account_with_credits(
+                    "spent-candidate",
+                    false,
+                    5,
+                    QuotaStatus::Ok,
+                    5,
+                    QuotaStatus::Ok,
+                    2000,
+                    2000,
+                    QuotaStatus::Exhausted,
+                    5,
+                ),
+                cursor_account_with_credits(
+                    "fresh",
+                    false,
+                    8,
+                    QuotaStatus::Ok,
+                    8,
+                    QuotaStatus::Ok,
+                    200,
+                    2000,
+                    QuotaStatus::Ok,
+                    30,
+                ),
+            ],
+        };
+        let d = decide(&snap, &PolicyConfig::default());
+        assert!(
+            matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "fresh"),
             "got {d:?}"
         );
     }

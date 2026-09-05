@@ -689,10 +689,29 @@ usage 查询从 access token 的 WorkOS subject 生成官方 session cookie，�
 
 这两个百分比写入统一 `Quota.used`，没有额外翻转；CLI 展示层与其他 Provider 一样转成余量。
 
-自动切换只看 `1st`。`1st` 与 `API` 是并行产品配额，不是同一流量的叠加上限：API 耗尽不妨碍
-IDE 继续用 Auto/Composer，因此不触发、不阻断自动切换。两边 API 都是 0% 时若仍按「任一窗口
-Exhausted 即整号不可用」处理，重置兜底会选 billing cycle 更早结束的号，可能切到 `1st` 也是
-0% 的账号。见 [AUTO_SWAP_DESIGN.md](design/AUTO_SWAP_DESIGN.md) §1.1 与
+**同一响应里还有美元 Credits 金额字段**（产品口径 2026-09-05 已确认）：
+
+- `totalSpend` / `includedSpend` / `remaining` / `limit`：套餐周期内已含用量的金额账本。
+  单位是**分**（Pro 的 `limit` 常为 `2000` = $20.00）；CLI 展示前 ÷100。
+- 官方 staff 明确：`autoPercentUsed` / `apiPercentUsed` / `totalPercentUsed` **不是**
+  `totalSpend / limit` 的简单商，是另一套内部指标；仪表盘文案「You’ve used N% of your included usage」
+  用的是 `includedSpend / limit`。因此只看 `1st`/`API` 百分比时，可能与 Spending 页的美元余量严重偏离。
+- 社区扩展（如 `cursor-credits-usage`）也打同一条 `usage-summary`，优先读
+  `individualUsage.overall|plan|onDemand` 的 `used`/`limit`/`remaining`（分→美元展示）；字段形态会漂，
+  解析须宽松兼容：先 `overall|plan|onDemand` 桶，再回落 `totalSpend`/`includedSpend`+`limit`。
+- 解析结果写入 `QuotaWindow::Credits`：`used`/`limit` 存分；CLI 标签 `$`，展示
+  `{remaining_dollars} left`（如 `$7.12 left`），排在 `1st` / `API` **之后追加**。
+- **不另打接口**；节流与缓存规则与现有 Cursor quota 相同。
+
+**自动切换（已确认）**：Credits **参与**触发与候选阻断——与 `1st` 同属 gating 窗口；
+`API` 仍不参与。Credits 是账单周期长窗口：只在 `status == Exhausted`（已用分 ≥ 上限）时
+触发/阻断，**不**走小时级 `threshold` 提前切（与 Month / 7d 一致）。细则见
+[AUTO_SWAP_DESIGN.md](design/AUTO_SWAP_DESIGN.md) §1.1。
+
+自动切换看 `1st` 与 `Credits`，**不看** `API`。`1st` 与 `API` 是并行产品配额，不是同一流量的
+叠加上限：API 耗尽不妨碍 IDE 继续用 Auto/Composer，因此不触发、不阻断自动切换。两边 API 都是
+0% 时若仍按「任一窗口 Exhausted 即整号不可用」处理，重置兜底会选 billing cycle 更早结束的号，
+可能切到 `1st` 也是 0% 的账号。见 [AUTO_SWAP_DESIGN.md](design/AUTO_SWAP_DESIGN.md) §1.1 与
 [2026-08-21-cursor-auto-swap-to-zero-over-remaining.md](troubleshooting/2026-08-21-cursor-auto-swap-to-zero-over-remaining.md)。
 
 active 查询 401 时**绝不刷新**：只重读 live 数据库。若 Cursor 已经自行轮换 access token，则 capture 回仓库并

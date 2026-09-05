@@ -1592,12 +1592,90 @@ fn parse_usage(id: &AccountId, root: &Value) -> std::result::Result<Vec<Quota>, 
     if let Some(used) = pick_number(plan, &["apiPercentUsed", "api_percent_used"]) {
         quotas.push(percent_quota(id, QuotaWindow::Api, used, reset_at));
     }
+    if let Some(credits) = parse_credits_quota(id, root, plan, reset_at) {
+        quotas.push(credits);
+    }
     if quotas.is_empty() {
         return Err(UsageError::Other(
-            "usage response contains neither autoPercentUsed nor apiPercentUsed".into(),
+            "usage response contains neither percent windows nor credits".into(),
         ));
     }
     Ok(quotas)
+}
+
+/// 从 usage-summary 解析套餐 Credits（分）。优先 `individualUsage` 下的 overall/plan/onDemand 桶，
+/// 再回落 plan 上的 totalSpend/includedSpend + limit。
+fn parse_credits_quota(
+    id: &AccountId,
+    root: &Value,
+    plan: &Value,
+    reset_at: Option<DateTime<Utc>>,
+) -> Option<Quota> {
+    let individual = root
+        .pointer("/individualUsage")
+        .or_else(|| root.pointer("/individual_usage"));
+    if let Some(individual) = individual {
+        for key in ["overall", "plan", "onDemand", "on_demand"] {
+            if let Some(bucket) = individual.get(key) {
+                if let Some((used, limit)) = credits_amounts_from_value(bucket) {
+                    return Some(credits_quota(id, used, limit, reset_at));
+                }
+            }
+        }
+    }
+    let (used, limit) = credits_amounts_from_value(plan)?;
+    Some(credits_quota(id, used, limit, reset_at))
+}
+
+fn credits_amounts_from_value(value: &Value) -> Option<(u64, u64)> {
+    if value.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
+        return None;
+    }
+    let limit = pick_number(value, &["limit"])?;
+    if !(limit.is_finite() && limit > 0.0) {
+        return None;
+    }
+    // 百分比窗口也会出现在 plan 上，但没有金额账本字段；缺 spend/used/remaining 则不当 Credits。
+    let used = pick_number(
+        value,
+        &[
+            "used",
+            "totalSpend",
+            "total_spend",
+            "includedSpend",
+            "included_spend",
+        ],
+    )
+    .or_else(|| {
+        pick_number(value, &["remaining"]).map(|remaining| (limit - remaining).max(0.0))
+    })?;
+    if !used.is_finite() || used < 0.0 {
+        return None;
+    }
+    Some((used.round() as u64, limit.round() as u64))
+}
+
+fn credits_quota(
+    id: &AccountId,
+    used: u64,
+    limit: u64,
+    reset_at: Option<DateTime<Utc>>,
+) -> Quota {
+    let pct = if limit == 0 {
+        0.0
+    } else {
+        (used as f64 / limit as f64) * 100.0
+    };
+    Quota {
+        provider: PROVIDER_ID.into(),
+        account_id: id.clone(),
+        window: QuotaWindow::Credits,
+        used,
+        limit,
+        reset_at,
+        status: QuotaStatus::from_percent(pct),
+        note: None,
+    }
 }
 
 fn percent_quota(

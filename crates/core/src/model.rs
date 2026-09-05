@@ -131,6 +131,8 @@ pub enum QuotaWindow {
     FirstPartyModels,
     /// Cursor API 用量。
     Api,
+    /// Cursor 套餐 Credits（美元账本；`used`/`limit` 存分）。
+    Credits,
     /// 其他自定义窗口。
     Custom,
 }
