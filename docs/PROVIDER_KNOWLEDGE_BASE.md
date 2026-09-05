@@ -458,6 +458,8 @@ macOS 命令行钥匙串**只能 fork `/usr/bin/security`**，禁止 `keyring` c
 
 `subswap login cursor` 不复制 OAuth、不驱动网页：用户先在客户端登录（桌面或 `cursor-agent login`），命令只读本地凭证导入/覆盖并标 active。默认入口同步当前 live（同 Claude/Codex/Kimi）；**无墓碑**——`rm` 后客户端仍登录则下次默认入口收回（墓碑曾致无声消失，已移除；[troubleshooting/2026-08-15](troubleshooting/2026-08-15-cursor-section-silently-missing.md)）。
 
+**新登录优先入池（产品约束，2026-09-06）**：Cursor 只有一份 live 凭证。无论是默认入口还是 daemon 先观察到一个未登记的 live 账号，都必须先将它导入并标为 active，之后才能建立额度快照或执行自动切换。导入失败时该轮必须跳过 Cursor 自动切换，绝不能让旧账号池覆盖这份新凭证；成功导入后即使该账号额度耗尽而被自动切走，它也必须保留在账号池中。此约束防止 `agent login` 成功后新账号尚未显示便被切回旧号。
+
 **agent 切换**：capture-on-leave → 快照旧令牌/`cli-config.json`/registry → 写回目标令牌 + `authInfo` → 标 active；失败三者回滚。无进程协调。
 
 **桌面版**进程存活时不能直接改 SQLite（退出阶段可能用内存旧 token 盖回）：

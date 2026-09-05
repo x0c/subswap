@@ -255,15 +255,15 @@ impl CursorProvider {
             .map_err(join_error)?
     }
 
-    /// 把当前 Cursor 登录凭证回灌到其账号副本，供 daemon 捕获客户端自行轮换的 token。
+    /// 对齐当前 Cursor 登录账号，供 daemon 在自动切换前先收住原生客户端的外部登录。
+    ///
+    /// 未登记的 live 账号也必须导入：Cursor CLI 只有一份凭证，若 daemon 忽略它后继续
+    /// 按旧账号池自动切换，就会把用户刚登录的账号覆盖掉，导致它永远没有入池机会。
     pub async fn reconcile_active_from_live(&self) -> Result<()> {
         let this = self.clone();
-        tokio::task::spawn_blocking(move || match this.align_existing_live_blocking() {
-            Ok(_) | Err(Error::AccountNotFound { .. }) => Ok(()),
-            Err(error) => Err(error),
-        })
-        .await
-        .map_err(join_error)?
+        tokio::task::spawn_blocking(move || this.sync_active_metadata_blocking(None).map(|_| ()))
+            .await
+            .map_err(join_error)?
     }
 
     fn sync_active_metadata_blocking(&self, label_hint: Option<String>) -> Result<Account> {
@@ -274,7 +274,7 @@ impl CursorProvider {
         }
     }
 
-    /// 只回灌已导入的 live 主人；未知账号不新增（daemon 用）。
+    /// 回灌已导入的 live 主人；未知账号由 `sync_active_metadata_blocking` 导入。
     fn align_existing_live_blocking(&self) -> Result<Account> {
         let live = self.canonicalize_live_blob(self.source.read_live()?)?;
         let Some(owner) = self.find_owner(&live)? else {

@@ -8,7 +8,7 @@
 | [2026-08-21 Cursor 自动切到 1st 0% 号](2026-08-21-cursor-auto-swap-to-zero-over-remaining.md) | `! auto: swapped to` 目标 `1st`/`API` 都是 `0%`、旁边号 `1st` 还有余量；改自动换号候选或 Cursor `1st`/`API` 策略前必读 |
 | [2026-08-15 整段 Cursor 无声消失（症状族汇总）](2026-08-15-cursor-section-silently-missing.md) | 默认入口整段 Cursor（或任何 provider）不见——不是单账号余量查不出；先分辨三种已知根因，勿直接查额度接口 |
 | [2026-08-14 Cursor 多个账号额度数字完全一样](2026-08-14-cursor-quota-cloned-across-accounts.md) | 多个 Cursor 账号余量/重置时间一模一样，或切 CLI 账号后其它号额度跟着变；改 CLI 切换、live 回灌、额度归属或钥匙串写入前必读 |
-| [2026-08-14 本机 Cursor 命令行已登录但 subswap 没有 Cursor 额度](2026-08-14-cursor-quota-missing-cli-keychain.md) | 整段 Cursor 不出现、导入报「请先登录」，但 `cursor-agent` 已登录；改 CLI 凭证探测、钥匙串来源或 `auth.json` 路径前必读 |
+| [2026-08-14 本机 Cursor 命令行已登录但 subswap 没有 Cursor 额度](2026-08-14-cursor-quota-missing-cli-keychain.md) | 整段 Cursor 不出现、导入报「请先登录」，或 `agent login` 成功后新号没入池且 `agent status` 又回到旧号；改 CLI 凭证探测、钥匙串来源、自动切换或 `auth.json` 路径前必读 |
 | [2026-07-28 Claude 能正常使用但 subswap 仍显示旧 401 / 空 access 被回灌](2026-07-28-claude-working-but-quota-stale-401.md) | Claude Code 已恢复但 subswap 仍显示旧 `401 auth failed`，或 parked 长期 429 且 access 变空；改鉴权退避、live→store 回灌或空 access 判定前必读 |
 | [2026-07-26 Claude 额度 `bad response` / usage 响应字段漂移](2026-07-26-claude-usage-schema-drift-bad-response.md) | Claude 额度长期 `bad response`、连带 429、账号横跳；改 usage 解析、quota 失败退避或 `refreshTokenExpiresAt` 前必读 |
 | [2026-07-09 Codex 用量 401 但 CLI 能正常用](2026-07-09-codex-quota-401-despite-working-cli.md) | Codex 能对话但 subswap 显示 `401 auth failed`；改/排查 app-server 额度查询、control socket、并发安全刷新与 429 fallback 边界前必读 |

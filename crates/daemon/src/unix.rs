@@ -174,9 +174,15 @@ async fn run_cycle(
     reconcile_file_blob_provider(codex, "codex").await;
     reconcile_file_blob_provider(kimi, "kimi").await;
     reconcile_file_blob_provider(opencode, "opencode").await;
-    if let Err(e) = cursor.reconcile_active_from_live().await {
-        tracing::debug!(err = %e, "cursor live-credential reconcile skipped");
-    }
+    // Cursor 只有一份 live 凭证。此处必须在读额度前先将外部新登录账号入池；失败时
+    // 本轮禁止覆盖 Cursor，避免旧账号池把用户刚完成的原生登录写回去。
+    let cursor_sync_ready = match cursor.reconcile_active_from_live().await {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(err = %e, "skip Cursor auto swap because live login did not sync");
+            false
+        }
+    };
 
     // (a) 收集每个 Provider 的快照。query_quota 失败的账号 fetch_error 带原因。
     let snapshots = build_snapshots(providers).await;
@@ -187,6 +193,10 @@ async fn run_cycle(
             continue;
         }
 
+        if snap.provider == "cursor" && !cursor_sync_ready {
+            continue;
+        }
+
         // Degraded 期内跳过该 Provider 的 swap(但 token 保活仍要做)。
         if state.is_degraded(&snap.provider) {
             tracing::debug!(provider = %snap.provider, "provider in degraded window; skip");
@@ -194,6 +204,15 @@ async fn run_cycle(
         }
         match auto_decide(snap, policy) {
             PolicyDecision::Swap { from, to, .. } => {
+                // quota 查询期间用户可能刚在 Cursor 原生客户端完成新登录。切换前再同步一次：
+                // 若账号变了，下面的 active 复核会丢弃陈旧决策，绝不覆盖新凭证。
+                if snap.provider == "cursor" {
+                    if let Err(e) = cursor.reconcile_active_from_live().await {
+                        tracing::warn!(err = %e, "skip stale Cursor auto swap because live login did not sync");
+                        continue;
+                    }
+                }
+
                 // 冷却:刚被切走 / 切到的账号短期不再选回。
                 if state.in_cooldown(&snap.provider, &to) {
                     tracing::debug!(
