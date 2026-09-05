@@ -677,49 +677,49 @@ macOS 用系统退出事件，Linux 用 TERM，Windows 用不强杀的 `taskkill
 
 | 用途 | 方法 | URL |
 |---|---|---|
-| 用量查询 | GET | `https://cursor.com/api/usage-summary` |
+| 用量查询（1st / API） | GET | `https://cursor.com/api/usage-summary` |
+| **Credits 赠送余额** | POST | `https://cursor.com/api/dashboard/get-credit-grants-balance`（body `{}`） |
 | parked token 刷新 | POST | `https://api2.cursor.sh/oauth/token` |
 
-usage 查询从 access token 的 WorkOS subject 生成官方 session cookie，不使用 Bearer header。解析
-`individualUsage.plan`（兼容 snake_case / `planUsage`）里的：
+用量与 Credits **同一套** WorkOS session cookie（从 access token 的 subject 生成），不使用 Bearer。
 
-- `autoPercentUsed` → 展示标签 `1st`（Cursor 官方模型窗口），写入 `Quota.used` 后 CLI 按 `{100-N}% left` 展示；
-- `apiPercentUsed` → `API`，写入 `Quota.used` 后 CLI 按 `{100-N}% left` 展示；
-- `billingCycleEnd` → 两个窗口共同的 reset 时间。
+### `usage-summary`（1st / API）
 
-这两个百分比写入统一 `Quota.used`，没有额外翻转；CLI 展示层与其他 Provider 一样转成余量。
+解析 `individualUsage.plan`（兼容 snake_case / `planUsage`）：
 
-**同一响应里还有美元 Credits 金额字段**（产品口径 2026-09-05 已确认）：
+- `autoPercentUsed` → 展示标签 `1st`（Cursor 官方模型窗口）；
+- `apiPercentUsed` → `API`；
+- `billingCycleEnd` → `1st` / `API` / Credits 共用的 reset 时间（Credits 接口本身不带周期时沿用）。
 
-- `totalSpend` / `includedSpend` / `remaining` / `limit`：套餐周期内已含用量的金额账本。
-  单位是**分**（Pro 的 `limit` 常为 `2000` = $20.00）；CLI 展示前 ÷100。
-- **`breakdown.bonus` / `bonusSpend` 是已消耗的赠送用量，不是剩余 Credits。**
-  是否还有赠送余量看 `remainingBonus`（及有则看正的 `remaining`）；勿把 `bonus` 大数当成「还能花」。
-  权威交叉校验可用 Bearer
-  `POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage`
-  （`Connect-Protocol-Version: 1`），其 `displayMessage` / `remainingBonus` 与 usage-summary 的
-  `remaining` 一致时以「已撞上限」为准。踩坑见
-  [troubleshooting/2026-09-05-cursor-credits-zero-despite-claimed-remaining.md](troubleshooting/2026-09-05-cursor-credits-zero-despite-claimed-remaining.md)。
-- 官方 staff 明确：`autoPercentUsed` / `apiPercentUsed` / `totalPercentUsed` **不是**
-  `totalSpend / limit` 的简单商，是另一套内部指标；仪表盘文案「You’ve used N% of your included usage」
-  用的是 `includedSpend / limit`。因此只看 `1st`/`API` 百分比时，可能与 Spending 页的美元余量严重偏离。
-- 社区扩展（如 `cursor-credits-usage`）也打同一条 `usage-summary`，优先读
-  `individualUsage.overall|plan|onDemand` 的 `used`/`limit`/`remaining`（分→美元展示）；字段形态会漂，
-  解析须宽松兼容：先 `overall|plan|onDemand` 桶，再回落 `totalSpend`/`includedSpend`+`limit`。
-- 解析结果写入 `QuotaWindow::Credits`：`used`/`limit` 存分；CLI 标签 `$`，展示
-  `{remaining_dollars} left`（如 `$7.12 left`），排在 `1st` / `API` **之后追加**。
-- **不另打接口**；节流与缓存规则与现有 Cursor quota 相同。
+`plan.used` / `limit` / `remaining`（常为 `2000` 分 = $20）与 **`API` 是同一套餐已含额度**，
+**不是** Spending 页的 Credits。禁止再把它们映射成 `QuotaWindow::Credits`。
 
-**自动切换（已确认）**：Credits **参与**触发与候选阻断——与 `1st` 同属 gating 窗口；
-`API` 仍不参与。Credits 是账单周期长窗口：只在 `status == Exhausted`（已用分 ≥ 上限）时
-触发/阻断，**不**走小时级 `threshold` 提前切（与 Month / 7d 一致）。细则见
-[AUTO_SWAP_DESIGN.md](design/AUTO_SWAP_DESIGN.md) §1.1。
+### Credits（赠送额度，Spending 页）
 
-自动切换看 `1st` 与 `Credits`，**不看** `API`。`1st` 与 `API` 是并行产品配额，不是同一流量的
-叠加上限：API 耗尽不妨碍 IDE 继续用 Auto/Composer，因此不触发、不阻断自动切换。两边 API 都是
-0% 时若仍按「任一窗口 Exhausted 即整号不可用」处理，重置兜底会选 billing cycle 更早结束的号，
-可能切到 `1st` 也是 0% 的账号。见 [AUTO_SWAP_DESIGN.md](design/AUTO_SWAP_DESIGN.md) §1.1 与
-[2026-08-21-cursor-auto-swap-to-zero-over-remaining.md](troubleshooting/2026-08-21-cursor-auto-swap-to-zero-over-remaining.md)。
+权威接口：`POST /api/dashboard/get-credit-grants-balance`，响应示例：
+
+```json
+{ "hasCreditGrants": true, "creditBalanceCents": "1110", "totalCents": "2500", "usedCents": "1390" }
+```
+
+- 字段常为**字符串**分；`creditBalanceCents` 为剩余，`usedCents`/`totalCents` 为已用/上限。
+- `hasCreditGrants != true` 或空对象 `{}` → 不展示 Credits 窗口。
+- 写入 `QuotaWindow::Credits`：`used`/`limit` 存分；CLI 标签 `$`，展示如 `$11.10 left`，排在 `1st`/`API` 之后。
+- 【裁定 · 2026-09-05】用户纠正：Credits ≠ Pro 的 $20 API 已含池。曾误用 usage-summary 的
+  `used`/`limit` 当 Credits，会导致全员 `$0.00` 并误导自动换号；以本接口为准。
+  见 [troubleshooting/2026-09-05-cursor-credits-zero-despite-claimed-remaining.md](troubleshooting/2026-09-05-cursor-credits-zero-despite-claimed-remaining.md)。
+
+### 自动切换
+
+- **并行可用池**：`1st`、**Credits**、**API**——任一池仍有余量（`Ok`/`Warn`）即可作为候选 / 不必切走；
+  仅当这些池**全部** `Exhausted` 时才触发/阻断。这与 Claude 5h+7d 叠加上限不同。
+- 【裁定 · 2026-09-05】用户现场：全员 `1st` 0%、仅某号 `API` 还有余量时，必须切到该号；
+  禁止按重置时间优先挑全空号。见
+  [troubleshooting/2026-09-05-cursor-auto-swap-to-empty-over-api-remaining.md](troubleshooting/2026-09-05-cursor-auto-swap-to-empty-over-api-remaining.md)。
+- 仍成立：`1st` 还有余量时，不要只因 `API` 耗尽就切走（见 2026-08-21）。
+- Credits 耗尽判定：`creditBalanceCents == 0`（或 `used >= total`）；不走小时级 `threshold` 提前切。
+- 细则见 [AUTO_SWAP_DESIGN.md](design/AUTO_SWAP_DESIGN.md) §1.1 与
+  [2026-08-21-cursor-auto-swap-to-zero-over-remaining.md](troubleshooting/2026-08-21-cursor-auto-swap-to-zero-over-remaining.md)。
 
 active 查询 401 时**绝不刷新**：只重读 live 数据库。若 Cursor 已经自行轮换 access token，则 capture 回仓库并
 用新 token 重试一次；否则返回认证错误。parked 账号没有原生客户端维护，允许在 subswap 自己的跨进程文件锁

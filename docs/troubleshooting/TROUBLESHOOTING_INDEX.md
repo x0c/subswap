@@ -4,7 +4,8 @@
 
 | 文档 | 排查场景 |
 |---|---|
-| [2026-09-05 Cursor 显示 `$0.00` 但用户认为还有 Credits](2026-09-05-cursor-credits-zero-despite-claimed-remaining.md) | Cursor 行 `$ [$0.00 left]`、用户说官方还有美元余量、或因此觉得自动换号该切却没切；改 Credits 解析、`breakdown.bonus` / `bonusSpend` / `remainingBonus` 口径前必读 |
+| [2026-09-05 Cursor 全员 1st 见底却切到全空号（放过 API 余量）](2026-09-05-cursor-auto-swap-to-empty-over-api-remaining.md) | Cursor `! auto: swapped to` 目标 `1st`/`API` 都是 `0%`、旁边号 `API` 还有余量（如 10%）；或改 Cursor 三池并行自动换号前必读 |
+| [2026-09-05 Cursor Credits 误当成 `$20` API 池](2026-09-05-cursor-credits-zero-despite-claimed-remaining.md) | Cursor `$ [$0.00 left]` 与 Spending 页 Credits 不符、把 Pro `$20`/API 当成 Credits、或改 `get-credit-grants-balance` / 并行池自动换号前必读 |
 | [2026-09-05 Codex 同一账号两个 `7d`（附加 gpt-reserve）](2026-09-05-codex-duplicate-7d-from-additional-rate-limits.md) | Codex 行出现两个 `7d`、其中一个 `0% left`，或主周额度还有余量却被当成周耗尽；改 `wham/usage` 窗口递归解析、`additional_rate_limits` 处理前必读 |
 | [2026-08-21 Cursor 自动切到 1st 0% 号](2026-08-21-cursor-auto-swap-to-zero-over-remaining.md) | 默认入口 Cursor `! auto: swapped to` 目标号 `1st`/`API` 都是 `0%`、旁边号 `1st` 还有余量；改自动换号候选窗口或 Cursor `1st`/`API` 策略前必读 |
 | [2026-08-15 整段 Cursor 无声消失（症状族汇总）](2026-08-15-cursor-section-silently-missing.md) | 默认入口整段 Cursor（或任何 provider）都不见了，不是某个账号余量查不出来；先读此文分辨三种已知根因，不要直接扎进额度接口 |

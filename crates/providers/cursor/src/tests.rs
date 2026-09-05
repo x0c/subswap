@@ -32,6 +32,7 @@ fn setup() -> (tempfile::TempDir, CursorProvider, PathBuf) {
                 state_db: db.clone(),
             },
             usage_url: "http://127.0.0.1:9/usage".into(),
+            credits_url: String::new(),
             token_url: "http://127.0.0.1:9/token".into(),
             process_control: Arc::new(NoopProcessControl),
             refresh_lock_dir: temp.path().join("refresh-locks"),
@@ -54,6 +55,7 @@ fn configured(
         CursorProviderConfig {
             source: CredentialSource::Desktop { state_db },
             usage_url,
+            credits_url: String::new(),
             token_url,
             process_control,
             refresh_lock_dir: base.refresh_lock_dir.clone(),
@@ -220,7 +222,9 @@ fn parses_first_party_and_api_as_used_percentages() {
         "billingCycleEnd": "2026-08-01T00:00:00Z",
         "individualUsage": {"plan": {
             "autoPercentUsed": 59.2,
-            "apiPercentUsed": "57"
+            "apiPercentUsed": "57",
+            "used": 2000,
+            "limit": 2000
         }}
     });
     let quotas = parse_usage(&id, &value).unwrap();
@@ -230,55 +234,112 @@ fn parses_first_party_and_api_as_used_percentages() {
     assert_eq!(quotas[1].window, QuotaWindow::Api);
     assert_eq!(quotas[1].used, 57);
     assert!(quotas.iter().all(|quota| quota.reset_at.is_some()));
+    // plan.used/limit 是 API 已含池，禁止当成 Credits。
+    assert!(quotas.iter().all(|q| q.window != QuotaWindow::Credits));
 }
 
 #[test]
-fn parses_credits_from_plan_spend_fields_in_cents() {
+fn parses_credit_grants_balance_from_spending_api() {
     let id = AccountId("account".into());
     let value = serde_json::json!({
-        "billingCycleEnd": "2026-08-01T00:00:00Z",
-        "individualUsage": {"plan": {
-            "autoPercentUsed": 4.0,
-            "apiPercentUsed": 3.0,
-            "totalSpend": 1288,
-            "includedSpend": 1288,
-            "remaining": 712,
-            "limit": 2000
-        }}
+        "hasCreditGrants": true,
+        "creditBalanceCents": "1110",
+        "totalCents": "2500",
+        "usedCents": "1390"
     });
-    let quotas = parse_usage(&id, &value).unwrap();
-    assert_eq!(quotas.len(), 3);
-    let credits = quotas
-        .iter()
-        .find(|q| q.window == QuotaWindow::Credits)
-        .expect("credits window");
-    assert_eq!(credits.used, 1288);
-    assert_eq!(credits.limit, 2000);
+    let credits = parse_credit_grants(&id, &value, None).expect("credits");
+    assert_eq!(credits.window, QuotaWindow::Credits);
+    assert_eq!(credits.used, 1390);
+    assert_eq!(credits.limit, 2500);
     assert_eq!(credits.status, QuotaStatus::Ok);
 }
 
 #[test]
-fn prefers_overall_bucket_for_credits_when_present() {
+fn empty_credit_grants_response_yields_no_window() {
     let id = AccountId("account".into());
-    let value = serde_json::json!({
-        "billingCycleEnd": "2026-08-01T00:00:00Z",
-        "individualUsage": {
-            "overall": {"enabled": true, "used": 450, "limit": 2000, "remaining": 1550},
-            "plan": {
-                "autoPercentUsed": 10,
-                "apiPercentUsed": 20,
-                "totalSpend": 1288,
-                "limit": 2000
-            }
-        }
-    });
-    let quotas = parse_usage(&id, &value).unwrap();
+    assert!(parse_credit_grants(&id, &serde_json::json!({}), None).is_none());
+    assert!(parse_credit_grants(
+        &id,
+        &serde_json::json!({"hasCreditGrants": false, "creditBalanceCents": "0"}),
+        None
+    )
+    .is_none());
+}
+
+#[tokio::test]
+async fn query_quota_merges_credit_grants_from_spending_api() {
+    let (_temp, base_provider, db) = setup();
+    let access = jwt("auth0|user_a", "a");
+    write_live(&db, "a@example.com", "auth0|user_a", &access, "refresh-a");
+    let account = base_provider.import_active(None).await.unwrap();
+    let server = MockServer::start(vec![
+        (
+            "200 OK",
+            r#"{"billingCycleEnd":"2026-08-01T00:00:00Z","individualUsage":{"plan":{"autoPercentUsed":4,"apiPercentUsed":3}}}"#,
+        ),
+        (
+            "200 OK",
+            r#"{"hasCreditGrants":true,"creditBalanceCents":"1110","totalCents":"2500","usedCents":"1390"}"#,
+        ),
+    ]);
+    let provider = CursorProvider::with_config(
+        base_provider.store.clone(),
+        base_provider.registry.clone(),
+        CursorProviderConfig {
+            source: CredentialSource::Desktop { state_db: db },
+            usage_url: format!("{}/usage", server.base),
+            credits_url: format!("{}/credits", server.base),
+            token_url: format!("{}/token", server.base),
+            process_control: Arc::new(NoopProcessControl),
+            refresh_lock_dir: base_provider.refresh_lock_dir.clone(),
+            snapshots_dir: base_provider.snapshots_dir.clone(),
+        },
+    );
+    let quotas = provider.query_quota(&account.id).await.unwrap();
+    assert_eq!(quotas.len(), 3);
     let credits = quotas
         .iter()
         .find(|q| q.window == QuotaWindow::Credits)
-        .expect("credits window");
-    assert_eq!(credits.used, 450);
-    assert_eq!(credits.limit, 2000);
+        .expect("credits");
+    assert_eq!(credits.used, 1390);
+    assert_eq!(credits.limit, 2500);
+    assert_eq!(credits.status, QuotaStatus::Ok);
+    let requests = server.finish();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].starts_with("GET /usage"));
+    assert!(requests[1].starts_with("POST /credits"));
+}
+
+#[tokio::test]
+async fn query_quota_skips_empty_credit_grants_body() {
+    let (_temp, base_provider, db) = setup();
+    let access = jwt("auth0|user_a", "a");
+    write_live(&db, "a@example.com", "auth0|user_a", &access, "refresh-a");
+    let account = base_provider.import_active(None).await.unwrap();
+    let server = MockServer::start(vec![
+        (
+            "200 OK",
+            r#"{"individualUsage":{"plan":{"autoPercentUsed":4,"apiPercentUsed":3}}}"#,
+        ),
+        ("200 OK", "{}"),
+    ]);
+    let provider = CursorProvider::with_config(
+        base_provider.store.clone(),
+        base_provider.registry.clone(),
+        CursorProviderConfig {
+            source: CredentialSource::Desktop { state_db: db },
+            usage_url: format!("{}/usage", server.base),
+            credits_url: format!("{}/credits", server.base),
+            token_url: format!("{}/token", server.base),
+            process_control: Arc::new(NoopProcessControl),
+            refresh_lock_dir: base_provider.refresh_lock_dir.clone(),
+            snapshots_dir: base_provider.snapshots_dir.clone(),
+        },
+    );
+    let quotas = provider.query_quota(&account.id).await.unwrap();
+    assert_eq!(quotas.len(), 2);
+    assert!(quotas.iter().all(|q| q.window != QuotaWindow::Credits));
+    let _ = server.finish();
 }
 
 #[test]
@@ -821,6 +882,7 @@ fn agent_provider(
                 token_store: AgentTokenStore::File,
             },
             usage_url,
+            credits_url: String::new(),
             token_url,
             process_control: Arc::new(NoopProcessControl),
             refresh_lock_dir: temp.join("refresh-locks"),
@@ -1210,6 +1272,7 @@ async fn imports_cursor_cli_tokens_from_isolated_keychain() {
                 },
             },
             usage_url: format!("{}/usage", server.base),
+            credits_url: String::new(),
             token_url: format!("{}/token", server.base),
             process_control: Arc::new(NoopProcessControl),
             refresh_lock_dir: temp.path().join("refresh-locks"),
@@ -1260,6 +1323,7 @@ async fn agent_activate_writes_target_credentials_back_to_keychain() {
                 },
             },
             usage_url: "http://127.0.0.1:9/usage".into(),
+            credits_url: String::new(),
             token_url: "http://127.0.0.1:9/token".into(),
             process_control: Arc::new(NoopProcessControl),
             refresh_lock_dir: temp.path().join("refresh-locks"),
