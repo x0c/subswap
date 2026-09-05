@@ -31,6 +31,21 @@ cookie 与 usage-summary 相同（WorkOS session）。
 
 `creditBalanceCents` 为剩余分（`"1110"` → `$11.10`）。无赠送时可能返回 `{}`。
 
+## 缺 Credits 列（不是漏查）
+
+用户问：「某号只有 `1st`/`API` 都是 `0%`，**没有显示** `$` / Credits，是不是没余额了？」
+
+是。官方 `get-credit-grants-balance` 对该号返回 `{}`（或 `hasCreditGrants != true`）时，
+subswap **故意不画** Credits 列——表示「没有赠送额度」，不是查询失败。
+
+实测例：`hillarderdmanpm@outlook.com` → HTTP 200 + `{}` → 列表无 `$` 列。
+若同时 `1st`/`API` 也是 `0%`，该号三池皆空，自动换号不会把它当可用候选。
+
+**禁止的误修**：不要为了「列对齐」给无赠送号硬显示 `$ [$0.00 left]`——会与「有赠送但已用尽」混淆，
+也会让人以为查坏了。
+
+与「显示了 `$ [$0.00 left]` 但 Spending 页明明还有钱」是**另一类**问题（误把 API 池当 Credits），见上文。
+
 ## 自动换号
 
 `1st` 与 Credits 为**并行池**，且 **API 同样参与**（三池任一有余量即可用）。
