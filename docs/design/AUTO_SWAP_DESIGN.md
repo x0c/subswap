@@ -3,107 +3,79 @@
 ## 0. 核心不变量
 
 **手动 `subswap swap` 命令永远独立于额度查询。** 即使 quota 接口、网络、凭证密钥任一不可用，
-手动切换都必须能跑通。本文档描述的自动切换是在「条件具备时锦上添花」的能力，**不能成为切换的唯一通路**。
+手动切换都必须能跑通。自动切换是「条件具备时锦上添花」，**不能成为切换的唯一通路**。
 
 ## 1. 触发策略（阈值 + 限流双触发）
 
 ### 1.1 阈值触发
 
 - 默认阈值：由 `crates/core/src/defaults.rs::AUTO_SWAP_THRESHOLD` 定义，运行时可由 `config.toml` 覆盖。
-- 适用窗口：阈值触发只看小时级窗口（当前可可靠识别的是 `FiveHour`）。Claude 的 7d、Codex 月度、
-  OpenCode Go 的 weekly/monthly 等长窗口即使接近阈值也不触发自动切换，避免把长窗口里仍然可观的余量过早浪费掉。
-  OpenCode Go 的 `rolling`（约 5 小时额度）映射为 `FiveHour`，因此走这条阈值触发。
+- 适用窗口：只看小时级（当前可可靠识别 `FiveHour`）。Claude 7d、Codex 月度、OpenCode weekly/monthly 等长窗口即使接近阈值也不触发。OpenCode `rolling`（约 5 小时）映射为 `FiveHour`，走阈值触发。
 - 硬阻断：对 **Claude / Codex 等叠加上限**，任一参与自动切换的窗口 `Exhausted` 即触发/阻断。
   **Cursor 例外**：`1st`、**Credits**、**API** 是并行可用池——任一池仍有余量即可承接；
   仅当所有池都耗尽才触发/阻断。因此「全员 1st 见底、某号 API 仍有 10%」必须切到该号，
   **禁止**按重置时间优先挑全空号。反过来：`1st` 仍有余量时，也不要因 API 耗尽就切走
   （见 2026-08-21）。实现见 `auto_policy` 的 `cursor_parallel_pools`。
-- 不适用条件：`Quota.limit == 0` 或 `status == Unknown` 时**不触发**（无法判断，保守不动）。
+- 不适用：`Quota.limit == 0` 或 `status == Unknown` → **不触发**。
 
 ### 1.2 限流触发
 
-- 当 Provider 调用真实业务接口收到 HTTP 429 或被识别为限流响应时，**立即**触发（不等下次轮询）。
-- 实现方式：上游客户端（Codex CLI / Claude CLI）的调用钩子或 daemon 提供本地 IPC 接受上报。
-- 限流触发权重高于阈值触发：即使 quota 显示充裕，限流响应也应当被信任。
-- **不通过高频轮询制造/探测 429**：429 触发只能来自真实客户端上报或明确的本地 IPC。
-  在没有稳定上报通道前，不实现“主动探测限流”。
+- 真实业务接口收到 HTTP 429 或识别为限流 → **立即**触发（不等下次轮询）。
+- 实现：上游客户端钩子或 daemon 本地 IPC 上报。
+- 权重高于阈值：quota 显示充裕也信任限流响应。
+- **不通过高频轮询制造/探测 429**；无稳定上报通道前不实现主动探测。
 
 ### 1.3 采样入口
 
-- `subswap` 无参默认入口：调用即采样一次，查询所有已登记账号额度并按策略自动切换（渐进式重判见 1.4）。
-- `subswapd` daemon（M4）：默认 60 秒采样一次。
+- `subswap` 无参：调用即采样一次（渐进式重判见 1.4）。
+- `subswapd`（M4）：默认 60 秒一次。
 
 ### 1.4 默认入口的渐进式重判（每收到一份额度重判一次，单调升级）
 
-默认入口的额度是**边查边回**（每账号一个 `tokio::spawn` + mpsc，按返回顺序逐份回填）。
-关键约束：**不能查到第一份额度就把决策锁死**。否则更优候选还在 loading 时，会先切到一个
-「逃生/兜底候选」（第 2 节第 6~8 条的 loading/失败兜底），等更优候选额度落地却已错过，
-表现为：连跑两次 `subswap` 结果不同、甚至停在一个已耗尽的号上不动。
+额度边查边回（每账号 `tokio::spawn` + mpsc）。**不能查到第一份就把决策锁死**，否则更优候选仍 loading 时会先切到逃生/兜底候选（§2 第 6~8 条），表现为连跑两次结果不同、甚至停在已耗尽号。
 
 正确行为（`crates/cli/src/cmd/default.rs::fill_quotas_progressively` →
-`try_auto_swap_ready_provider`）：**每收到一份 quota 更新就对该 provider 重跑一次 `decide`**，
-有更优目标就升级过去——一次 `subswap` 内自我纠正，无需用户再跑一遍。
+`try_auto_swap_ready_provider`）：**每收到一份 quota 对该 provider 重跑 `decide`**，有更优目标就升级。
 
-单调收敛靠三点，缺一会抖动：
-1. `decide` 只在当前 active 确实不行（耗尽/超阈值/loading/失败）时才返回 `Swap`；切到真正可用号后自然 `NoOp`。
-2. `AutoSwapProgress.activated_targets`：本次运行已切到的目标不重复 `activate`（避免重写凭证）。
-3. `AutoSwapProgress.abandoned`：本次运行主动离开过的账号不再切回，「只升级、不回头」，杜绝 A→B→A。
+单调收敛三点（缺一会抖动）：
+1. `decide` 仅在 active 确实不行（耗尽/超阈值/loading/失败）时返回 `Swap`；切到可用号后 `NoOp`。
+2. `AutoSwapProgress.activated_targets`：本次已切到的目标不重复 `activate`。
+3. `AutoSwapProgress.abandoned`：本次主动离开过的账号不再切回（只升级、不回头）。
 
-注意与 settle-grace（2 节 8.5）的配合：刚激活号只挡 loading/失败这类**不确定**状态；
-**已耗尽是确定状态**，照样会被升级走，所以不会把用户卡在耗尽号上。
+与 settle-grace（§2 条 8.5）配合：刚激活号只挡 loading/失败等**不确定**状态；**已耗尽是确定状态**，照样升级走。
 
 ## 2. 候选账号筛选
 
 按顺序应用：
 
-1. **同 Provider 内**：自动切换不跨 Provider（用户可能并非两边都有付费）。
-2. **可用性**：优先选择小时级窗口未达到自动切换阈值、且没有 `Exhausted` 窗口的账号；长窗口达到
-   阈值但未耗尽时仍可作为候选。
-3. **冷却期**：刚被切走的账号默认 5 分钟内不再选回，避免触发→回切抖动。
+1. **同 Provider 内**：不跨 Provider。
+2. **可用性**：优先小时级未达阈值且无 `Exhausted` 窗口的账号；长窗口达阈值但未耗尽仍可作候选。
+3. **冷却期**：刚被切走的账号默认 5 分钟内不再选回。
 4. **优先级排序**（`compare_candidates`）：
-   1. 窗口最快 `reset_at` 升序（谁的窗口最先重置就优先选谁——尽快用完即将清零的额度，让账号尽早
-      进入下一轮可用周期；缺失 `reset_at` 视为最晚，排在已知重置时间的候选之后）；
-   2. `usage_ratio` 升序（reset_at 相同/缺失时按剩余多的优先，向后兼容旧行为）；
-   3. `Account.priority` 升序（用户配置的偏好）；
-   4. `id` 字典序（稳定 tie-break）。
-   注意：此排序只影响**触发后**挑哪个候选，不改变触发条件本身（仍是小时级阈值/429/loading/失败兜底，
-   不会提前切走还在阈值内的 active）。
-5. **无可用候选时的重置兜底**：如果其他账号也已超阈值 / `Exhausted`，但阻塞窗口都带有
-   `reset_at`，允许切到最早恢复可用的账号。多窗口账号取所有阻塞窗口 `reset_at` 的最大值，
-   避免 5h 刚刷新但 7d 仍阻塞时马上抖动；如果当前激活账号本身就是最早恢复的账号，则保持不动等待刷新。
-6. **查询失败候选兜底**：当前账号已明确耗尽、且没有已知可用候选时，允许切到因网络、超时、429 等
-   瞬态原因导致 `query_quota` 失败的其他账号；查询失败不一定代表账号不可用，继续停留在已耗尽账号则一定
-   无法承接流量。**401/403、`needs re-login`、凭据缺失等确定性鉴权失败例外：即使带有旧 quota 缓存也必须
-   排除，绝不能自动切进一个已知无法登录的账号。**
-7. **active 查询失败兜底**：active 的 `query_quota` 失败时，如果存在额度明确可用的其他账号则切走；没有明确
-   可用候选时才降级，禁止从未知状态盲切到另一个未知状态。
-8. **active 查询仍在加载兜底**：CLI 渐进刷新期间，如果 active 仍在 loading，而候选账号已经返回明确可用 quota，
-   立即切换；如果尚无明确可用候选，则继续等待后续 quota 更新，不提前定案。
-8.5. **新激活沉淀宽限（settle grace）**：account 刚成为 active（`last_used_at` 距今 < `auto_swap.settle_grace_ms`，
-   默认 60s；手动 swap 与自动切换都刷新 `last_used_at`）时，**不因第 7、8 条这类「loading / 查询失败」的不确定
-   状态把它切走**——直接 `NoOp` 等待 quota 沉淀。动机：否则用户手动 `swap` 到某账号后，仅仅运行一次 `subswap`
-   （默认入口会跑同一套 `decide`）或被 daemon 撞上 quota 冷启动正在 loading，就会被立刻顶回别的账号，违背显式选择。
-   **只挡不确定状态**：账号若已明确达到 threshold / `Exhausted`（第 2 步确定性数据），即使在宽限期内仍按正常逻辑切走。
-   宽限期需覆盖一次冷 quota 查询（含重试退避）的耗时。改默认值只动 `crates/core/src/defaults.rs::AUTO_SWAP_SETTLE_GRACE_MS`。
-9. **`manual_only` 强制边界**：`Account.extra.manual_only == true` 的账号只能由用户手动激活；
-   active 命中时立即 `NoOp`，即使 quota 仍在 loading / 查询失败也不自动切走；inactive 时从所有候选路径排除。
-   Claude 自定义 API 使用此语义，因为它没有可比较的订阅 quota。
-10. **执行前重验 active**：daemon 的 quota 查询期间用户可能手动切换账号；执行自动切换前必须重新读取 registry。
-    只有当前 active 仍等于决策快照中的 active、且当前 active 不是 `manual_only` 时才能执行，否则丢弃过期决策。
+   1. 窗口最快 `reset_at` 升序（缺失视为最晚）；
+   2. `usage_ratio` 升序；
+   3. `Account.priority` 升序；
+   4. `id` 字典序。
+   此排序只影响触发后挑哪个；不改变触发条件（仍是小时级阈值/429/loading/失败兜底）。
+5. **无可用候选时的重置兜底**：其他账号也超阈值 / `Exhausted`，但阻塞窗口都带 `reset_at` → 切到最早恢复者。多窗口取所有阻塞窗口 `reset_at` 最大值；若当前 active 已是最早恢复者则不动。
+6. **查询失败候选兜底**：当前已明确耗尽、无已知可用候选时，允许切到因网络/超时/429 等导致 `query_quota` 失败的账号。**401/403、`needs re-login`、凭据缺失例外：即使有旧 quota 缓存也必须排除。**
+7. **active 查询失败兜底**：存在额度明确可用的其他账号则切走；无明确可用候选才降级；禁止未知→未知盲切。
+8. **active 仍在加载兜底**：有明确可用候选则立即切；否则继续等待，不提前定案。
+8.5. **新激活沉淀宽限（settle grace）**：`last_used_at` 距今 < `auto_swap.settle_grace_ms`（默认 60s；手动/自动切换都刷新）时，**不因第 7、8 条 loading/查询失败切走** → `NoOp`。**只挡不确定状态**：已达 threshold / `Exhausted` 仍正常切走。宽限期须覆盖一次冷 quota 查询（含重试）。改默认只动 `crates/core/src/defaults.rs::AUTO_SWAP_SETTLE_GRACE_MS`。
+9. **`manual_only`**：`Account.extra.manual_only == true` → active 立即 `NoOp`（即使 loading/失败也不切走）；inactive 从所有候选路径排除。Claude 自定义 API 用此语义。
+10. **执行前重验 active**：daemon 执行前重读 registry；仅当当前 active 仍等于决策快照且非 `manual_only` 才执行，否则丢弃过期决策。
 
 ## 2.5 风控与合规边界
 
-subswap 的目标是减少重复登录和人工切换，不是规避厂商限制。实现上必须遵守：
-
-- `query_quota` 只做低频状态采样；无参 `subswap` 是用户主动触发的一次性采样。
-- daemon（M4）默认 60 秒轮询，失败后必须退避；不得把轮询周期调到秒级以下。
-- 不绕过厂商的并发、地域、账号共享、速率限制等使用政策。
-- 任何新增 Provider 的 usage/refresh 请求都必须先写入 `docs/PROVIDER_KNOWLEDGE_BASE.md`，说明端点、频率和失败退避策略。
-- active quota 查询失败时不补打额外请求；有明确可用候选则切走，否则 Degraded 并提示手动 `subswap swap`。
+- `query_quota` 只做低频采样；无参 `subswap` 是用户主动一次性采样。
+- daemon 默认 60 秒轮询，失败退避；不得把周期调到秒级以下。
+- 不绕过厂商并发、地域、账号共享、速率限制等政策。
+- 新增 Provider 的 usage/refresh 须先写入 `docs/PROVIDER_KNOWLEDGE_BASE.md`（端点、频率、失败退避）。
+- active quota 失败不补打额外请求；有明确可用候选则切走，否则 Degraded + 提示手动 `subswap swap`。
 
 ## 3. 降级到手动
 
-下列情况下，**自动切换必须主动放弃并明确提示用户手动 `subswap swap`**：
+下列情况下自动切换必须放弃并提示手动 `subswap swap`：
 
 | 触发条件 | 现象 | 行为 |
 |---|---|---|
@@ -116,25 +88,17 @@ subswap 的目标是减少重复登录和人工切换，不是规避厂商限制
 | 5 分钟内连续触发 ≥ 3 次 | 快速抖动 | 暂停自动切换 30 分钟；要求人工介入 |
 | 15 分钟内同一目标账号被**切回 ≥ 2 次** | 振荡(A→B→A) | 同上：进 Degraded 30 分钟 |
 
-**振荡检测为何不能只靠「5min 内 3 次」（2026-06-14 修复的真 bug）**：`cooldown`(默认 5min) ==
-`FLAP_WINDOW`(5min) 时，冷却把每个号的回切卡到刚好 5min 一跳，任意 5min 窗口最多数到 2 次 →
-永远够不到 3 → 刹车一次都不触发，A↔B 无限横跳（实测 codex 在两个全耗尽/401 的废号间从 5/29 跳了 60 次）。
-对策（`crates/daemon/src/state.rs`）：`swap_history` 改存**目标账号+时间**，`detect_flap` 增加
-**振荡判定**——`OSCILLATION_WINDOW`(15min，**必须明显 > cooldown**) 内同一目标被切回 ≥2 次即判抖动。
-快速 flap(5min×3) 与振荡(15min×同目标2) 取其一即进 Degraded。
+**振荡检测为何不能只靠「5min 内 3 次」（2026-06-14）**：`cooldown`(默认 5min) == `FLAP_WINDOW`(5min) 时，冷却把回切卡到刚好 5min 一跳 → 任意 5min 窗口最多 2 次 → 永远够不到 3 → 刹车不触发（实测两废号间跳 60 次）。对策（`crates/daemon/src/state.rs`）：`swap_history` 存**目标账号+时间**，`detect_flap` 加振荡判定——`OSCILLATION_WINDOW`(15min，**必须明显 > cooldown**) 内同目标切回 ≥2 次即判抖动。快速 flap(5min×3) 与振荡(15min×同目标2) 取其一即进 Degraded。
 
-> 注意：刹车只「停止瞎切」，不保证停在**最优**号。当 active 是失败号且无可用候选时，决策返回
-> Degraded 就地不动，可能赖在 401 废号上而非「最快恢复」的号——那是候选筛选的进一步优化(未做)，
-> 与防抖刹车正交。
+> 刹车只停瞎切，不保证停在最优号。active 是失败号且无可用候选时 Degraded 就地不动——与防抖正交，候选筛选进一步优化未做。
 
-降级时 CLI/daemon 输出格式建议：
+降级输出建议：
 
 ```
 [degraded] codex: active account alice quota fetch failed (timeout); cannot decide
 ```
 
-用户需要人工介入时，直接执行 `subswap swap <id>`；若 id 跨 Provider 冲突，用
-`subswap swap <provider>/<id>`。
+人工介入：`subswap swap <id>`；跨 Provider 冲突用 `subswap swap <provider>/<id>`。
 
 ## 4. 状态机
 
@@ -159,39 +123,37 @@ subswap 的目标是减少重复登录和人工切换，不是规避厂商限制
        └─────────┘
 ```
 
-`Degraded` 是显式终态：本次 `subswap` 不再尝试切换；daemon 场景（M4）会暂停该 Provider
-的自动切换，直到冷却结束或进程重启。理由：连续失败时继续盲切换风险大于收益。
+`Degraded` 是显式终态：本次 `subswap` 不再尝试；daemon（M4）暂停该 Provider 自动切换，直到冷却结束或进程重启。连续失败时盲切风险大于收益。
 
 ## 5. 通知
 
-- 成功切换：本地系统通知 + 审计日志。
-- 进入 `Degraded`：本地系统通知 + 标记状态文件（M4 daemon 状态显示）。
-- 通知后端（M4 之后）：可配置 Webhook，方便接入飞书/Slack/邮件。
+- 成功切换 / 进入 `Degraded`：本地系统通知 + 审计（Degraded 另标记状态文件，M4）。
+- 通知后端（M4 之后）：可配置 Webhook。
 
 ## 5.5 Token 保活（daemon 兼职）
 
-daemon 启动后除了自动切换，还负责**非活跃 Claude 账号的 token 保活**：
+daemon 除自动切换外，负责**非活跃 Claude 账号 token 保活**：
 
-- 每个轮询周期（默认 60s）扫描全部账号
-- 任一账号 `expires_at - now < 1h` 且 keyring 中有 `refresh_token` → 触发刷新（写回 keyring，不动 `~/.claude/`）
-- 失败仅 warn，不影响其它账号 / 自动切换主流程
-- 这是「应用自己后台干的事」，不暴露给日常 CLI 工作流，用户不需要写 cron。
+- 每轮询周期（默认 60s）扫全部账号
+- `expires_at - now < 1h` 且有 `refresh_token` → 刷新（写回 keyring，不动 `~/.claude/`）
+- 失败仅 warn；不影响其它账号 / 自动切换
+- 不暴露日常 CLI；用户无需 cron
 
-设计动机：non-active 账号没人帮它刷 token，切过去时 token 已过期 → Claude CLI 立刻 401。
-
-Codex **不需要**这个机制：所有账号的 access_token 最终都流过 `~/.codex/auth.json`，Codex CLI 自己持续刷新。
+动机：non-active 无人刷 token → 切过去立刻 401。Codex 不需要：access_token 都流过 `~/.codex/auth.json`，CLI 自刷新。
 
 ## 6. 配置项（config.toml）
+
+字段语义与默认以 [CONFIG.md](../CONFIG.md) / `defaults.rs` 为准。结构示意：
 
 ```toml
 [auto]
 enabled = true                  # 总开关
-# threshold = <0.0~1.0>         # 阈值触发上限，默认见 defaults.rs
+# threshold = <0.0~1.0>         # 权威：defaults::AUTO_SWAP_THRESHOLD
 cooldown_seconds = 300          # 切换冷却
-# settle_grace_ms = 60000       # 新激活账号沉淀宽限：此窗口内不因 loading/查询失败被切走
+# settle_grace_ms = ...         # 新激活沉淀宽限；权威：AUTO_SWAP_SETTLE_GRACE_MS
 poll_interval_seconds = 60      # daemon 轮询周期
-allow_unknown = false           # 是否允许选择 status=Unknown 的候选
-max_flap_per_5min = 3           # 抖动上限，超过进入 Degraded
+allow_unknown = false           # 是否允许 status=Unknown 候选
+max_flap_per_5min = 3           # 抖动上限，超过进 Degraded
 
 [auto.providers.codex]          # 可按 Provider 覆写
 # threshold = <0.0~1.0>
@@ -199,8 +161,10 @@ max_flap_per_5min = 3           # 抖动上限，超过进入 Degraded
 
 ## 7. 测试要点
 
-- 单元：`AutoSwapPolicy` 给定一组 Quota 列表，断言挑选结果。
-- 集成：mock Provider 模拟 quota 失败、429、Exhausted 等组合，验证降级路径。
-- 鉴权失败候选：验证带旧缓存的 401/403、`needs re-login`、凭据缺失账号也不会成为自动候选。
-- `manual_only`：验证 active 时不自动切走、inactive 时不成为已知可用 / 查询失败 / reset 兜底候选。
-- 端到端：本地双账号 + mock HTTP server，跑 `subswap` 看 keyring 与 client_targets 是否同步。
+- 单元：`AutoSwapPolicy` 给定 Quota 列表，断言挑选结果。
+- 集成：mock Provider 模拟 quota 失败、429、Exhausted 等，验证降级。
+- 鉴权失败候选：带旧缓存的 401/403、`needs re-login`、凭据缺失不得成自动候选。
+- `manual_only`：active 不自动切走；inactive 不进已知可用 / 查询失败 / reset 兜底。
+- 端到端：双账号 + mock HTTP，跑 `subswap` 看 keyring 与 client_targets 同步。
+
+<!-- 该文档整理/压缩于 2026-09-05 -->

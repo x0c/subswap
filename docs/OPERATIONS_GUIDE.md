@@ -1,21 +1,6 @@
 # subswap 运行与验证 Guide
 
-## 文档定位
-
-本 Guide 覆盖 subswap 的本地构建、测试、release 构建、本机覆盖安装、daemon 冒烟和 CI/Release 验证口径。不覆盖 Provider 业务规则、自动切换决策、账号隔离机制或历史故障；这些内容分别进入对应领域文档和故障排查索引。
-
-## 验证结论摘要
-
-本次 doc-init 已实际执行并验证：
-
-| 验证项 | 命令/动作 | 结果 | 结论 |
-|---|---|---|---|
-| 项目扫描 | `project_inventory.py --root .` | 成功 | Rust workspace、CI、release、测试入口可被自动发现 |
-| Git 弱信号扫描 | `git_history_miner.py --root .` | 成功 | 最近 46 条提交可用，只作为热点和风险线索 |
-| 文档导航初检 | `doc_nav_lint.py --root .` | 发现 1 个 error、1 个 warning | `CLAUDE.md` 必须规范成单行；隔离设计文档顶部自我导航需改写 |
-| 文档导航复检 | `doc_nav_lint.py --root .` | 成功 | 无 error、无 warning；`领域地图（doc-init）` 已写入 |
-| Rust 编译检查 | `cargo check --workspace` | 成功 | 全 workspace 通过 |
-| Rust 测试 | `cargo test --workspace` | 成功 | 全 workspace 通过，CLI 集成测试与自动切换策略测试均通过 |
+本地构建、测试、release 构建、本机覆盖安装、daemon 冒烟和 CI/Release 验证口径。不覆盖 Provider 业务规则、自动切换决策、账号隔离机制或历史故障。
 
 ## 进程启动矩阵
 
@@ -89,8 +74,6 @@ GitHub Release 的 `x86_64-unknown-linux-gnu` 包按 CI 的较新系统库构建
 ```bash
 shasum -a 256 target/release/subswap target/release/subswapd \
   ~/.local/bin/subswap ~/.local/bin/subswapd
-```
-
 pkill -f 'subswap __daemon' 2>/dev/null || true
 pkill -f 'subswapd' 2>/dev/null || true
 SUBSWAP_AUTO_DAEMON=1 ~/.local/bin/subswap
@@ -193,4 +176,4 @@ Windows release 只有 CLI，文档和安装脚本都不得暗示包含后台 da
 - 本次 doc-init 未真实执行 release 构建、本机覆盖安装或 daemon 冒烟；本次文档改动已用文档 lint、`cargo check --workspace` 和 `cargo test --workspace` 验证。
 - Windows 的本机手工冒烟仍依赖 CI 环境；当前支持结论来自三平台测试矩阵、Windows release 构建与一键安装链路，daemon 明确不在 Windows 支持范围内。
 
-<!-- 该文档由 doc-init 生成于 2026-06-20；定位：AI 修改 subswap 运行、验证、发布流程前的快速参考文档 -->
+<!-- 该文档整理/压缩于 2026-09-05 -->

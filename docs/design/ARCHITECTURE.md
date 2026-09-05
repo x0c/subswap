@@ -58,12 +58,7 @@
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Codex、Kimi 与 OpenCode Go 共享 `providers/common` 里的切换机制（原子写文件、快照回滚、capture-on-leave 回灌、
-parked-only 刷新、隔离导出/吸收），各自只实现 `FileBlobRuntime` trait 提供的差异点（本地路径解析、
-凭证 blob 里的元数据抽取、刷新请求、usage 查询；OpenCode 另覆盖 `extract_blob` / `compose_live`，
-因为 `auth.json` 是多供应商共存文件，只能改 `opencode-go` 那一项）。Claude 因 macOS Keychain 存储 + 自定义 API 账号
-这类无本地凭证文件的特殊形状，继续保留独立实现。Cursor 的身份位于 SQLite，切换还要协调桌面应用
-生命周期，也独立实现 `Provider`；两者都不接共享引擎。
+Codex / Kimi / OpenCode Go → `providers/common`（原子写、快照回滚、capture-on-leave、parked-only 刷新、隔离导出/吸收）；各自只实现 `FileBlobRuntime` 差异点。OpenCode 另覆盖 `extract_blob` / `compose_live`（`auth.json` 多供应商共存，只改 `opencode-go` 项）。Claude（Keychain + 自定义 API、无本地凭证文件）与 Cursor（SQLite + GUI 生命周期）独立实现 `Provider`，不接共享引擎。
 
 ## 2. 设计模式
 
@@ -101,18 +96,14 @@ parked-only 刷新、隔离导出/吸收），各自只实现 `FileBlobRuntime` 
 ⑤ render 最终状态
 ```
 
-`find_unique(id)` 支持全局 id 反查（唯一时省略 provider；歧义时用 `<provider>/<id>`）。
-默认入口在每行账号前打全局编号（跨 provider 连续，1-based），编号来源是 `AppContext::list_ordered()`
-—— 与 `subswap swap N` / `subswap rm N` 共享同一映射，保证「屏幕上看到的第 3 行」就是 `swap 3` 切的那个。
-渲染器在 tty 下用 ANSI dim/color 做视觉分层：active 标记 `*` 用 bold cyan、warn 黄、full 加粗红、
-其余 ok / 编号 / reset 时间 / 标签均 dim，让用户一眼锁定告警与当前账号。非交互（管道 / 重定向）退化为纯文本。
+`find_unique(id)`：全局 id 反查（唯一可省略 provider；歧义用 `<provider>/<id>`）。
+默认入口全局编号（跨 provider 连续，1-based）来自 `AppContext::list_ordered()`，与 `subswap swap N` / `subswap rm N` 同映射。
+tty：ANSI 分层（active `*` bold cyan、warn 黄、full 加粗红；其余 dim）；非交互退化为纯文本。
 
-默认入口的交互要求：
-- 不能等所有网络请求结束后才第一次输出；账号列表必须先出现。
-- quota 行使用稳定、面向人读的块状字段；所有 Provider 统一显示余量（如 `5h [ 41% left ]`、
-  `1st [ 41% left ]`）。
-- 没有有效数据的窗口不显示；例如 Claude `extra_usage` 缺 utilization 时不输出 `mo=?`。
-- reset 默认显示相对时间（`in 69m` / `in 4h` / `in 3d`），避免绝对时间列挤压。
+交互要求：
+- 账号列表必须先于全部网络请求出现。
+- quota 行统一余量块（如 `5h [ 41% left ]`、`1st [ 41% left ]`）；无有效数据的窗口不显示（如 Claude `extra_usage` 缺 utilization 时不输出 `mo=?`）。
+- reset 默认相对时间（`in 69m` / `in 4h` / `in 3d`）。
 
 ### 3.2 `subswap login <provider>`
 
@@ -125,16 +116,11 @@ opencode: subswap login opencode → （TUI 已 connect，或 `-- sk-…`）→ 
                                       └─ registry.set_active(provider, imported_id)
 ```
 
-设计取舍：
-- login 不复刻私有 OAuth 流程，优先委托厂商官方 CLI，降低接口漂移和风控/条款风险。
-- 同一账号重新 login 时按 `(provider, id)` 覆盖 keyring 旧凭证，不新增重复账号。
-- 登录完成后以官方 CLI 当前激活账号为准，导入 registry 并标记为 active。
-- Kimi 没有可供 subswap 驱动的官方 CLI 登录子命令，因此 `subswap login kimi` 不跑任何 OAuth
-  流程，只是单纯 import：约定用户已自行用 `kimi` 这个原生 TUI 登录过。
-- Cursor 同样不复制登录流程：用户先在桌面端登录，`subswap login cursor` 只从 `state.vscdb` 导入。
-- OpenCode Go 也没有可驱动的登录子命令：`subswap login opencode` 导入当前 `auth.json` 的
-  `opencode-go` 项；也可 `subswap login opencode -- sk-...` 直接写入 API key。切换时只改这一项，
-  不得覆盖同文件里的其它供应商。
+取舍：
+- 不复刻私有 OAuth；优先委托厂商官方 CLI。
+- 同账号重 login 按 `(provider, id)` 覆盖凭证，不新增重复。
+- 完成后以官方 CLI 当前激活账号为准，导入并标 active。
+- Kimi / Cursor / OpenCode：无驱动登录子命令 → 只 import（用户先自行登录；OpenCode 亦可 `login opencode -- sk-...` 写 API key）。切换 OpenCode 只改 `opencode-go` 项，不得覆盖同文件其它供应商。
 
 ### 3.3 `subswap swap [<id|N>]`
 
@@ -149,13 +135,13 @@ Provider.activate(id)
    └─ 写 audit
 ```
 
-无参 `subswap swap` 不做切换：只打印 `Usage: ...` + 带编号清单（不查 quota，保持手动入口零网络依赖的不变量）。切到具体账号成功后，再打印与默认入口同一张余量表（见 §3.3.1），**切换本身仍不依赖 quota**。
+无参 `subswap swap`：只打印 `Usage: ...` + 带编号清单（不查 quota；手动入口零网络依赖不变量）。切到具体账号成功后再打余量表（§3.3.1），**切换本身仍不依赖 quota**。
 
-**重要**：此路径不依赖 `query_quota`，网络完全不通时仍可用。`subswap rm` 走同一份 `resolve_account` 解析。
+**重要**：此路径不依赖 `query_quota`，网络不通仍可用。`subswap rm` 同用 `resolve_account`。
 
 ### 3.3.1 写操作后的状态面（status-after-action）
 
-`add-api` / `login` / `swap <目标>` / `rm` 成功后调用 `print_status_overview`：只读当前 registry → 渐进拉 quota → 用同一套 `render_to_string` 打出余量表。
+`add-api` / `login` / `swap <目标>` / `rm` 成功后 → `print_status_overview`：只读 registry → 渐进拉 quota → `render_to_string`。
 
 ```
 写操作成功
@@ -166,7 +152,7 @@ Provider.activate(id)
          └─ render 最终状态（不拉起 daemon）
 ```
 
-禁止把写操作收尾实现成再调一次 `default::run`：默认入口会 sync 本地登录（Cursor/`rm` 后仍登录着的号会被导回）、AutoSwap（顶掉刚手动切过去的号）和拉起 daemon。
+禁止收尾再调 `default::run`：会 sync 本地登录（Cursor/`rm` 后仍登录号被导回）、AutoSwap（顶掉刚手动切的号）、拉起 daemon。
 
 ### 3.3.5 Claude 自定义 API
 
@@ -187,8 +173,7 @@ subswap swap <oauth-id>
    └─ 删除 .subswap-api.json
 ```
 
-API 配置仍属于 `claude` Provider，因此列表、编号、`swap`、`rm` 保持一致。它没有 quota，并以
-`manual_only` 明确禁止自动切入和自动切出。
+属 `claude` Provider（列表/编号/`swap`/`rm` 一致）；无 quota；`manual_only` 禁止自动切入/切出。
 
 ### 3.4 `subswapd` daemon（M4）
 
@@ -211,23 +196,14 @@ key:   {provider}:{account}:{field}
 field 例： credentials_json（Claude 整段）/ auth_json（Codex 整段）
 ```
 
-抽象：`crates/core/src/store.rs::CredentialStore` trait，`compose_key()` 拼
-`{provider}:{account}:{field}`。读不存在的条目返回 `Ok(None)`，仅平台/IO 错误才 `Err`。
-两种后端实现：
+`crates/core/src/store.rs::CredentialStore` + `compose_key()` → `{provider}:{account}:{field}`。读不存在 → `Ok(None)`；仅平台/IO 错误 → `Err`。
 
-- **`FileStore`（默认装配）**：明文 JSON 单文件 `<data_dir>/credentials.json`，Unix 下 `0600`。
-  cli/daemon 在 `AppContext::build()` / daemon `run()` 里默认用它。可挂 `with_legacy_keyring`
-  回退：文件未命中某项时从旧 `KeyringStore` 读出并落盘，实现 Keychain→文件的**按需一次性迁移**，
-  迁移后该项永不再碰钥匙串。
-- **`KeyringStore`**：系统钥匙串后端（见下表），现仅作为 `FileStore` 的迁移回退源保留。
+- **`FileStore`（默认）**：`<data_dir>/credentials.json`，Unix `0600`。`AppContext::build()` / daemon `run()` 默认装配。可 `with_legacy_keyring`：文件未命中时从 `KeyringStore` 读出落盘（按需一次性迁移，之后不再碰钥匙串）。
+- **`KeyringStore`**：仅作迁移回退源。
 
-**为什么默认走文件而非钥匙串**：macOS 上每次读写钥匙串 item 都可能弹系统授权框，
-重编译/覆盖安装会换应用身份导致**反复弹框**（详见
-[troubleshooting/2026-05-29-macos-keychain-prompts.md](../troubleshooting/2026-05-29-macos-keychain-prompts.md)
-与 [troubleshooting/2026-06-06-filestore-credential-backend.md](../troubleshooting/2026-06-06-filestore-credential-backend.md)）。
-明文文件后端彻底规避此问题，代价是 token 明文落盘（`0600`，与 Codex 的 `~/.codex/auth.json` 同级）。
+默认走文件：macOS 钥匙串每次读写可能弹授权，重编译换身份会反复弹框（见 troubleshooting `2026-05-29-macos-keychain-prompts` / `2026-06-06-filestore-credential-backend`）。代价：token 明文落盘（`0600`，与 `~/.codex/auth.json` 同级）。
 
-**`KeyringStore` 多端后端差异（迁移回退源）**：
+**`KeyringStore` 多端后端（迁移回退）**：
 
 | 平台 | keyring 后端 | 进程间可见 | 重启后持久 |
 |---|---|---|---|
@@ -235,16 +211,11 @@ field 例： credentials_json（Claude 整段）/ auth_json（Codex 整段）
 | Windows | Credential Manager | ✅ | ✅ |
 | Linux | `linux-keyutils`（内核 keyring，编译期默认 feature） | ⚠️ 按内核 session 隔离 | ❌ 默认不跨重启 |
 
-Linux 的 keyutils 后端按**内核 session keyring** 隔离。`subswapd` 由 CLI 经
-`fork + setsid` 拉起（`crates/cli/src/daemon_spawn.rs`），`setsid` 会进入**新 session**，
-因此 daemon 读不到 CLI 在自己 session 写入的条目。**换用 `FileStore` 后此隔离问题一并消失**
-（文件对所有 session 可见、跨重启持久），daemon 保活不再受 keyutils 隔离影响。
-背景见 [troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md](../troubleshooting/2026-05-29-daemon-keyutils-session-isolation.md)。
-推论：token 自愈仍不只依赖 daemon；查询/切换路径也能 best-effort 刷新。
+Linux keyutils 按**内核 session keyring** 隔离。`subswapd` 经 `fork + setsid`（`crates/cli/src/daemon_spawn.rs`）进新 session → daemon 读不到 CLI session 写入项。**`FileStore` 后此隔离消失**（见 troubleshooting `2026-05-29-daemon-keyutils-session-isolation`）。推论：token 自愈仍不只依赖 daemon；查询/切换路径也能 best-effort 刷新。
 
 ### 4.2 subswap 应用目录
 
-以下平台路径只是未覆盖时的默认**配置目录**；数据、状态和缓存使用各平台对应的应用目录。`SUBSWAP_HOME` 的统一覆盖、精确目录映射及 Cursor 原生数据库不随之迁移的边界，以 [CONFIG.md](../CONFIG.md) 的「应用目录覆盖（高级）」为唯一来源。
+平台路径仅为未覆盖时的默认**配置目录**；`SUBSWAP_HOME` 统一覆盖、精确映射及 Cursor 原生库不随之迁移的边界 → [CONFIG.md](../CONFIG.md)「应用目录覆盖（高级）」唯一来源。
 
 | 平台 | 路径 |
 |---|---|
@@ -252,64 +223,49 @@ Linux 的 keyutils 后端按**内核 session keyring** 隔离。`subswapd` 由 C
 | macOS | `~/Library/Application Support/dev.subswap.subswap/` |
 | Windows | `%APPDATA%\subswap\subswap\config\` |
 
-目录职责：
-- 配置目录：`config.toml` 与 `registry.toml` 等明文配置、账号元数据。
-- 数据目录：受本机文件权限保护的账号凭证仓库、切换审计、daemon 日志和隔离运行目录。
-- 状态目录：切换快照、daemon PID 与 Provider 跨进程协调状态；当前实现位于数据目录的 `state/` 子目录。
-- 缓存目录：共享的额度查询缓存。
+- 配置目录：`config.toml`、`registry.toml` 等明文配置与账号元数据。
+- 数据目录：凭证仓库、切换审计、daemon 日志、隔离运行目录。
+- 状态目录：切换快照、daemon PID、Provider 跨进程协调（实现在数据目录 `state/`）。
+- 缓存目录：共享额度查询缓存。
 
 ### 4.3 Provider 私有目录（沿用上游）
 
 - Codex：`~/.codex/accounts/registry.json` + `~/.codex/sessions/`
 - Claude：`~/.claude/`
-- Kimi：`~/.kimi-code/credentials/kimi-code.json`（`KIMI_CODE_HOME` 可覆盖工作目录）
-- OpenCode Go：`~/.local/share/opencode/auth.json` 的 `opencode-go` 项（`SUBSWAP_OPENCODE_HOME` 可覆盖工作目录）
+- Kimi：`~/.kimi-code/credentials/kimi-code.json`（`KIMI_CODE_HOME` 可覆盖）
+- OpenCode Go：`~/.local/share/opencode/auth.json` 的 `opencode-go` 项（`SUBSWAP_OPENCODE_HOME` 可覆盖）
 - Cursor：各平台 `Cursor/User/globalStorage/state.vscdb`（详见 Provider 知识库）
 
-subswap 切换时会写这些上游状态；完整 token 另存凭证仓库 `FileStore`，`registry.toml` 只存非敏感元数据。
+切换写上游状态；完整 token 在 `FileStore`；`registry.toml` 只存非敏感元数据。
 
 ## 5. 扩展新 Provider 的步骤
 
-**若新 Provider 也是「本地一个 JSON 凭证文件、切换 = 原子覆盖该文件」这种形状**（Codex/Kimi 同款），
-优先复用共享引擎，只写一个 adapter：
+**文件型 JSON 凭证、切换=原子覆盖**（Codex/Kimi 同款）→ 复用共享引擎：
 
-1. 新建 `crates/providers/<id>/` crate，依赖 `subswap-core` + `subswap-provider-common`。
-2. 实现 `FileBlobRuntime` trait（`crates/providers/common/src/runtime.rs`）：路径解析、元数据解析、
-   刷新、usage 查询、隔离环境变量名等差异点；机制（切换/回滚/回灌/隔离导出导入）由
-   `FileBlobProvider<A>` 引擎统一提供，不用自己实现。
-3. 在 `crates/cli/src/app.rs::AppContext::build()` 注册一行（provider 列表）；若要支持
-   `subswap run/shell/env` 隔离运行，同时插一行进 `isolated: HashMap<&str, Arc<dyn IsolatedProvider>>`
-   表（`FileBlobRuntime` 有隔离能力时自动获得 `IsolatedProvider` blanket impl，见 `isolated.rs`）——
-   这一步之后，`run.rs` 里 materialize/absorb/env_vars/native_cli 这些**隔离分发**逻辑查表即可拿到
-   新 provider，不用改。
-4. `run.rs::normalize_provider` 加一行别名匹配（如 `"kimi" | "moonshot" => Ok("kimi")`），把用户在
-   CLI 参数里输入的 provider 名解析成规范 id——这是纯文本解析，查表机制吸收不了，每个新 provider
-   都要加。
-5. `login.rs` 加一个该 provider 专属的 `match` 分支——登录流程从未做成通用查表，也不会：Codex 走
-   `codex login` 子进程、Claude 走 `claude auth login --claudeai`、Kimi 是纯导入已登录凭证，语义
-   互不相同，每个新 provider 都要自己写登录分支。
-6. 在 `crates/cli/Cargo.toml` 加依赖；在 `sync_local_active()` 加 import_active 调用。
-7. 在 `docs/PROVIDER_KNOWLEDGE_BASE.md` 补该 Provider 的接口/坑笔记（含共享引擎小节里的 adapter 差异点表）。
+1. 新建 `crates/providers/<id>/`，依赖 `subswap-core` + `subswap-provider-common`。
+2. 实现 `FileBlobRuntime`（`crates/providers/common/src/runtime.rs`）；机制由 `FileBlobProvider<A>` 提供。
+3. `AppContext::build()` 注册一行；若支持 `run/shell/env`，插入 `isolated: HashMap<&str, Arc<dyn IsolatedProvider>>`（`FileBlobRuntime` 有隔离能力时自动获 blanket impl，见 `isolated.rs`）——之后 `run.rs` 分发查表即可。
+4. `run.rs::normalize_provider` 加别名匹配（纯文本解析，查表吸收不了）。
+5. `login.rs` 加专属 `match` 分支（登录从未通用查表：Codex/`codex login`、Claude/`claude auth login --claudeai`、Kimi 纯导入，语义各异）。
+6. `crates/cli/Cargo.toml` 加依赖；`sync_local_active()` 加 `import_active`。
+7. `docs/PROVIDER_KNOWLEDGE_BASE.md` 补接口/坑（含 adapter 差异点表）。
 
-**若新 Provider 形状不同**（如 Claude 走系统 Keychain，或 Cursor 走 SQLite 且要协调 GUI 生命周期），
-则不接入共享引擎，走通用步骤：
+**形状不同**（Claude Keychain / Cursor SQLite+GUI）→ 不接共享引擎：
 
-1. 新建 `crates/providers/<id>/` crate，依赖 `subswap-core`。
-2. 实现 `Provider` trait（`list_accounts / activate / query_quota / client_targets`）。
-3. 在 `crates/cli/src/app.rs::AppContext::build()` 注册一行。
-4. 在 `crates/cli/Cargo.toml` 加依赖；在 `sync_local_active()` 加 import_active 调用。
-5. 在 `docs/PROVIDER_KNOWLEDGE_BASE.md` 补该 Provider 的接口/坑笔记。
+1. 新建 crate，依赖 `subswap-core`。
+2. 实现 `Provider`（`list_accounts / activate / query_quota / client_targets`）。
+3. `AppContext::build()` 注册；Cargo.toml 依赖；`sync_local_active()` 加 import。
+4. `PROVIDER_KNOWLEDGE_BASE.md` 补笔记。
 
-是否支持 `subswap run/shell/env` 取决于凭证能否安全投影到独立目录。Cursor 的 SQLite 与 GUI 生命周期无法
-满足这个条件，必须明确不注册进 `AppContext.isolated`，不能为了命令面对称而伪造隔离支持。
+`run/shell/env` 取决于凭证能否安全投影到独立目录。Cursor SQLite+GUI 不满足 → 禁止注册 `AppContext.isolated`。
 
-不要在 `core` 里写任何 Provider 特定逻辑。
+不要在 `core` 写任何 Provider 特定逻辑。
 
 ## 5.5 数值调优常量的管理
 
-**运行期值**走 `crates/core/src/settings.rs::current()`，由 `<config_dir>/config.toml` 加载（热生效）；
-**编译期默认值**仍集中在 `crates/core/src/defaults.rs`（`Settings::default()` 从这里读）。
-provider / cli / daemon 都禁止硬编码阈值、时间窗口、百分比。
+**运行期** → `crates/core/src/settings.rs::current()`（`<config_dir>/config.toml`，热生效）；
+**编译期默认** → `crates/core/src/defaults.rs`（`Settings::default()` 从此读）。
+provider / cli / daemon 禁止硬编码阈值、时间窗口、百分比。
 
 | 字段路径 | 默认值 | 说明 |
 |---|---|---|
@@ -323,39 +279,32 @@ provider / cli / daemon 都禁止硬编码阈值、时间窗口、百分比。
 | `daemon.idle_poll_interval_ms` | `900_000` ms | daemon 空闲时轮询周期 |
 | `codex.usage_cache_max_age_ms` | `600_000` ms | 旧版 Codex 本地 last_usage 缓存最大年龄 |
 
-调字段：用户改 `config.toml`；改默认值改 `defaults.rs` 一处 + AGENTS.md 不变量 #4 同步当前值。
-完整说明见 [docs/CONFIG.md](../CONFIG.md)。
+调字段：改 `config.toml`；改默认改 `defaults.rs` + AGENTS.md 不变量 #4。完整说明 → [CONFIG.md](../CONFIG.md)。
 
 ### Daemon 空闲退避
 
-`daemon` 主循环每轮开头：
-1. `settings::reload_from_file()` 拿最新 config。
-2. 扫所有 provider `client_targets().probe_path` 的 mtime；最近一次活动距今 ≥ `idle_threshold_ms` → 用
-   `idle_poll_interval_ms`，否则用 `poll_interval_ms`。
-3. probe 文件不存在 / 拿不到 mtime → 按「空闲」处理（保守，避免凭空高频轮询）。
+主循环每轮：
+1. `settings::reload_from_file()`。
+2. 扫各 provider `client_targets().probe_path` mtime；距今 ≥ `idle_threshold_ms` → `idle_poll_interval_ms`，否则 `poll_interval_ms`。
+3. probe 不存在 / 无 mtime → 按空闲（保守，避免凭空高频轮询）。
 
-这套机制让用户长时间不用 AI 时 daemon 自动放慢；下次官方 CLI 调 API 触发 token 写回 → 立刻回到活跃节奏。
+长时间不用 → 放慢；官方 CLI 调 API 写回 token → 回到活跃节奏。
 
 ## 5.6 风控边界
 
-自动切换不能通过高频请求“探测”额度或制造 429。CLI 无参入口只在用户主动执行时采样一次；
-daemon（M4）按 `DAEMON_POLL_INTERVAL_MS` 低频轮询，并在失败后退避。未来 429 立即切换只能来自
-真实客户端 hook / 本地 IPC 上报，不能靠更密集的 usage 请求实现。
+自动切换不能靠高频请求探测额度或制造 429。CLI 无参入口仅用户主动时采样一次；daemon 按 `DAEMON_POLL_INTERVAL_MS` 低频轮询，失败退避。未来 429 立即切换只能来自真实客户端 hook / 本地 IPC，不能靠更密 usage 请求。
 
-CLI 与 daemon 共用持久 `quota_cache.json`。缓存新鲜度小于
-`settings.quota.min_refresh_interval_ms`（默认 90 秒）时直接复用、不请求上游；新鲜缓存之外才拉实时值，失败时
-可带时间戳显示 stale 结果与短错误。这既限制 usage 请求频率，也不把旧结果伪装成实时数据。
+CLI 与 daemon 共用持久 `quota_cache.json`。新鲜度 < `settings.quota.min_refresh_interval_ms`（默认 90 秒）复用；之外拉实时，失败可带时间戳显示 stale。限制请求频率，不把旧结果伪装成实时。
 
 ## 6. 错误处理
 
-- `core::error::Error` 是统一错误枚举。Provider 内部用 `anyhow::Error`，通过 `Error::Other` / `Error::Provider(String)` 暴露。
-- CLI 层用 `anyhow::Result` + `with_context` 给用户加上下文。
-- `query_quota` 失败返回 `Err`，不静默吞错误；CLI 自行决定是否降级。
+- `core::error::Error` 统一枚举。Provider 内部 `anyhow::Error` → `Error::Other` / `Error::Provider(String)`。
+- CLI：`anyhow::Result` + `with_context`。
+- `query_quota` 失败返回 `Err`，不静默吞；CLI 决定是否降级。
 
 ## 7. 关键代码路径地图
 
-> 目的：核心流程「在哪个文件、哪个函数」一次性查到，避免每次现读源码。函数名比行号稳定，故只记函数名。
-> 改动这些流程时同步更新本表。
+> 改动下列流程时同步更新本表。只记函数名（比行号稳定）。
 
 ### 7.1 凭证存储（keyring）
 
@@ -480,3 +429,5 @@ Cursor 不接 `FileBlobProvider`，也不注册 `IsolatedProvider`。完整安�
 |---|---|
 | 拉取状态枚举 Loading/Ready/Failed | `auto_policy.rs::QuotaFetchState` |
 | 切换决策（CLI 经 `subswap_core::auto_decide` 调用，即 `decide` 的重导出） | `auto_policy.rs::decide` |
+
+<!-- 该文档整理/压缩于 2026-09-05 -->
