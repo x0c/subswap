@@ -1559,7 +1559,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "subswap-cli"
-version = "1.6.2"
+version = "1.6.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1590,7 +1590,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-core"
-version = "1.6.2"
+version = "1.6.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1610,7 +1610,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-daemon"
-version = "1.6.2"
+version = "1.6.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1629,7 +1629,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-provider-claude"
-version = "1.6.2"
+version = "1.6.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1647,7 +1647,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-provider-codex"
-version = "1.6.2"
+version = "1.6.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1665,7 +1665,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-provider-common"
-version = "1.6.2"
+version = "1.6.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1681,7 +1681,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-provider-cursor"
-version = "1.6.2"
+version = "1.6.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1702,7 +1702,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-provider-kimi"
-version = "1.6.2"
+version = "1.6.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1723,7 +1723,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-provider-opencode"
-version = "1.6.2"
+version = "1.6.4"
 dependencies = [
  "anyhow",
  "async-trait",

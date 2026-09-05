@@ -11,9 +11,10 @@ use anyhow::Result;
 use subswap_core::AuditEvent;
 
 use crate::app::AppContext;
+use crate::cmd::default::print_status_overview;
 use crate::cmd::resolve_account;
 
-pub async fn run(ctx: &AppContext, id_input: Option<&str>) -> Result<()> {
+pub async fn run(ctx: &AppContext, id_input: Option<&str>, json: bool) -> Result<()> {
     let Some(input) = id_input else {
         print_listing(ctx)?;
         return Ok(());
@@ -30,6 +31,9 @@ pub async fn run(ctx: &AppContext, id_input: Option<&str>) -> Result<()> {
                 Some(acc.id.0.as_str()),
             ));
             println!("swap → {}/{}", acc.provider, acc.id);
+            if !json {
+                print_status_overview(ctx).await?;
+            }
             Ok(())
         }
         Err(e) => {

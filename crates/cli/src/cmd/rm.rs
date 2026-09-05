@@ -6,9 +6,10 @@ use anyhow::{bail, Result};
 use subswap_core::AuditEvent;
 
 use crate::app::AppContext;
+use crate::cmd::default::print_status_overview;
 use crate::cmd::resolve_account;
 
-pub async fn run(ctx: &AppContext, id_input: &str) -> Result<()> {
+pub async fn run(ctx: &AppContext, id_input: &str, json: bool) -> Result<()> {
     let acc = resolve_account(ctx, id_input)?;
     if acc.active && acc.manual_only() {
         bail!(
@@ -50,6 +51,9 @@ pub async fn run(ctx: &AppContext, id_input: &str) -> Result<()> {
             "note: {} is still signed in as this account; it will be picked up again on the next run — sign out in the client first to keep it out",
             acc.provider
         );
+    }
+    if !json {
+        print_status_overview(ctx).await?;
     }
     Ok(())
 }

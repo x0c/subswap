@@ -149,9 +149,24 @@ Provider.activate(id)
    └─ 写 audit
 ```
 
-无参 `subswap swap` 不做切换：只打印 `Usage: ...` + 带编号清单（不查 quota，保持手动入口零网络依赖的不变量）。
+无参 `subswap swap` 不做切换：只打印 `Usage: ...` + 带编号清单（不查 quota，保持手动入口零网络依赖的不变量）。切到具体账号成功后，再打印与默认入口同一张余量表（见 §3.3.1），**切换本身仍不依赖 quota**。
 
 **重要**：此路径不依赖 `query_quota`，网络完全不通时仍可用。`subswap rm` 走同一份 `resolve_account` 解析。
+
+### 3.3.1 写操作后的状态面（status-after-action）
+
+`add-api` / `login` / `swap <目标>` / `rm` 成功后调用 `print_status_overview`：只读当前 registry → 渐进拉 quota → 用同一套 `render_to_string` 打出余量表。
+
+```
+写操作成功
+   └─ 一行结果（added / login / swap / removed）
+      └─ print_status_overview
+         ├─ build_loading_snapshots（当前 registry，不再 sync 本地登录）
+         ├─ fill_quotas_progressively(enable_auto_swap=false)
+         └─ render 最终状态（不拉起 daemon）
+```
+
+禁止把写操作收尾实现成再调一次 `default::run`：默认入口会 sync 本地登录（Cursor/`rm` 后仍登录着的号会被导回）、AutoSwap（顶掉刚手动切过去的号）和拉起 daemon。
 
 ### 3.3.5 Claude 自定义 API
 
@@ -453,6 +468,7 @@ Cursor 不接 `FileBlobProvider`，也不注册 `IsolatedProvider`。完整安�
 | `run/shell/env` 隔离物化/吸收/环境变量按 provider 分发（表内 codex/kimi 走通用 `IsolatedProvider`；claude 保留专用分支；cursor 明确不支持） | `cmd/run.rs::materialize` / `absorb` / `env_vars` |
 | 全局编号（与默认入口渲染顺序必须一致，AGENTS.md #7） | `app.rs::AppContext::list_ordered` |
 | 默认入口总流程 | `cmd/default.rs::run` |
+| 写操作后余量表（不 sync / 不 AutoSwap / 不拉 daemon） | `cmd/default.rs::print_status_overview` |
 | 自动同步 Claude/Codex/Kimi/Cursor 本地激活账号 | `cmd/default.rs::sync_local_active` |
 | 账号骨架 → 并发拉 quota + mpsc 渐进渲染；单次 attempt 超时见 `quota.fetch_timeout_ms` | `cmd/default.rs::build_loading_snapshots` / `fill_quotas_progressively`；超时包装在 `quota_query::query_quota_with_retry` |
 | 原地刷新渲染 / 全局编号渲染 | `render.rs::InlineRenderer` / `render_to_string` |

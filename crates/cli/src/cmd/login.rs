@@ -8,6 +8,7 @@ use anyhow::{bail, Context, Result};
 use subswap_core::{AuditEvent, Provider};
 
 use crate::app::AppContext;
+use crate::cmd::default::print_status_overview;
 use crate::render::account_ref;
 
 pub async fn run(
@@ -17,6 +18,7 @@ pub async fn run(
     sso: bool,
     device_auth: bool,
     extra_args: Vec<String>,
+    json: bool,
 ) -> Result<()> {
     match provider {
         "claude" | "anthropic" => {
@@ -47,7 +49,7 @@ pub async fn run(
                 Some(account.id.0.as_str()),
             ));
             println!("login → claude/{}", account_ref(&account.id.0));
-            Ok(())
+            return finish(ctx, json).await;
         }
         "codex" | "openai" | "chatgpt" => {
             if email.is_some() || sso {
@@ -73,7 +75,7 @@ pub async fn run(
                 Some(account.id.0.as_str()),
             ));
             println!("login → codex/{}", account_ref(&account.id.0));
-            Ok(())
+            return finish(ctx, json).await;
         }
         "kimi" | "moonshot" => {
             if email.is_some() || sso || device_auth {
@@ -90,7 +92,7 @@ pub async fn run(
             ctx.audit
                 .append(AuditEvent::ok("login", "kimi", Some(account.id.0.as_str())));
             println!("login → kimi/{}", account_ref(&account.id.0));
-            Ok(())
+            return finish(ctx, json).await;
         }
         "opencode" | "opencode-go" => {
             if email.is_some() || sso || device_auth {
@@ -125,7 +127,7 @@ pub async fn run(
                 Some(account.id.0.as_str()),
             ));
             println!("login → opencode/{}", account_ref(&account.id.0));
-            Ok(())
+            return finish(ctx, json).await;
         }
         "cursor" => {
             if email.is_some() || sso || device_auth || !extra_args.is_empty() {
@@ -142,12 +144,19 @@ pub async fn run(
                 Some(account.id.0.as_str()),
             ));
             println!("login → cursor/{}", account_ref(&account.id.0));
-            Ok(())
+            return finish(ctx, json).await;
         }
         other => {
             bail!("unknown provider: {other} (expected claude, codex, kimi, cursor or opencode)")
         }
     }
+}
+
+async fn finish(ctx: &AppContext, json: bool) -> Result<()> {
+    if !json {
+        print_status_overview(ctx).await?;
+    }
+    Ok(())
 }
 
 async fn run_native_login(program: &'static str, args: Vec<String>) -> Result<()> {

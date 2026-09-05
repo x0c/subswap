@@ -8,6 +8,7 @@ use subswap_core::{AuditEvent, BillingKind};
 use subswap_provider_claude::ClaudeApiConfig;
 
 use crate::app::AppContext;
+use crate::cmd::default::print_status_overview;
 
 pub struct AddApiOptions {
     pub preset: Option<String>,
@@ -42,7 +43,7 @@ struct Draft {
     skip_confirmation: bool,
 }
 
-pub fn run(ctx: &AppContext, options: AddApiOptions) -> Result<()> {
+pub async fn run(ctx: &AppContext, options: AddApiOptions, json: bool) -> Result<()> {
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
     let draft = build_draft(options, interactive)?;
 
@@ -89,6 +90,9 @@ pub fn run(ctx: &AppContext, options: AddApiOptions) -> Result<()> {
     ));
     println!("added → claude/{}", account.id);
     println!("Run `subswap swap {}` to activate it.", account.id);
+    if !json {
+        print_status_overview(ctx).await?;
+    }
     Ok(())
 }
 

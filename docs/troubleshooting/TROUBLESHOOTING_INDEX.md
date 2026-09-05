@@ -4,6 +4,8 @@
 
 | 文档 | 排查场景 |
 |---|---|
+| [2026-09-05 Codex 同一账号两个 `7d`（附加 gpt-reserve）](2026-09-05-codex-duplicate-7d-from-additional-rate-limits.md) | Codex 行出现两个 `7d`、其中一个 `0% left`，或主周额度还有余量却被当成周耗尽；改 `wham/usage` 窗口递归解析、`additional_rate_limits` 处理前必读 |
+| [2026-08-21 Cursor 自动切到 1st 0% 号](2026-08-21-cursor-auto-swap-to-zero-over-remaining.md) | 默认入口 Cursor `! auto: swapped to` 目标号 `1st`/`API` 都是 `0%`、旁边号 `1st` 还有余量；改自动换号候选窗口或 Cursor `1st`/`API` 策略前必读 |
 | [2026-08-15 整段 Cursor 无声消失（症状族汇总）](2026-08-15-cursor-section-silently-missing.md) | 默认入口整段 Cursor（或任何 provider）都不见了，不是某个账号余量查不出来；先读此文分辨三种已知根因，不要直接扎进额度接口 |
 | [2026-08-14 Cursor 多个账号额度数字完全一样](2026-08-14-cursor-quota-cloned-across-accounts.md) | 默认入口里好几个 Cursor 账号余量、重置时间一模一样，或切命令行账号后其它号额度跟着变时必读；改命令行切换、live 回灌、额度查询归属或 macOS 钥匙串写入前也读此 |
 | [2026-08-14 本机 Cursor 命令行已登录但 subswap 没有 Cursor 额度](2026-08-14-cursor-quota-missing-cli-keychain.md) | `subswap` 列表里整段 Cursor 都不出现、导入报「请先登录」，但 `cursor-agent` 已登录且能对话时必读；改 Cursor 命令行凭证探测、macOS 钥匙串来源或 `auth.json` 路径前也读此 |

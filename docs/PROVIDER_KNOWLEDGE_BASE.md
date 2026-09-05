@@ -250,6 +250,11 @@ ChatGPT 后端响应字段会随产品调整；subswap 在 `openai_usage::normal
 - 顶层与 `usage / quota / limits` 嵌套都尝试
 - 新版 `primary / secondary` 窗口可出现在任意嵌套层级，都会递归识别
 - 新版 `rate_limit.primary_window / rate_limit.secondary_window` 也会递归识别
+- **禁止**递归进入 `additional_rate_limits` / `code_review_rate_limit` / `model_usage`：
+  这些是按模型或功能拆开的附加限额（如 `gpt-reserve`），官方 CLI 正常输出也不展示；
+  若收进主列表会出现第二个 `7d`，并把主号周额度误判成耗尽（自动换号会错挡候选）。
+  见 [2026-09-05 Codex 两个 7d](troubleshooting/2026-09-05-codex-duplicate-7d-from-additional-rate-limits.md)
+- 窗口时长分钟映射：`300` → 5h，`10_080` → 7d，`28*1440..=31*1440`（如 43200/43800）→ 月度 `mo`，其余 → `Custom`
 - 候选字段：
   `used_percent / percent / used / limit / resets_at / reset_at / window_minutes / limit_window_seconds`
 - 任意字段都无法解析时返回 `Quota { status: Unknown }` 而不是 `Err`

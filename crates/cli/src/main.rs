@@ -7,7 +7,9 @@
 //! - `subswap add-api` — interactively add a Claude Code compatible API endpoint.
 //! - `subswap swap [<id|N>]` — escape hatch: force-swap. Never depends on quota.
 //!   With no argument, prints the numbered listing instead of swapping.
-//! - `subswap rm <id|N>`     — remove an account (registry + keyring).
+//!   A successful swap then reprints the same quota table as the default entry.
+//! - `subswap rm <id|N>`     — remove an account (registry + keyring), then reprint
+//!   the quota table.
 //! - `subswap doctor`        — environment self-check.
 //!
 //! `<id>` is the account id (email for claude / account_key for codex), label, or
@@ -239,19 +241,21 @@ async fn main() -> Result<()> {
                 billing,
                 yes,
             },
-        ),
+            cli.json,
+        )
+        .await,
         Some(Cmd::Login {
             provider,
             email,
             sso,
             device_auth,
             args,
-        }) => cmd::login::run(&ctx, &provider, email, sso, device_auth, args).await,
-        Some(Cmd::Swap { id }) => cmd::swap::run(&ctx, id.as_deref()).await,
+        }) => cmd::login::run(&ctx, &provider, email, sso, device_auth, args, cli.json).await,
+        Some(Cmd::Swap { id }) => cmd::swap::run(&ctx, id.as_deref(), cli.json).await,
         Some(Cmd::Run { provider, id, args }) => cmd::run::run(&ctx, &provider, &id, args).await,
         Some(Cmd::Shell { id }) => cmd::run::shell(&ctx, &id).await,
         Some(Cmd::Env { id }) => cmd::run::env(&ctx, &id).await,
-        Some(Cmd::Rm { id }) => cmd::rm::run(&ctx, &id).await,
+        Some(Cmd::Rm { id }) => cmd::rm::run(&ctx, &id, cli.json).await,
         Some(Cmd::Autoswap { toggle }) => cmd::autoswap::run(toggle.as_deref()),
         Some(Cmd::Doctor) => cmd::doctor::run(&ctx).await,
         Some(Cmd::MigrateLocal) => cmd::migrate::run(&ctx).await,

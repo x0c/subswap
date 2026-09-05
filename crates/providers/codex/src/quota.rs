@@ -126,6 +126,8 @@ fn quota_window_for_usage_window(minutes: Option<u64>, seconds: Option<u64>) -> 
     match minutes.or_else(|| seconds.map(|value| value / 60)) {
         Some(300) => QuotaWindow::FiveHour,
         Some(10_080) => QuotaWindow::SevenDay,
+        // 官方 / 实测月度窗口常见 28–31 天（分钟），例如 43200 / 43800。
+        Some(m) if (28 * 1_440..=31 * 1_440).contains(&m) => QuotaWindow::Month,
         _ => QuotaWindow::Custom,
     }
 }
@@ -168,6 +170,18 @@ mod tests {
         assert_eq!(
             quota_window_for_usage_window(None, None),
             QuotaWindow::Custom
+        );
+        assert_eq!(
+            quota_window_for_usage_window(Some(43_200), None),
+            QuotaWindow::Month
+        );
+        assert_eq!(
+            quota_window_for_usage_window(Some(43_800), None),
+            QuotaWindow::Month
+        );
+        assert_eq!(
+            quota_window_for_usage_window(None, Some(43_200 * 60)),
+            QuotaWindow::Month
         );
     }
 }
