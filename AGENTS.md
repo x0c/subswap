@@ -17,10 +17,12 @@
    编辑函数 / 方法 / 类型前用 codebase-memory-mcp 的 `trace_path` 查清调用者 / 被调用者，评估影响面后再动手。
 3. **工作区可能是脏的。**
    不回滚、不覆盖无关本地改动；提交时只 stage 本次相关文件。
-4. **改完必须验证。**
+4. **改完必须验证；排查也必须自己跑 `subswap`。**
    代码、配置、构建脚本、依赖改动后，自己跑对应测试 / build / smoke，不把验证交给用户。
+   **排查任何默认入口 / 列表 / 额度 / 自动切换 / 写操作后状态面相关的故障或异常输出时，必须自己自由执行本机 `subswap`（及相关子命令）对照真实输出**——用户贴了一截截图或粘贴输出也不够；禁止只读文档、只读代码或只问用户「现在长什么样」就开始定性。
    默认入口 / 自动切换这类必须对着真实列表才能确认的行为：覆盖安装后再自己跑一次无参 `subswap`；
    只跑 `cargo test` 不够——没装上的二进制用户还是旧逻辑。
+   需要更细证据时自行加参数（如 `--log debug`、`swap` / `doctor`），不必等用户授权或提示；唯一约束是遵守本文件「不得高频打 usage / 禁止 curl 连发复现」等不变量。
 
 ## 项目不变量
 
@@ -100,7 +102,7 @@
 
 - 代码注释、doc comment 用中文。
 - 用户可见输出、错误文本、tracing message、Cargo description 用英文且简洁。
-- 成功路径尽量短；冗余 hint 只在失败时出现。
+- 成功路径尽量短；冗余 hint 只在失败时出现。账号池写操作（`login` / `add-api` / `swap <目标>` / `rm`）成功后必须再打印与默认入口同一张余量表，不要收成一行回执；`run` / `shell` / `env` / `doctor` / 无参 `swap` 除外。详见 [docs/CLI.md](docs/CLI.md)「写操作后回到状态面」。
 - 公共 API 加中文 doc comment；trait 不暴露 keyring 等具体实现类型。
 
 ## 常用验证命令
@@ -155,13 +157,13 @@ docs/                     中文项目文档
 | [docs/design/PREWARM_DESIGN.md](docs/design/PREWARM_DESIGN.md) | 设计、评审或实现窗口预热、预热阈值、预热通知与自动切换协同时必读 |
 | [docs/design/ACCOUNT_ISOLATION_DESIGN.md](docs/design/ACCOUNT_ISOLATION_DESIGN.md) | 改、评审、分析或排查 `subswap run`/`shell`/`env` 账号环境隔离、checkout 锁、daemon 避让、macOS 钥匙串命名空间、Claude resume 会话共享前必读 |
 | [docs/CONFIG.md](docs/CONFIG.md) | 改、评审或排查 `config.toml` 字段、热加载、默认阈值、轮询间隔、quota 查询节流、应用目录覆盖、便携运行或配置生效问题前必读 |
-| [docs/CLI.md](docs/CLI.md) | 改、评审、分析或排查 CLI 命令面、Provider 登录/导入语义、默认入口额度输出、`subswapd` 辅助进程、账号环境隔离命令或 Cursor 不支持隔离运行的边界前必读 |
+| [docs/CLI.md](docs/CLI.md) | 改、评审、分析或排查 CLI 命令面、Provider 登录/导入语义、默认入口额度输出、写操作后余量表（status-after-action）、`subswapd` 辅助进程、账号环境隔离命令或 Cursor 不支持隔离运行的边界前必读 |
 | [docs/OPERATIONS_GUIDE.md](docs/OPERATIONS_GUIDE.md) | 改、评审或排查本地构建、三平台测试隔离、release 构建、本机覆盖安装、daemon 冒烟、Linux 发布依赖安装、CI/Release 发布流程、Homebrew tap formula 更新机制或 `HOMEBREW_TAP_TOKEN` 配置前必读 |
 | [docs/OSS_READINESS_REVIEW.md](docs/OSS_READINESS_REVIEW.md) | 优化、评审或发布 GitHub 对外呈现、README、安装入口、Release notes、贡献或安全入口前必读。不读会让公开描述、支持范围与实际行为再次失真 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 开始、评审或合并外部贡献前必读。不读会让凭证安全边界、测试隔离或公开文档同步在贡献中被遗漏 |
 | [SECURITY.md](SECURITY.md) | 处理安全漏洞、凭证泄露、安装完整性或私密披露前必读。不读会把应私下处理的敏感问题暴露到公开 issue |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 规划、评审或同步里程碑范围、已完成能力和后续功能优先级前必读 |
-| [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（14 篇记录：keychain ACL 中毒、Cursor 命令行钥匙串登录查不到额度、Cursor 多个账号额度完全一样、Cursor 自动切到 1st 0% 号、access/refresh token 覆写、429 vs invalid_grant、TOML null、Claude/Codex 用量 401 但客户端能正常用等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
+| [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（含 Codex 两个 `7d`/附加 gpt-reserve、keychain ACL 中毒、Cursor 命令行钥匙串登录查不到额度、Cursor 多个账号额度完全一样、Cursor 自动切到 1st 0% 号、access/refresh token 覆写、429 vs invalid_grant、TOML null、Claude/Codex 用量 401 但客户端能正常用等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
 
 ## 领域地图（doc-init）
 

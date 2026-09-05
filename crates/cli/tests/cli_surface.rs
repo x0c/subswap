@@ -119,6 +119,21 @@ fn write(path: &Path, contents: &str) {
     fs::write(path, contents).unwrap();
 }
 
+fn write_fast_quota_timeout(tmp: &tempfile::TempDir) {
+    write(
+        &app_config_dir(tmp).join("config.toml"),
+        "[quota]\nfetch_timeout_ms = 1\nfetch_retries = 0\n",
+    );
+}
+
+fn first_action_line(stdout: &str) -> &str {
+    stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+}
+
 fn app_config_dir(tmp: &tempfile::TempDir) -> std::path::PathBuf {
     tmp.path().join("subswap").join("config")
 }
@@ -176,6 +191,7 @@ fn add_api_help_exposes_exactly_three_model_roles() {
 fn add_api_accepts_legacy_model_as_the_only_model_flag() {
     let tmp = tempfile::tempdir().unwrap();
     setup_test_keychain(&tmp);
+    write_fast_quota_timeout(&tmp);
     let claude = tmp.path().join("claude");
 
     let stdout = assert_success(
@@ -247,6 +263,7 @@ fn default_with_empty_home_is_quiet_and_does_not_probe_real_accounts() {
 fn deepseek_api_can_be_added_manually_activated_and_switched_back_to_oauth() {
     let tmp = tempfile::tempdir().unwrap();
     setup_test_keychain(&tmp);
+    write_fast_quota_timeout(&tmp);
     let claude = tmp.path().join("claude");
     let registry = app_config_dir(&tmp).join("registry.toml");
     let credentials = app_data_dir(&tmp).join("credentials.json");
@@ -356,6 +373,7 @@ emailAddress = "oauth@example.com"
 fn swapping_to_active_claude_account_preserves_live_keychain_credentials() {
     let tmp = tempfile::tempdir().unwrap();
     setup_test_keychain(&tmp);
+    write_fast_quota_timeout(&tmp);
     let claude = tmp.path().join("claude");
     let registry = app_config_dir(&tmp).join("registry.toml");
     let credentials = app_data_dir(&tmp).join("credentials.json");
@@ -551,8 +569,94 @@ priority = 100
 }
 
 #[test]
+fn rm_and_swap_reprint_the_status_overview() {
+    let tmp = tempfile::tempdir().unwrap();
+    setup_test_keychain(&tmp);
+    write_fast_quota_timeout(&tmp);
+
+    assert_success(
+        isolated_subswap(&tmp)
+            .args([
+                "add-api",
+                "--preset",
+                "custom",
+                "--id",
+                "keep",
+                "--name",
+                "Keep",
+                "--endpoint",
+                "https://example.com/keep",
+                "--api-key",
+                "keep-secret",
+                "--auth",
+                "bearer",
+                "--model",
+                "keep-model",
+                "--yes",
+            ])
+            .output()
+            .unwrap(),
+    );
+    assert_success(
+        isolated_subswap(&tmp)
+            .args([
+                "add-api",
+                "--preset",
+                "custom",
+                "--id",
+                "gone",
+                "--name",
+                "Gone",
+                "--endpoint",
+                "https://example.com/gone",
+                "--api-key",
+                "gone-secret",
+                "--auth",
+                "bearer",
+                "--model",
+                "gone-model",
+                "--yes",
+            ])
+            .output()
+            .unwrap(),
+    );
+
+    let rm_stdout = assert_success(isolated_subswap(&tmp).args(["rm", "gone"]).output().unwrap());
+    assert!(rm_stdout.contains("removed claude/gone"), "{rm_stdout}");
+    assert!(
+        rm_stdout.contains("Keep"),
+        "rm should reprint the remaining account overview: {rm_stdout}"
+    );
+    assert!(
+        !rm_stdout.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed.contains("Gone") && !trimmed.starts_with("removed ")
+        }),
+        "deleted account must not remain in the overview: {rm_stdout}"
+    );
+
+    let swap_stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["swap", "keep"])
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        swap_stdout.contains("swap → claude/keep"),
+        "{swap_stdout}"
+    );
+    assert!(
+        swap_stdout.contains("Keep"),
+        "swap should reprint the account overview: {swap_stdout}"
+    );
+
+    teardown_test_keychain(&tmp);
+}
+
+#[test]
 fn login_opencode_imports_go_key_and_preserves_other_providers() {
     let tmp = tempfile::tempdir().unwrap();
+    write_fast_quota_timeout(&tmp);
     let auth = tmp.path().join("opencode").join("auth.json");
     write(
         &auth,
@@ -594,18 +698,9 @@ fn run_opencode_unknown_account_reports_not_found() {
 #[test]
 fn run_opencode_materializes_isolated_auth_via_generic_dispatch() {
     let tmp = tempfile::tempdir().unwrap();
-    let stdout = assert_success(
-        isolated_subswap(&tmp)
-            .args(["login", "opencode", "--", "sk-test-key-1234"])
-            .output()
-            .unwrap(),
-    );
-    let id = stdout
-        .trim()
-        .strip_prefix("login → opencode/")
-        .unwrap_or_else(|| panic!("unexpected login output: {stdout}"));
+    let id = login_opencode_key(&tmp, "sk-test-key-1234");
 
-    let env_out = assert_success(isolated_subswap(&tmp).args(["env", id]).output().unwrap());
+    let env_out = assert_success(isolated_subswap(&tmp).args(["env", &id]).output().unwrap());
     assert!(
         env_out.contains("XDG_DATA_HOME="),
         "env should export XDG_DATA_HOME: {env_out}"
@@ -620,7 +715,7 @@ fn run_opencode_materializes_isolated_auth_via_generic_dispatch() {
     );
 
     let output = isolated_subswap(&tmp)
-        .args(["run", "opencode", id, "--", "--version"])
+        .args(["run", "opencode", &id, "--", "--version"])
         .output()
         .unwrap();
     let run_stdout = String::from_utf8_lossy(&output.stdout);
@@ -642,14 +737,14 @@ const OPENCODE_EXHAUSTED_USAGE: &str = r#"{"usage":{"rolling":{"status":"rate-li
 const OPENCODE_HEALTHY_USAGE: &str = r#"{"usage":{"rolling":{"status":"ok","percent":4},"weekly":{"status":"ok","percent":3},"monthly":{"status":"ok","percent":1}}}"#;
 
 fn login_opencode_key(tmp: &tempfile::TempDir, key: &str) -> String {
+    write_fast_quota_timeout(tmp);
     let stdout = assert_success(
         isolated_subswap(tmp)
             .args(["login", "opencode", "--", key])
             .output()
             .unwrap(),
     );
-    stdout
-        .trim()
+    first_action_line(&stdout)
         .strip_prefix("login → opencode/")
         .unwrap_or_else(|| panic!("unexpected login output: {stdout}"))
         .to_string()

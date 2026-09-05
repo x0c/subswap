@@ -131,6 +131,15 @@ fn shape(value: &serde_json::Value, depth: usize) -> String {
     }
 }
 
+/// 递归收集时跳过的键：这些节点里也会出现 `primary_window` / `secondary_window`，
+/// 但是按模型 / 功能拆开的附加限额（如 `gpt-reserve`），不是账号主额度。
+/// 官方 CLI 正常输出也不展示它们；若收进来会多出第二个 `7d`，还会把主号误判成周额度耗尽。
+const SKIP_WINDOW_RECURSE_KEYS: &[&str] = &[
+    "additional_rate_limits",
+    "code_review_rate_limit",
+    "model_usage",
+];
+
 fn collect_named_windows(value: &serde_json::Value, out: &mut Vec<WhamUsage>) {
     match value {
         serde_json::Value::Object(map) => {
@@ -143,7 +152,10 @@ fn collect_named_windows(value: &serde_json::Value, out: &mut Vec<WhamUsage>) {
                     }
                 }
             }
-            for child in map.values() {
+            for (key, child) in map {
+                if SKIP_WINDOW_RECURSE_KEYS.contains(&key.as_str()) {
+                    continue;
+                }
                 collect_named_windows(child, out);
             }
         }
@@ -276,6 +288,52 @@ mod tests {
         assert_eq!(windows[0].used_percent, Some(1.0));
         assert_eq!(windows[0].limit_window_seconds, Some(18_000));
         assert_eq!(windows[1].used_percent, Some(25.0));
+        assert_eq!(windows[1].limit_window_seconds, Some(604_800));
+    }
+
+    #[test]
+    fn normalize_all_ignores_additional_model_rate_limits() {
+        // 真实 wham/usage：主额度 5h+7d，另有 gpt-reserve 附加周限额 used=100。
+        // 递归若扫进 additional_rate_limits，会多出一个假的 7d 耗尽窗口。
+        let v = serde_json::json!({
+            "plan_type": "plus",
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 11,
+                    "limit_window_seconds": 18000,
+                    "reset_at": 1788621994
+                },
+                "secondary_window": {
+                    "used_percent": 18,
+                    "limit_window_seconds": 604800,
+                    "reset_at": 1789189148
+                }
+            },
+            "additional_rate_limits": [{
+                "limit_name": "gpt-reserve",
+                "rate_limit": {
+                    "limit_reached": true,
+                    "primary_window": {
+                        "used_percent": 100,
+                        "limit_window_seconds": 604800,
+                        "reset_at": 1789189667
+                    },
+                    "secondary_window": null
+                }
+            }],
+            "code_review_rate_limit": {
+                "primary_window": {
+                    "used_percent": 50,
+                    "limit_window_seconds": 604800,
+                    "reset_at": 1789189667
+                }
+            }
+        });
+        let windows = normalize_all(&v);
+        assert_eq!(windows.len(), 2, "got {windows:?}");
+        assert_eq!(windows[0].used_percent, Some(11.0));
+        assert_eq!(windows[0].limit_window_seconds, Some(18_000));
+        assert_eq!(windows[1].used_percent, Some(18.0));
         assert_eq!(windows[1].limit_window_seconds, Some(604_800));
     }
 }

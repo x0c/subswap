@@ -1,7 +1,8 @@
-//! `subswap`（无参）默认入口。
+//! `subswap`（无参）默认入口，以及写操作成功后的状态面。
 //!
-//! 流程：sync_local_active → 先渲染骨架 → 并发拉 quota 渐进刷新 → per-provider AutoSwapPolicy → 最终渲染。
-//! 详见 docs/design/ARCHITECTURE.md §3.1。
+//! 默认入口：sync_local_active → 先渲染骨架 → 并发拉 quota 渐进刷新 → per-provider AutoSwapPolicy → 最终渲染。
+//! 写操作收尾：[`print_status_overview`] 只展示当前 registry，不 sync、不 AutoSwap、不拉 daemon。
+//! 详见 docs/design/ARCHITECTURE.md §3.1、§3.3.1。
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, IsTerminal};
@@ -33,9 +34,6 @@ pub async fn run(ctx: &AppContext, json: bool) -> Result<()> {
         renderer.render(&snapshots, &auto_lines)?;
     }
     let cfg = PolicyConfig::default();
-    let cache_path = AppPaths::resolve()
-        .map(|p| p.quota_cache_file())
-        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/subswap_quota_cache.json"));
     fill_quotas_progressively(
         &ctx.providers,
         &ctx.audit,
@@ -47,7 +45,8 @@ pub async fn run(ctx: &AppContext, json: bool) -> Result<()> {
         } else {
             None
         },
-        &cache_path,
+        &quota_cache_path(),
+        true,
     )
     .await?;
 
@@ -64,6 +63,45 @@ pub async fn run(ctx: &AppContext, json: bool) -> Result<()> {
         tracing::debug!(err = %e, "ensure_daemon_running failed; continuing");
     }
     Ok(())
+}
+
+/// 账号池写操作成功后回到与默认入口同一张余量表。
+///
+/// 只读当前 registry：不 `sync_local_active`（避免刚删的号被导回）、不 AutoSwap
+/// （避免刚手动切走的号被顶掉）、不拉起 daemon。quota 仍走同一套缓存与节流。
+pub async fn print_status_overview(ctx: &AppContext) -> Result<()> {
+    println!();
+    let interactive = io::stdout().is_terminal();
+    let mut snapshots = build_loading_snapshots(&ctx.providers).await;
+    let mut auto_lines = Vec::new();
+    let mut renderer = InlineRenderer::new(interactive);
+    if interactive {
+        renderer.render(&snapshots, &auto_lines)?;
+    }
+    let cfg = PolicyConfig::default();
+    fill_quotas_progressively(
+        &ctx.providers,
+        &ctx.audit,
+        &mut snapshots,
+        &cfg,
+        &mut auto_lines,
+        if interactive {
+            Some(&mut renderer)
+        } else {
+            None
+        },
+        &quota_cache_path(),
+        false,
+    )
+    .await?;
+    renderer.render(&snapshots, &auto_lines)?;
+    Ok(())
+}
+
+fn quota_cache_path() -> std::path::PathBuf {
+    AppPaths::resolve()
+        .map(|p| p.quota_cache_file())
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/subswap_quota_cache.json"))
 }
 
 /// JSON 输出用 DTO：每个账号一条，含额度窗口与各自 reset_at，供程序（如 OpenConductor）消费。
@@ -315,6 +353,7 @@ async fn fill_quotas_progressively(
     auto_lines: &mut Vec<AutoLine>,
     mut renderer: Option<&mut InlineRenderer>,
     cache_path: &std::path::Path,
+    enable_auto_swap: bool,
 ) -> Result<()> {
     let total: usize = snapshots.iter().map(|snap| snap.accounts.len()).sum();
     if total == 0 {
@@ -379,16 +418,18 @@ async fn fill_quotas_progressively(
     while let Some(update) = rx.recv().await {
         let provider = update.provider.clone();
         apply_quota_update(snapshots, update, &mut cache);
-        try_auto_swap_ready_provider(
-            registry,
-            audit,
-            snapshots,
-            &provider,
-            cfg,
-            auto_lines,
-            &mut progress,
-        )
-        .await?;
+        if enable_auto_swap {
+            try_auto_swap_ready_provider(
+                registry,
+                audit,
+                snapshots,
+                &provider,
+                cfg,
+                auto_lines,
+                &mut progress,
+            )
+            .await?;
+        }
         if let Some(renderer) = renderer.as_deref_mut() {
             renderer.render(snapshots, auto_lines)?;
         }
@@ -768,6 +809,7 @@ mod tests {
                 &mut auto_lines,
                 None,
                 &cache_path,
+                true,
             )
             .await
             .unwrap();
@@ -800,6 +842,72 @@ mod tests {
             "auto swap must activate instead of skipping for an isolated session: {}",
             auto_lines[0].text
         );
+    }
+
+    #[tokio::test]
+    async fn fill_quotas_without_auto_swap_does_not_activate() {
+        let (activated_tx, mut activated_rx) = mpsc::unbounded_channel();
+        let mut quotas = HashMap::new();
+        quotas.insert(
+            "codex-active".into(),
+            vec![quota("codex", "codex-active", 99, QuotaStatus::Warn)],
+        );
+        quotas.insert(
+            "codex-candidate".into(),
+            vec![quota("codex", "codex-candidate", 1, QuotaStatus::Ok)],
+        );
+
+        let mut registry = ProviderRegistry::new();
+        registry.register(Arc::new(MockProvider {
+            id: "codex",
+            accounts: vec![
+                account("codex", "codex-active", true),
+                account("codex", "codex-candidate", false),
+            ],
+            quotas,
+            wait_for_quota: None,
+            wait_by_account: HashMap::new(),
+            fail_accounts: HashSet::new(),
+            activated: activated_tx,
+        }));
+
+        let mut snapshots = build_loading_snapshots(&registry).await;
+        let cfg = PolicyConfig {
+            enabled: true,
+            threshold: 0.98,
+            allow_unknown: false,
+            settle_grace_ms: 60_000,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let audit = AuditLog::new(tmp.path().join("audit.log"));
+        let mut auto_lines = Vec::new();
+        let cache_path = tmp.path().join("quota_cache.json");
+        fill_quotas_progressively(
+            &registry,
+            &audit,
+            &mut snapshots,
+            &cfg,
+            &mut auto_lines,
+            None,
+            &cache_path,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            activated_rx.try_recv().is_err(),
+            "status overview must not auto-swap"
+        );
+        assert!(auto_lines.is_empty());
+        let codex = snapshots
+            .iter()
+            .find(|snap| snap.provider == "codex")
+            .unwrap();
+        assert!(codex
+            .accounts
+            .iter()
+            .any(|account| account.account.id.0 == "codex-active" && account.account.active));
     }
 
     #[tokio::test]
@@ -856,6 +964,7 @@ mod tests {
                 &mut auto_lines,
                 None,
                 &cache_path,
+                true,
             )
             .await
             .unwrap();
@@ -947,6 +1056,7 @@ mod tests {
                 &mut auto_lines,
                 None,
                 &cache_path,
+                true,
             )
             .await
             .unwrap();

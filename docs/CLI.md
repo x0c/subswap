@@ -3,11 +3,11 @@
 | 命令 | 说明 |
 |---|---|
 | `subswap` | 默认入口：扫本地自动 import → 立即显示账号骨架 → quota 渐进刷新 → 单 Provider 就绪即做 AutoSwap 决策 → 最终状态；同时 best-effort 拉起 `subswapd`（用户无感） |
-| `subswap add-api` | 交互式登记 Claude Code 兼容 API；DeepSeek / Kimi 预设只需输入名称与隐藏 API Key；保存后不自动激活 |
-| `subswap login <claude\|codex>` | 调用官方 CLI 登录流程，完成后导入/覆盖当前登录账号并标记为 active |
-| `subswap login <kimi\|cursor\|opencode>` | **不驱动登录**：用户先在对应客户端登录（OpenCode 也可把 API key 写在 `--` 后面），本命令只导入当前状态并标记为 active |
-| `subswap swap [<id\|N>]` | 手动切换；`<id>` 用 id/label/`<provider>/<id>`，`<N>` 用默认入口列出的全局序号。无参打印编号清单 |
-| `subswap rm <id\|N>` | 删除账号（registry + keyring），引用形式同 `swap`。显式删过的号打开列表不会自动加回；没删过的当前登录仍会自动收入。要重新纳入已删的号，用对应 provider 的 `login` |
+| `subswap add-api` | 交互式登记 Claude Code 兼容 API；DeepSeek / Kimi 预设只需输入名称与隐藏 API Key；保存后不自动激活。成功后回到与默认入口同一张余量表 |
+| `subswap login <claude\|codex>` | 调用官方 CLI 登录流程，完成后导入/覆盖当前登录账号并标记为 active。成功后回到与默认入口同一张余量表 |
+| `subswap login <kimi\|cursor\|opencode>` | **不驱动登录**：用户先在对应客户端登录（OpenCode 也可把 API key 写在 `--` 后面），本命令只导入当前状态并标记为 active。成功后回到与默认入口同一张余量表 |
+| `subswap swap [<id\|N>]` | 手动切换；`<id>` 用 id/label/`<provider>/<id>`，`<N>` 用默认入口列出的全局序号。切成功后回到与默认入口同一张余量表。无参只打印编号清单（不查 quota） |
+| `subswap rm <id\|N>` | 删除账号（registry + keyring），引用形式同 `swap`。成功后回到与默认入口同一张余量表。显式删过的号打开列表不会自动加回；没删过的当前登录仍会自动收入。要重新纳入已删的号，用对应 provider 的 `login` |
 | `subswap run <provider> <id> [-- args]` | 账号隔离启动：把该账号凭证投影到私有目录，设隔离环境变量后启动原生 CLI（codex/claude/kimi/opencode），**不动全局活账号**；退出时吸收轮换后的凭证。Cursor 不支持此模式 |
 | `subswap shell <id>` | 起一个导出好隔离环境变量的子 shell，交互里连跑多条命令；provider 从账号推断；退出时吸收凭证 |
 | `subswap env <id>` | 打印 `export` 行供 `eval`。**注意**：eval 模式不持锁、退出后不吸收凭证，仅供临时短用 |
@@ -43,6 +43,19 @@ eval "$(subswap env codex/bob@x.com)"   # 临时把当前 shell 指向某 codex 
   切换该账号。若恰逢 OAuth refresh token 轮换，低概率会使其中一个会话需要重新登录；这是为保证全局
   切换始终可用而接受的风险。daemon 仅会跳过该具体隔离中的 Claude 账号的后台保活，避免后台刷新与其抢刷。
 - **全局活账号告警**：对当前全局 active 账号起隔离会话会告警——若同时被非隔离客户端使用，可能作废其 refresh token。
+
+### 写操作后回到状态面
+
+`add-api` / `login` / `swap <目标>` / `rm` 成功后，先打一行结果，再打印与无参 `subswap` 相同的账号余量表（编号、`*`、quota 块一致）。这是 status-after-action：改完立刻看见当前号池，不必再跑一次默认入口。
+
+这张表**不是**再跑一遍默认入口。约束：
+
+- 不 `sync_local_active`：刚 `rm` 掉的号不会被当场导回。
+- 不 AutoSwap：刚手动 `swap` 过去的号不会被余量刷新顶走。
+- 不拉起 daemon。
+- 仍走同一套 quota 缓存与节流；缓存够新时不打端点。
+
+不附加这张表：`run` / `shell` / `env`（输出是隔离环境本身）、`doctor`、无参 `swap`（零网络编号清单）、`--json`、失败或取消。
 
 隐藏的一次性命令：`subswap migrate-local` —— 从旧版本地账号目录把账号搬到 subswap。`--help` 里看不到，只给迁移旧数据的人用一次。
 
