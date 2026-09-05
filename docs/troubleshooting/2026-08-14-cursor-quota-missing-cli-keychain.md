@@ -32,6 +32,25 @@ macOS 上 `cursor-agent` 默认把凭证写进钥匙串：
 
 **禁令**：读写必须 fork `/usr/bin/security`，禁止 `keyring` crate 写官方条目（ACL 会收成仅 subswap → CLI 反复弹授权；见 [2026-06-11](2026-06-11-claude-code-keychain-acl-poisoning.md)）。已有条目只更新内容，禁止删再建。集成测试必须设 `SUBSWAP_CURSOR_KEYCHAIN_PATH` 指一次性 keychain。不要为看见额度去改 CLI 凭证后端或重登。
 
+## Cursor CLI 刚登录的新账号没有入池、又回到旧账号
+
+### 现象
+
+`agent login` / `cursor-agent login` 明确显示新邮箱登录成功，但随即运行 `subswap` 时列表没有新账号；再执行 `agent status`，当前账号已变成池内某个旧账号。
+
+### 根因
+
+这不是钥匙串读取失败。Cursor CLI 只有一份当前登录凭证，Subswap 的默认入口和常驻 daemon 都会对这份凭证做自动切换；新账号若在自动切换前尚未写进 Subswap 账号池，就可能被旧池账号覆盖。之后默认入口只会同步**当前仍登录**的旧账号，无法从历史登录过程找回刚才的新账号。
+
+### 排查与安全补救
+
+1. 先运行 `agent status`，确认当前账号是否仍是刚登录的新邮箱；再核对列表中是否已有该邮箱。
+2. 若 `agent status` 已回到旧账号，**不要立刻运行 `subswap login cursor`**：它只会再次导入当前旧账号，不能恢复刚才的新账号。
+3. 先停止常驻自动切换，再重新执行 Cursor CLI 登录；认证成功后立刻运行 `subswap login cursor`。该导入路径会登记当前账号并打印列表，但不会在收尾时触发自动切换。
+4. 看到新账号出现在列表后，再按需要恢复 daemon。若账号本身额度已耗尽，恢复自动切换后它可以被正常切走，但仍应保留在账号池中。
+
+不要通过删除钥匙串条目、改用文件凭证后端或反复查询额度来处理此症状；这些做法不能恢复未入池账号，还可能破坏 Cursor 对官方凭证的访问。
+
 ## 关联
 
 - [2026-08-15 整段 Cursor 无声消失](2026-08-15-cursor-section-silently-missing.md)

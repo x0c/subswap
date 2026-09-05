@@ -179,7 +179,7 @@ subswap swap <oauth-id>
 
 ```
 每 defaults::DAEMON_POLL_INTERVAL_MS（默认 60s）：
-   ├─ capture-on-arrival（Codex/Kimi/Cursor live→store）
+   ├─ capture-on-arrival（Codex/Kimi live→store；Cursor 先同步 live，新账号立即入池）
    ├─ build_snapshots → auto_decide → 重验 active 未变且非 manual_only → activate（如需）
    ├─ 对非活跃 Claude 账号：若 expires_at < now + REFRESH_SLACK_MS → refresh_account
    └─ 写 audit

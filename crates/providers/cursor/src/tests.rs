@@ -188,18 +188,41 @@ async fn sync_active_metadata_imports_unknown_live_account_like_other_providers(
 }
 
 #[tokio::test]
-async fn reconcile_does_not_create_an_unknown_live_account() {
+async fn reconcile_imports_an_unknown_live_account_before_a_later_auto_swap() {
     let (_temp, provider, db) = setup();
-    let access = jwt("auth0|user_a", "a");
-    write_live(&db, "a@example.com", "auth0|user_a", &access, "refresh-a");
+    let access_a = jwt("auth0|user_a", "a");
+    write_live(
+        &db,
+        "a@example.com",
+        "auth0|user_a",
+        &access_a,
+        "refresh-a",
+    );
     write_plan(&db, "pro", "active", "oauth");
+    let a = provider.import_active(None).await.unwrap();
+
+    // 模拟用户在 Cursor CLI 中刚切到尚未进入账号池的新账号。
+    let access_b = jwt("auth0|user_b", "b");
+    write_live(
+        &db,
+        "b@example.com",
+        "auth0|user_b",
+        &access_b,
+        "refresh-b",
+    );
 
     provider.reconcile_active_from_live().await.unwrap();
+    let b = provider.live_account_id().await.unwrap();
+    assert_eq!(b.0, "auth0|user_b");
+    assert!(provider.require_account(&b).unwrap().active);
+
+    // 本轮后续即使选择旧账号，新账号也必须已经在池中，不能无声丢失。
+    provider.activate(&a.id).await.unwrap();
     assert!(provider
         .registry
-        .list_by_provider(PROVIDER_ID)
+        .find(PROVIDER_ID, &b)
         .unwrap()
-        .is_empty());
+        .is_some());
 }
 
 #[tokio::test]
