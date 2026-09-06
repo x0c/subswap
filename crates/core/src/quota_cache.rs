@@ -5,7 +5,7 @@
 //! - 无 `reset_at` 的窗口：按窗口类型兜底 TTL（5h/7d/30d），超出则失效。
 //! - 所有窗口都失效 → 整条 entry 不返回（等同缓存未命中）。
 //!
-//! 缓存是可丢弃数据，读写失败静默忽略。
+//! 缓存是可丢弃数据：读失败回空缓存；写失败只 `tracing::warn`，不阻塞主流程。
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -55,10 +55,17 @@ impl QuotaCache {
             .unwrap_or_default()
     }
 
-    /// 将缓存写入文件；失败静默忽略（缓存是可丢弃数据）。
+    /// 将缓存写入文件；失败只 warn，不抛错（缓存是可丢弃数据，对齐 audit 写失败策略）。
     pub fn save(&self, path: &Path) {
-        if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(path, json);
+        let json = match serde_json::to_string_pretty(self) {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::warn!(err=%e, path=%path.display(), "quota cache serialize failed");
+                return;
+            }
+        };
+        if let Err(e) = std::fs::write(path, json) {
+            tracing::warn!(err=%e, path=%path.display(), "quota cache write failed");
         }
     }
 
@@ -387,5 +394,39 @@ mod tests {
         assert!(cache
             .fresh("claude", "a@x.com", std::time::Duration::from_secs(90))
             .is_none());
+    }
+
+    #[test]
+    fn save_roundtrips_through_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("quota_cache.json");
+        let mut cache = QuotaCache::default();
+        cache.set("claude", "a@x.com", vec![sample_quota()]);
+        cache.record_failure("claude", "b@x.com", "429 rate limited");
+        cache.save(&path);
+
+        let loaded = QuotaCache::load(&path);
+        assert!(loaded.get("claude", "a@x.com").is_some());
+        assert_eq!(
+            loaded
+                .in_failure_backoff(
+                    "claude",
+                    "b@x.com",
+                    std::time::Duration::from_secs(90),
+                    std::time::Duration::from_secs(900)
+                )
+                .map(|f| f.error.as_str()),
+            Some("429 rate limited")
+        );
+    }
+
+    #[test]
+    fn save_to_missing_parent_does_not_panic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("missing").join("quota_cache.json");
+        let mut cache = QuotaCache::default();
+        cache.set("claude", "a@x.com", vec![sample_quota()]);
+        cache.save(&path);
+        assert!(!path.exists());
     }
 }
