@@ -10,6 +10,12 @@ Languages: English | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
 subswap safely switches accounts for Claude Code, OpenAI Codex / ChatGPT, Kimi Code, Cursor, and OpenCode Go. It keeps private local credential snapshots, shows quota status, and can optionally move to another eligible account when usage reaches your threshold.
 
+If this saves you from logging out and back in all day, please [star the repo](https://github.com/x0c/subswap) so others can find it.
+
+<p align="center">
+  <img src="docs/images/demo-status.svg" width="920" alt="Example subswap status: Claude, Codex, and Cursor accounts with quota left, plus swap and isolated-run tips">
+</p>
+
 ## Why subswap
 
 - **Keep work, personal, and client accounts separate.** Switch an account without repeatedly logging out and back in.

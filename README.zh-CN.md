@@ -10,6 +10,12 @@
 
 subswap 可以安全切换 Claude Code、OpenAI Codex / ChatGPT、Kimi Code、Cursor 和 OpenCode Go 账号。它把私有凭证快照留在本地，显示额度状态，并可在用量到达你的阈值时自动切到另一个符合条件的账号。
 
+如果它帮你少登出登录几次，请给仓库[点个 star](https://github.com/x0c/subswap)，方便更多人发现。
+
+<p align="center">
+  <img src="docs/images/demo-status.svg" width="920" alt="subswap 状态示例：Claude、Codex、Cursor 账号与剩余额度，以及换号与隔离运行提示">
+</p>
+
 ## 为什么用 subswap
 
 - **工作、个人和客户账号互不混淆。** 无需反复登出、再登录。

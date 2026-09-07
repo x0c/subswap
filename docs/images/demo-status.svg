@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="420" viewBox="0 0 920 420" role="img" aria-label="subswap status demo">
+  <rect width="920" height="420" rx="12" fill="#1e1e1e"/>
+  <rect x="0" y="0" width="920" height="36" rx="12" fill="#2d2d2d"/>
+  <circle cx="22" cy="18" r="6" fill="#ff5f56"/><circle cx="42" cy="18" r="6" fill="#ffbd2e"/><circle cx="62" cy="18" r="6" fill="#27c93f"/>
+  <text x="90" y="22" fill="#c0c0c0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">subswap — local account switcher</text>
+  <text x="24" y="72" fill="#9cdcfe" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15">$ subswap</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14">
+    <text x="24" y="110" fill="#ce9178">claude</text>
+    <text x="40" y="134" fill="#4ec9b0">*  1 work-api                        custom</text>
+    <text x="40" y="158" fill="#d4d4d4">   2 personal@example.com   5h [ 62% left ]  7d [ 81% left ]</text>
+    <text x="24" y="198" fill="#ce9178">codex</text>
+    <text x="40" y="222" fill="#4ec9b0">*  3 work@example.com       5h [ 23% left ]  7d [ 41% left ]</text>
+    <text x="40" y="246" fill="#d4d4d4">   4 spare@example.com      5h [100% left ]  7d [100% left ]</text>
+    <text x="24" y="286" fill="#ce9178">cursor</text>
+    <text x="40" y="310" fill="#d4d4d4">   5 desk@example.com       1st [ 55% left ]  API [ 90% left ]</text>
+    <text x="24" y="350" fill="#6a9955"># Tip: subswap swap 4   → switch without re-login</text>
+    <text x="24" y="378" fill="#6a9955">#      subswap run 2 -- claude   → isolated parallel session</text>
+  </g>
+</svg>
