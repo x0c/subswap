@@ -6,6 +6,12 @@ subswap은 Claude Code, OpenAI Codex / ChatGPT, Kimi Code, Cursor, OpenCode Go�
 
 Claude 계정 전환 도구, Codex 계정 관리자, ChatGPT quota tracker, 또는 여러 Provider를 통합하는 구독 전환 도구로 사용할 수 있습니다.
 
+도움이 되었다면 [star](https://github.com/x0c/subswap)를 눌러 주세요. 다른 사람이 찾기 쉬워집니다.
+
+<p align="center">
+  <img src="docs/images/demo-status.svg" width="920" alt="subswap 상태 예시">
+</p>
+
 **플랫폼 지원**: CLI와 다섯 Provider는 macOS / Linux / Windows CI에서 검증됩니다. 백그라운드 daemon은 Unix 전용이며 Windows에서는 포그라운드 CLI를 사용합니다.
 
 ## 기능
