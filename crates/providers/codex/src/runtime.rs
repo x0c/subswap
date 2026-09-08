@@ -51,9 +51,10 @@ impl FileBlobRuntime for CodexRuntime {
         }
     }
 
-    async fn refresh(&self, _blob: &str) -> Result<RefreshOutcome> {
-        // Codex 现状不做带外刷新（query_quota 直接用存量 token；401 由上游 CLI 处理）。
-        Ok(RefreshOutcome::Unsupported)
+    async fn refresh(&self, blob: &str) -> Result<RefreshOutcome> {
+        crate::app_server::refresh_parked_blob(blob)
+            .await
+            .map_err(|e| subswap_core::error::Error::Provider(format!("Codex parked refresh: {e}")))
     }
 
     async fn fetch_quota(&self, access_token: &str, account: &Account) -> Result<Vec<Quota>> {

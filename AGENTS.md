@@ -125,8 +125,9 @@ install -m 755 target/release/subswapd ~/.local/bin/subswapd
 shasum -a 256 target/release/subswap target/release/subswapd \
   ~/.local/bin/subswap ~/.local/bin/subswapd
 
-pkill -f 'subswap __daemon' 2>/dev/null || true
-pkill -f 'subswapd' 2>/dev/null || true
+# 用字符类避免 `pkill -f` 匹配并终止承载本段命令的 shell。
+pkill -f '[s]ubswap __daemon' 2>/dev/null || true
+pkill -f '[s]ubswapd' 2>/dev/null || true
 SUBSWAP_AUTO_DAEMON=1 ~/.local/bin/subswap
 ~/.local/bin/subswap --version
 pgrep -af 'subswap __daemon|subswapd' || true
@@ -163,7 +164,7 @@ docs/                     中文项目文档
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 开始、评审或合并外部贡献前**必读**。不读会让凭证安全边界、测试隔离或公开文档同步在贡献中被遗漏 |
 | [SECURITY.md](SECURITY.md) | 处理安全漏洞、凭证泄露、安装完整性或私密披露前**必读**。不读会把应私下处理的敏感问题暴露到公开 issue |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 规划、评审或同步里程碑范围、已完成能力和后续功能优先级前**必读**。不读会把已完成能力当待办，或把未打磨半成品写进对外承诺 |
-| [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（含 Codex 两个 `7d`/附加 gpt-reserve、keychain ACL 中毒、Cursor 命令行钥匙串登录查不到额度、Cursor 多个账号额度完全一样、Cursor 自动切到 1st 0% 号、access/refresh token 覆写、429 vs invalid_grant、TOML null、Claude/Codex 用量 401 但客户端能正常用等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
+| [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（含 Codex 两个 `7d`/附加 gpt-reserve、**Codex 只有当前号有额度停用号全 401**、keychain ACL 中毒、Cursor 命令行钥匙串登录查不到额度、Cursor 多个账号额度完全一样、Cursor 自动切到 1st 0% 号、access/refresh token 覆写、429 vs invalid_grant、TOML null、Claude/Codex 用量 401 但客户端能正常用等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
 | [docs/superpowers/specs/2026-07-17-kimi-provider-and-shared-engine-design.md](docs/superpowers/specs/2026-07-17-kimi-provider-and-shared-engine-design.md) | 追溯 2026-07-17 Kimi Provider / 文件型共享引擎**历史设计决策**时可读；日常改代码以 PROVIDER_KB 与 ARCHITECTURE 为准。不读历史稿不会挡日常开发 |
 | [docs/superpowers/plans/2026-07-17-kimi-provider-and-shared-engine.md](docs/superpowers/plans/2026-07-17-kimi-provider-and-shared-engine.md) | 仅追溯同日实现清单 / 验收步骤时可读；日常无需翻阅。权威行为与现状以 PROVIDER_KB、ARCHITECTURE、源码为准 |
 

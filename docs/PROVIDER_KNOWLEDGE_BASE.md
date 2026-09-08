@@ -209,11 +209,12 @@ subswap **不实现 OpenAI OAuth**、不硬编码 OAuth client id、不直接调
 3. 无 socket、但普通 Codex 在跑 → 仍可启临时 app-server，用 `0600` 临时 `CODEX_HOME`，只复制 live `auth.json` **并清空 refresh token**（能用现有 access，绝不与运行中 Codex 抢刷）。
 4. 官方不可用/认证失败/方法不支持 → 回退 `wham/usage`；官方 429 与其它服务错误**原样返回，禁止二次回退再打**。
 
-parked 只走兼容查询：共享引擎只传 access token；残缺 `auth.json` 刷新后无法安全吸收 → 会分叉一次性 refresh。
+parked 查额度前由引擎调 `runtime.refresh()`：`CodexRuntime::refresh` → `app_server::refresh_parked_blob`——把仓库**完整** `auth.json`（含 refresh）写入临时 `CODEX_HOME`，委托官方 `app-server` 按需刷新并吸收轮换结果，再用新 access 打 `wham/usage`。access 仍在 `REFRESH_SLACK_MS` 外则跳过；无 refresh / 二进制不可用则降级。  
+**禁止**只物化 access、清空 refresh（`SanitizedHome` 仅用于保护 live 并发，不适用于停用号自愈）。见 [troubleshooting/2026-09-07](troubleshooting/2026-09-07-codex-parked-quota-401.md)。
 
 外层 `quota.fetch_timeout_ms`（默认 20s）须盖住本会话上限；过短 → `quota fetch timeout` → 默认入口 `timeout after N attempts` 回落旧缓存。Kimi active 401 自愈（官方锁 + 持锁刷新）同受此超时约束。
 
-排查：[troubleshooting/2026-07-09](troubleshooting/2026-07-09-codex-quota-401-despite-working-cli.md)。
+排查：当前号 401 → [troubleshooting/2026-07-09](troubleshooting/2026-07-09-codex-quota-401-despite-working-cli.md)；停用号 401 → [troubleshooting/2026-09-07](troubleshooting/2026-09-07-codex-parked-quota-401.md)。
 
 ### Refresh token 轮换与 capture-on-leave（核心安全约束）
 
