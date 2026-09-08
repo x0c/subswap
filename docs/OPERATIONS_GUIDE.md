@@ -74,8 +74,9 @@ GitHub Release 的 `x86_64-unknown-linux-gnu` 包按 CI 的较新系统库构建
 ```bash
 shasum -a 256 target/release/subswap target/release/subswapd \
   ~/.local/bin/subswap ~/.local/bin/subswapd
-pkill -f 'subswap __daemon' 2>/dev/null || true
-pkill -f 'subswapd' 2>/dev/null || true
+# 用字符类避免 `pkill -f` 匹配并终止承载本段命令的 shell。
+pkill -f '[s]ubswap __daemon' 2>/dev/null || true
+pkill -f '[s]ubswapd' 2>/dev/null || true
 SUBSWAP_AUTO_DAEMON=1 ~/.local/bin/subswap
 ~/.local/bin/subswap --version
 pgrep -af 'subswap __daemon|subswapd' || true

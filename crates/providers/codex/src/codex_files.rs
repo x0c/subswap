@@ -127,6 +127,21 @@ fn decode_jwt_payload(token: &str) -> Option<serde_json::Value> {
     serde_json::from_slice(&decoded).ok()
 }
 
+/// 从 auth blob 读取 access token 的 JWT `exp`（Unix 秒）。非 JWT 或缺失时返回 `None`。
+pub fn access_token_exp_epoch(blob: &str) -> Option<i64> {
+    let value = serde_json::from_str::<serde_json::Value>(blob).ok()?;
+    let access = string_at(&value, &["tokens", "access_token"])
+        .or_else(|| string_at(&value, &["access_token"]))?;
+    decode_jwt_payload(&access)?
+        .get("exp")
+        .and_then(|v| v.as_i64())
+}
+
+/// access 是否已过期或进入预刷新窗口。无法解析 `exp` 时返回 `false`（不主动刷）。
+pub fn access_token_needs_refresh(blob: &str, now_epoch: i64, slack_secs: i64) -> bool {
+    access_token_exp_epoch(blob).is_some_and(|exp| exp <= now_epoch.saturating_add(slack_secs))
+}
+
 fn base64_url_decode(input: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity((input.len() * 3) / 4);
     let mut buffer = 0u32;
@@ -230,5 +245,21 @@ mod tests {
         let m = parse_metadata("not json at all");
         assert!(m.primary_id().is_none());
         assert!(m.label().is_none());
+    }
+
+    #[test]
+    fn access_token_needs_refresh_respects_exp_and_slack() {
+        let payload = "eyJleHAiOjE3MDAwMDAwMDB9"; // {"exp":1700000000}
+        let blob = format!(
+            r#"{{"tokens":{{"access_token":"h.{payload}.s","refresh_token":"r"}}}}"#
+        );
+        assert!(access_token_needs_refresh(&blob, 1_700_000_000, 0));
+        assert!(access_token_needs_refresh(&blob, 1_699_999_400, 600));
+        assert!(!access_token_needs_refresh(&blob, 1_699_000_000, 600));
+        assert!(!access_token_needs_refresh(
+            r#"{"tokens":{"access_token":"not-a-jwt"}}"#,
+            0,
+            0
+        ));
     }
 }

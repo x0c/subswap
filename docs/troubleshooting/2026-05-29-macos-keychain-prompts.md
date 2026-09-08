@@ -22,8 +22,9 @@ subswap wants to use your confidential information stored in "subswap" in your k
 
 ```bash
 type -a subswap
-pkill -f 'subswap __daemon' || true
-pkill -f 'subswapd' || true
+# 字符类避免 `pkill -f` 同时匹配承载本段命令的 shell。
+pkill -f '[s]ubswap __daemon' || true
+pkill -f '[s]ubswapd' || true
 cargo build -p subswap-cli --release
 install -m 755 target/release/subswap /Users/geraltgraham/.local/bin/subswap
 /Users/geraltgraham/.local/bin/subswap --help
