@@ -38,6 +38,11 @@ access 仍在 `REFRESH_SLACK_MS` 窗口外则不启进程。无 refresh / 二进
 - 本机没有可用的 `codex` 二进制 → 官方通道不可用。
 - 停用号很多时，每个号起一次短暂 app-server 会变慢，需节流/缓存（已有 quota 缓存窗口可复用）。
 
+## Agent / 人工探针禁令
+
+排查停用号 401 时，若用临时 `CODEX_HOME` 跑官方 app-server 且触发了 token 轮换：**必须**把临时目录里新的 `auth.json` 写回该账号仓库副本，或保证探针绝不会让官方消费 refresh。  
+只读探针若刷了 token 却扔掉临时目录，仓库里的旧 refresh 会立刻作废，表现为 `refresh token dead; needs re-login`，只能重登。
+
 ## 临时自救（旧版本 / refresh 已死时）
 
 若仍跑在未含本修复的版本：对该停用号手动切入再切回，或重新登录后导入。  
