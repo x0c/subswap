@@ -66,3 +66,19 @@ P0/P1 已落实并推送；发布流程改为用户可读 notes + 全平台资�
 审视时证据摘要：2 stars / 1 fork / 0 issues；社区健康度 57%（模板与准则当时缺失，现已补）；v1.6.1 Release 资产齐全但正文当时无用户可读说明。
 
 <!-- 该文档整理/压缩于 2026-09-05 -->
+
+## Growth priorities (2026-09-09)
+
+The user prioritizes earning real stars by improving reliability and the first-use experience. Keep workflow badges truthful and resolve failures before promotion. Preserve the existing client boundaries and avoid exposing unfinished features just to expand the feature list.
+
+Current evidence: 3 total stars, including the owner's star (2 external); GitHub's rolling traffic window reports 125 views / 71 unique visitors and 510 clones / 374 unique cloners. Referrers include ChatGPT (45 views / 33 unique visitors), Google (9 / 7), GitHub (6 / 2), and DuckDuckGo (2 / 1). These are overlapping rolling-window counts, not conversion attribution; clones do not establish human adoption.
+
+README references inspected from shallow checkouts: [aisw](https://github.com/burakdede/aisw) leads with work/personal account situations; [ccc-switch](https://github.com/NTU-Sherlock/ccc-switch) uses a short command-based before/after. Adopt concrete user language and a short manual-first onboarding example; do not copy context management or session-relay claims.
+
+Priorities:
+
+1. Restore passing CI and Release, including actual Windows draft installation and strict publication gates.
+2. Explain switching accounts and checking remaining quota in the first sentence; make installation and the first three commands easy to find in every README language.
+3. Record a short real terminal walkthrough with synthetic accounts before a concentrated promotion. The current SVG is an illustrative status example, not a recording.
+4. Prepare a useful usage story and a focused announcement after the release is verified. External posts and replies require explicit user authorization; no messages have been sent.
+5. Compare new external stars, unique views, referrers, and installation feedback over subsequent windows. Do not promise a star count or infer humans from clone totals.

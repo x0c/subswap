@@ -178,3 +178,13 @@ Windows release 只有 CLI，文档和安装脚本都不得暗示包含后台 da
 - Windows 的本机手工冒烟仍依赖 CI 环境；当前支持结论来自三平台测试矩阵、Windows release 构建与一键安装链路，daemon 明确不在 Windows 支持范围内。
 
 <!-- 该文档整理/压缩于 2026-09-05 -->
+
+## CI and Release failure badges
+
+Keep CI and Release checks enabled and fix their failing steps. A working local binary does not prove that the latest source passes formatting, lint, cross-platform tests, or installer verification. The README badges report workflow outcomes, not local application health.
+
+Release must validate the selected tag through the same CI workflow before building assets. All builds and the current Windows installer verification must succeed before publication. Do not use `always()` with a condition that checks only builds: that bypasses a failed installer dependency.
+
+Draft installer verification must explicitly select the release database ID and expected version, authenticate to the release API, and download draft assets through their API URLs with `Accept: application/octet-stream`. Public tag/download URLs are unsuitable for draft verification. Normal installation must continue to reject drafts. Verify the installed version exactly. Re-running a published release must not turn it back into a draft or overwrite its assets.
+
+References: [GitHub job dependencies](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-jobs), [release API](https://docs.github.com/en/rest/releases/releases), [asset downloads](https://docs.github.com/en/rest/releases/assets).

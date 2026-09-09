@@ -159,8 +159,8 @@ docs/                     中文项目文档
 | [docs/design/ACCOUNT_ISOLATION_DESIGN.md](docs/design/ACCOUNT_ISOLATION_DESIGN.md) | 改、评审、分析或排查 `subswap run`/`shell`/`env` 账号环境隔离、checkout 锁、daemon 避让、macOS 钥匙串命名空间、Claude resume 会话共享前**必读**。不读会漏 `hasCompletedOnboarding`、污染宿主钥匙串或让 Cursor 误接隔离命令 |
 | [docs/CONFIG.md](docs/CONFIG.md) | 改、评审或排查 `config.toml` 字段、热加载、默认阈值、轮询间隔、quota 查询节流、应用目录覆盖、便携运行或配置生效问题前**必读**（配置数字权威源）。不读会把阈值/节流改到打爆上游或热加载不生效 |
 | [docs/CLI.md](docs/CLI.md) | 改、评审、分析或排查 CLI 命令面、Provider 登录/导入语义、默认入口额度输出、写操作后余量表（status-after-action）、`subswapd` 辅助进程、账号环境隔离命令或 Cursor 不支持隔离运行的边界前**必读**。不读会改丢写操作后状态面，或给 Cursor 加上不存在的隔离入口 |
-| [docs/OPERATIONS_GUIDE.md](docs/OPERATIONS_GUIDE.md) | 改、评审或排查本地构建、三平台测试隔离、release 构建、本机覆盖安装、daemon 冒烟、Linux 发布依赖安装、CI/Release 发布流程、Homebrew tap formula 更新机制或 `HOMEBREW_TAP_TOKEN` 配置前**必读**。不读会漏覆盖安装/版本哈希核对，或手动乱改已自动更新的 Homebrew tap |
-| [docs/OSS_READINESS_REVIEW.md](docs/OSS_READINESS_REVIEW.md) | 优化、评审或发布 GitHub 对外呈现、README、安装入口、Release notes、贡献或安全入口前**必读**。不读会让公开描述、支持范围与实际行为再次失真 |
+| [docs/OPERATIONS_GUIDE.md](docs/OPERATIONS_GUIDE.md) | 改、评审或排查本地构建、三平台测试隔离、release 构建、本机覆盖安装、daemon 冒烟、Linux 发布依赖安装、CI/Release 发布流程、README CI/Release failing 徽章与 draft 安装 404、Homebrew tap formula 更新机制或 `HOMEBREW_TAP_TOKEN` 配置前**必读**。不读会漏覆盖安装/版本哈希核对，或手动乱改已自动更新的 Homebrew tap |
+| [docs/OSS_READINESS_REVIEW.md](docs/OSS_READINESS_REVIEW.md) | 优化、评审或发布 GitHub 对外呈现、star 增长与首次使用转化、README、安装入口、Release notes、贡献或安全入口前**必读**。不读会让公开描述、支持范围与实际行为再次失真 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 开始、评审或合并外部贡献前**必读**。不读会让凭证安全边界、测试隔离或公开文档同步在贡献中被遗漏 |
 | [SECURITY.md](SECURITY.md) | 处理安全漏洞、凭证泄露、安装完整性或私密披露前**必读**。不读会把应私下处理的敏感问题暴露到公开 issue |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 规划、评审或同步里程碑范围、已完成能力和后续功能优先级前**必读**。不读会把已完成能力当待办，或把未打磨半成品写进对外承诺 |

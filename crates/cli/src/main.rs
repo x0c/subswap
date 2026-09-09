@@ -223,27 +223,29 @@ async fn main() -> Result<()> {
             effort,
             billing,
             yes,
-        }) => cmd::add_api::run(
-            &ctx,
-            cmd::add_api::AddApiOptions {
-                preset,
-                id,
-                name,
-                endpoint,
-                api_key,
-                auth,
-                opus_model,
-                sonnet_model,
-                haiku_model,
-                model,
-                subagent_model,
-                effort,
-                billing,
-                yes,
-            },
-            cli.json,
-        )
-        .await,
+        }) => {
+            cmd::add_api::run(
+                &ctx,
+                cmd::add_api::AddApiOptions {
+                    preset,
+                    id,
+                    name,
+                    endpoint,
+                    api_key,
+                    auth,
+                    opus_model,
+                    sonnet_model,
+                    haiku_model,
+                    model,
+                    subagent_model,
+                    effort,
+                    billing,
+                    yes,
+                },
+                cli.json,
+            )
+            .await
+        }
         Some(Cmd::Login {
             provider,
             email,

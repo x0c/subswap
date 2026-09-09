@@ -110,7 +110,14 @@ async fn refresh_parked_blob_with_binary(blob: &str, binary: &Path) -> Result<Re
     }
 
     let parked = ParkedHome::create(blob).await?;
-    let query = query_command(binary, &["app-server", "--stdio"], None, parked.path(), true).await;
+    let query = query_command(
+        binary,
+        &["app-server", "--stdio"],
+        None,
+        parked.path(),
+        true,
+    )
+    .await;
     let after = match tokio::fs::read_to_string(parked.path().join("auth.json")).await {
         Ok(raw) => raw,
         Err(error) => {
@@ -713,7 +720,9 @@ done
     }
 
     fn fake_access_jwt(exp: i64) -> String {
-        let payload = base64_url_encode(format!(r#"{{"exp":{exp},"email":"parked@example.com"}}"#).as_bytes());
+        let payload = base64_url_encode(
+            format!(r#"{{"exp":{exp},"email":"parked@example.com"}}"#).as_bytes(),
+        );
         format!("hdr.{payload}.sig")
     }
 
@@ -730,7 +739,9 @@ done
             if b1.is_none() {
                 break;
             }
-            out.push(TABLE[(((b1.unwrap() & 0x0f) << 2) | (b2.unwrap_or(0) >> 6)) as usize] as char);
+            out.push(
+                TABLE[(((b1.unwrap() & 0x0f) << 2) | (b2.unwrap_or(0) >> 6)) as usize] as char,
+            );
             if b2.is_none() {
                 break;
             }

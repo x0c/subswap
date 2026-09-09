@@ -1,6 +1,11 @@
 name: CI
 
 on:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
   push:
     branches: [main]
   pull_request:
@@ -16,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -36,6 +43,8 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Linux 上 keyring crate 依赖 secret-service / D-Bus,装一下避免单元测试链接报错。
@@ -50,6 +59,9 @@ jobs:
           # 避免测试残留后台进程。
           SUBSWAP_NO_DAEMON: "1"
         run: cargo test --workspace --all-targets
+      - name: regression test windows installer
+        if: runner.os == 'Windows'
+        run: python -m unittest discover -s tests -p test_windows_installer.py -v
       - name: smoke test windows installer
         if: runner.os == 'Windows'
         shell: pwsh

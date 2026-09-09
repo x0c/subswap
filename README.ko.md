@@ -2,6 +2,8 @@
 
 Languages: [English](README.md) | [简体中文](README.zh-CN.md) | [日本語](README.ja.md) | 한국어
 
+**로그아웃 없이 AI 코딩 계정을 바꾸고, 남은 사용량을 확인하세요.**
+
 subswap은 Claude Code, OpenAI Codex / ChatGPT, Kimi Code, Cursor, OpenCode Go의 여러 AI 구독 계정을 관리하는 Rust CLI입니다. 로컬 로그인 상태와 quota를 읽고 활성 계정을 수동 또는 자동으로 전환합니다.
 
 Claude 계정 전환 도구, Codex 계정 관리자, ChatGPT quota tracker, 또는 여러 Provider를 통합하는 구독 전환 도구로 사용할 수 있습니다.
@@ -13,6 +15,50 @@ Claude 계정 전환 도구, Codex 계정 관리자, ChatGPT quota tracker, 또�
 </p>
 
 **플랫폼 지원**: CLI와 다섯 Provider는 macOS / Linux / Windows CI에서 검증됩니다. 백그라운드 daemon은 Unix 전용이며 Windows에서는 포그라운드 CLI를 사용합니다.
+
+## 설치
+
+### macOS / Linux (Homebrew)
+
+Homebrew 사용:
+
+```bash
+brew install x0c/tap/subswap
+```
+
+먼저 tap을 추가한 뒤 이름으로 설치할 수도 있습니다.
+
+```bash
+brew tap x0c/tap
+brew install subswap
+```
+
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/x0c/subswap/main/install.ps1 | iex
+```
+
+`subswap.exe`를 설치하고 사용자 `PATH`에 추가합니다. Windows에는 Unix 전용 daemon이 포함되지 않습니다.
+
+### 소스에서 설치
+
+소스에서 설치하려면 Rust 1.80+가 필요합니다.
+
+```bash
+git clone https://github.com/x0c/subswap
+cd subswap
+cargo install --path crates/cli
+subswap --help
+```
+
+Git에서 직접 설치할 수도 있습니다.
+
+```bash
+cargo install --git https://github.com/x0c/subswap --path crates/cli
+```
+
+이 방법은 검증된 Release가 아니라 저장소 소스를 따릅니다. 일반 사용에서는 Homebrew 또는 [최신 Release](https://github.com/x0c/subswap/releases/latest)를 우선하세요.
 
 ## 기능
 
@@ -69,51 +115,17 @@ Claude 계정 전환 도구, Codex 계정 관리자, ChatGPT quota tracker, 또�
 
 subswap은 각 계정 자격 증명을 소유자 전용 파일에 저장하고 각 네이티브 클라이언트의 활성 상태를 트랜잭션으로 갱신합니다. 수동 전환은 quota 조회 때문에 막히지 않습니다.
 
-## 설치
-
-### macOS / Linux (Homebrew)
-
-Homebrew 사용:
-
-```bash
-brew install x0c/tap/subswap
-```
-
-먼저 tap을 추가한 뒤 이름으로 설치할 수도 있습니다.
-
-```bash
-brew tap x0c/tap
-brew install subswap
-```
-
-### Windows (PowerShell)
-
-```powershell
-irm https://raw.githubusercontent.com/x0c/subswap/main/install.ps1 | iex
-```
-
-`subswap.exe`를 설치하고 사용자 `PATH`에 추가합니다. Windows에는 Unix 전용 daemon이 포함되지 않습니다.
-
-### 소스에서 설치
-
-소스에서 설치하려면 Rust 1.80+가 필요합니다.
-
-```bash
-git clone https://github.com/x0c/subswap
-cd subswap
-cargo install --path crates/cli
-subswap --help
-```
-
-Git에서 직접 설치할 수도 있습니다.
-
-```bash
-cargo install --git https://github.com/x0c/subswap --path crates/cli
-```
-
-이 방법은 검증된 Release가 아니라 저장소 소스를 따릅니다. 일반 사용에서는 Homebrew 또는 [최신 Release](https://github.com/x0c/subswap/releases/latest)를 우선하세요.
-
 ## 빠른 시작
+
+### 먼저 수동 전환부터
+
+지원 클라이언트에 로그인하고 위 방법으로 subswap을 설치한 다음 실행하세요.
+
+```bash
+subswap autoswap off  # 처음에는 자동 전환을 끕니다.
+subswap               # 현재 로그인을 가져오고 계정 목록을 봅니다.
+subswap swap 2        # 2를 목록의 계정 번호로 바꾸세요.
+```
 
 ```bash
 # default: sync local active accounts, fetch quotas, auto-swap if past threshold,

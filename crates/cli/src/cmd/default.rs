@@ -38,7 +38,7 @@ pub async fn run(ctx: &AppContext, json: bool) -> Result<()> {
         &ctx.providers,
         &ctx.audit,
         &mut snapshots,
-        &cfg,
+        Some(&cfg),
         &mut auto_lines,
         if interactive {
             Some(&mut renderer)
@@ -46,7 +46,6 @@ pub async fn run(ctx: &AppContext, json: bool) -> Result<()> {
             None
         },
         &quota_cache_path(),
-        true,
     )
     .await?;
 
@@ -78,12 +77,11 @@ pub async fn print_status_overview(ctx: &AppContext) -> Result<()> {
     if interactive {
         renderer.render(&snapshots, &auto_lines)?;
     }
-    let cfg = PolicyConfig::default();
     fill_quotas_progressively(
         &ctx.providers,
         &ctx.audit,
         &mut snapshots,
-        &cfg,
+        None,
         &mut auto_lines,
         if interactive {
             Some(&mut renderer)
@@ -91,7 +89,6 @@ pub async fn print_status_overview(ctx: &AppContext) -> Result<()> {
             None
         },
         &quota_cache_path(),
-        false,
     )
     .await?;
     renderer.render(&snapshots, &auto_lines)?;
@@ -349,11 +346,10 @@ async fn fill_quotas_progressively(
     registry: &ProviderRegistry,
     audit: &AuditLog,
     snapshots: &mut [ProviderSnapshot],
-    cfg: &PolicyConfig,
+    auto_swap: Option<&PolicyConfig>,
     auto_lines: &mut Vec<AutoLine>,
     mut renderer: Option<&mut InlineRenderer>,
     cache_path: &std::path::Path,
-    enable_auto_swap: bool,
 ) -> Result<()> {
     let total: usize = snapshots.iter().map(|snap| snap.accounts.len()).sum();
     if total == 0 {
@@ -418,7 +414,7 @@ async fn fill_quotas_progressively(
     while let Some(update) = rx.recv().await {
         let provider = update.provider.clone();
         apply_quota_update(snapshots, update, &mut cache);
-        if enable_auto_swap {
+        if let Some(cfg) = auto_swap {
             try_auto_swap_ready_provider(
                 registry,
                 audit,
@@ -805,11 +801,10 @@ mod tests {
                 &registry,
                 &audit,
                 &mut snapshots,
-                &cfg,
+                Some(&cfg),
                 &mut auto_lines,
                 None,
                 &cache_path,
-                true,
             )
             .await
             .unwrap();
@@ -872,12 +867,6 @@ mod tests {
         }));
 
         let mut snapshots = build_loading_snapshots(&registry).await;
-        let cfg = PolicyConfig {
-            enabled: true,
-            threshold: 0.98,
-            allow_unknown: false,
-            settle_grace_ms: 60_000,
-        };
         let tmp = tempfile::tempdir().unwrap();
         let audit = AuditLog::new(tmp.path().join("audit.log"));
         let mut auto_lines = Vec::new();
@@ -886,11 +875,10 @@ mod tests {
             &registry,
             &audit,
             &mut snapshots,
-            &cfg,
+            None,
             &mut auto_lines,
             None,
             &cache_path,
-            false,
         )
         .await
         .unwrap();
@@ -960,11 +948,10 @@ mod tests {
                 &registry,
                 &audit,
                 &mut snapshots,
-                &cfg,
+                Some(&cfg),
                 &mut auto_lines,
                 None,
                 &cache_path,
-                true,
             )
             .await
             .unwrap();
@@ -1052,11 +1039,10 @@ mod tests {
                 &registry,
                 &audit,
                 &mut snapshots,
-                &cfg,
+                Some(&cfg),
                 &mut auto_lines,
                 None,
                 &cache_path,
-                true,
             )
             .await
             .unwrap();
