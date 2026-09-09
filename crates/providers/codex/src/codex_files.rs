@@ -250,9 +250,8 @@ mod tests {
     #[test]
     fn access_token_needs_refresh_respects_exp_and_slack() {
         let payload = "eyJleHAiOjE3MDAwMDAwMDB9"; // {"exp":1700000000}
-        let blob = format!(
-            r#"{{"tokens":{{"access_token":"h.{payload}.s","refresh_token":"r"}}}}"#
-        );
+        let blob =
+            format!(r#"{{"tokens":{{"access_token":"h.{payload}.s","refresh_token":"r"}}}}"#);
         assert!(access_token_needs_refresh(&blob, 1_700_000_000, 0));
         assert!(access_token_needs_refresh(&blob, 1_699_999_400, 600));
         assert!(!access_token_needs_refresh(&blob, 1_699_000_000, 600));

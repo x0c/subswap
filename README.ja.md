@@ -2,6 +2,8 @@
 
 Languages: [English](README.md) | [简体中文](README.zh-CN.md) | 日本語 | [한국어](README.ko.md)
 
+**ログアウトせずに AI コーディング用アカウントを切り替え、残りのクォータを確認。**
+
 subswap は、Claude Code、OpenAI Codex / ChatGPT、Kimi Code、Cursor、OpenCode Go の複数の AI サブスクリプションアカウントを管理する Rust CLI です。ローカルのログイン状態を取り込み、クォータを確認し、アクティブアカウントを手動または自動で切り替えます。
 
 Claude アカウント切り替えツール、Codex アカウント管理ツール、ChatGPT クォータトラッカー、または複数 Provider を統合するサブスクリプション切り替えツールとして利用できます。
@@ -13,6 +15,50 @@ Claude アカウント切り替えツール、Codex アカウント管理ツー�
 </p>
 
 **プラットフォームサポート**: CLI と 5 Provider は macOS / Linux / Windows の CI で検証されています。バックグラウンド daemon は Unix 専用で、Windows ではフォアグラウンド CLI を使用します。
+
+## インストール
+
+### macOS / Linux (Homebrew)
+
+Homebrew を使う場合:
+
+```bash
+brew install x0c/tap/subswap
+```
+
+先に tap してから名前でインストールすることもできます。
+
+```bash
+brew tap x0c/tap
+brew install subswap
+```
+
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/x0c/subswap/main/install.ps1 | iex
+```
+
+`subswap.exe` をインストールしてユーザー `PATH` に追加します。Windows 版には Unix 専用 daemon は含まれません。
+
+### ソースから
+
+ソースからインストールする場合は Rust 1.80+ が必要です。
+
+```bash
+git clone https://github.com/x0c/subswap
+cd subswap
+cargo install --path crates/cli
+subswap --help
+```
+
+Git から直接インストールすることもできます。
+
+```bash
+cargo install --git https://github.com/x0c/subswap --path crates/cli
+```
+
+この方法は検証済み Release ではなくリポジトリのソースを追います。通常利用では Homebrew または [最新 Release](https://github.com/x0c/subswap/releases/latest) を優先してください。
 
 ## 機能
 
@@ -69,51 +115,17 @@ Claude アカウント切り替えツール、Codex アカウント管理ツー�
 
 subswap は各アカウントの認証情報をオーナー専用ファイルに保存し、各ネイティブクライアントのアクティブ状態をトランザクションで更新します。手動切り替えはクォータ検索にブロックされません。
 
-## インストール
-
-### macOS / Linux (Homebrew)
-
-Homebrew を使う場合:
-
-```bash
-brew install x0c/tap/subswap
-```
-
-先に tap してから名前でインストールすることもできます。
-
-```bash
-brew tap x0c/tap
-brew install subswap
-```
-
-### Windows (PowerShell)
-
-```powershell
-irm https://raw.githubusercontent.com/x0c/subswap/main/install.ps1 | iex
-```
-
-`subswap.exe` をインストールしてユーザー `PATH` に追加します。Windows 版には Unix 専用 daemon は含まれません。
-
-### ソースから
-
-ソースからインストールする場合は Rust 1.80+ が必要です。
-
-```bash
-git clone https://github.com/x0c/subswap
-cd subswap
-cargo install --path crates/cli
-subswap --help
-```
-
-Git から直接インストールすることもできます。
-
-```bash
-cargo install --git https://github.com/x0c/subswap --path crates/cli
-```
-
-この方法は検証済み Release ではなくリポジトリのソースを追います。通常利用では Homebrew または [最新 Release](https://github.com/x0c/subswap/releases/latest) を優先してください。
-
 ## クイックスタート
+
+### まずは手動切り替えから
+
+対応クライアントにログインし、上の手順で subswap をインストールしてから実行します。
+
+```bash
+subswap autoswap off  # 最初は自動切り替えを無効にする。
+subswap               # 現在のログインを取り込み、一覧を表示する。
+subswap swap 2        # 2 を一覧のアカウント番号に置き換える。
+```
 
 ```bash
 # default: sync local active accounts, fetch quotas, auto-swap if past threshold,

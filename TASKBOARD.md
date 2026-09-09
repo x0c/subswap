@@ -4,3 +4,4 @@
 
 | 任务 | 状态 | 影响范围 | 开始 | 最近更新 | 备注 |
 |---|---|---|---|---|---|
+| Repair CI and Release failures | 发布中 | workflows, installer, Rust formatting, operations docs | 09-09 | 2026-09-09 | root; local tests, lint, build, installer regressions passed; v1.7.4 |

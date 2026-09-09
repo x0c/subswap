@@ -10,6 +10,10 @@ on:
         description: "Release tag, for example v0.1.0"
         required: true
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -18,31 +22,44 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
+
   prepare:
     name: prepare release
+    needs: validate
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      release_id: ${{ steps.release.outputs.release_id }}
     steps:
       - name: resolve tag
         id: tag
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         shell: bash
         run: |
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            tag="${{ inputs.tag }}"
-          else
-            tag="${GITHUB_REF_NAME}"
+          tag="${TAG}"
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected a release tag such as v1.7.4." >&2
+            exit 1
           fi
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
 
       - name: create draft release
+        id: release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
         shell: bash
         run: |
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=true
+            if [[ "$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq .isDraft)" != "true" ]]; then
+              echo "Release ${TAG} is already published; create a new version instead." >&2
+              exit 1
+            fi
           else
               gh release create "${TAG}" \
                 --repo "${GITHUB_REPOSITORY}" \
@@ -50,6 +67,8 @@ jobs:
                 --title "${TAG}" \
                 --generate-notes
           fi
+          release_id=$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json databaseId --jq .databaseId)
+          echo "release_id=${release_id}" >> "${GITHUB_OUTPUT}"
 
   build:
     name: build ${{ matrix.target }}
@@ -82,9 +101,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
-      - name: install rust target
-        run: rustup target add ${{ matrix.target }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: install linux deps
         if: runner.os == 'Linux'
@@ -170,6 +192,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - name: install and verify draft release
         shell: pwsh
         env:
@@ -178,9 +202,9 @@ jobs:
           SUBSWAP_INSTALL_DIR: ${{ runner.temp }}\subswap-install\bin
         run: |
           $version = $env:TAG.TrimStart("v")
-          .\install.ps1 -Version $version -SkipPathUpdate
+          .\install.ps1 -Version $version -ReleaseId ${{ needs.prepare.outputs.release_id }} -SkipPathUpdate
           $installedVersion = & "$env:SUBSWAP_INSTALL_DIR\subswap.exe" --version
-          if ($LASTEXITCODE -ne 0 -or $installedVersion -notmatch [regex]::Escape($version)) {
+          if ($LASTEXITCODE -ne 0 -or $installedVersion.Trim() -ne "subswap $version") {
             throw "Unexpected installed version: $installedVersion"
           }
           Write-Host $installedVersion
@@ -189,7 +213,6 @@ jobs:
     name: publish release
     needs: [prepare, build, verify-windows-installer]
     runs-on: ubuntu-latest
-    if: always() && needs.build.result == 'success'
     steps:
       - name: publish draft
         env:
@@ -203,7 +226,6 @@ jobs:
   homebrew:
     name: update homebrew formula
     needs: [prepare, publish]
-    if: always() && needs.publish.result == 'success'
     uses: ./.github/workflows/update-homebrew.yml
     with:
       tag: ${{ needs.prepare.outputs.tag }}

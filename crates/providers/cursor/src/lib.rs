@@ -757,7 +757,9 @@ impl CursorProvider {
             .await
             .map_err(|error| UsageError::Other(format!("invalid usage response: {error}")))?;
         let mut quotas = parse_usage(id, &body)?;
-        if let Some(credits) = self.fetch_credit_grants(id, &cookie, quotas_reset_at(&quotas)).await?
+        if let Some(credits) = self
+            .fetch_credit_grants(id, &cookie, quotas_reset_at(&quotas))
+            .await?
         {
             quotas.push(credits);
         }
@@ -798,9 +800,10 @@ impl CursorProvider {
             );
             return Ok(None);
         }
-        let body: Value = response.json().await.map_err(|error| {
-            UsageError::Other(format!("invalid credits response: {error}"))
-        })?;
+        let body: Value = response
+            .json()
+            .await
+            .map_err(|error| UsageError::Other(format!("invalid credits response: {error}")))?;
         Ok(parse_credit_grants(id, &body, reset_at))
     }
 
@@ -1684,12 +1687,7 @@ fn parse_credit_grants(
     ))
 }
 
-fn credits_quota(
-    id: &AccountId,
-    used: u64,
-    limit: u64,
-    reset_at: Option<DateTime<Utc>>,
-) -> Quota {
+fn credits_quota(id: &AccountId, used: u64, limit: u64, reset_at: Option<DateTime<Utc>>) -> Quota {
     let pct = if limit == 0 {
         0.0
     } else {

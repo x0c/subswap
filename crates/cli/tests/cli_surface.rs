@@ -621,7 +621,12 @@ fn rm_and_swap_reprint_the_status_overview() {
             .unwrap(),
     );
 
-    let rm_stdout = assert_success(isolated_subswap(&tmp).args(["rm", "gone"]).output().unwrap());
+    let rm_stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["rm", "gone"])
+            .output()
+            .unwrap(),
+    );
     assert!(rm_stdout.contains("removed claude/gone"), "{rm_stdout}");
     assert!(
         rm_stdout.contains("Keep"),
@@ -641,10 +646,7 @@ fn rm_and_swap_reprint_the_status_overview() {
             .output()
             .unwrap(),
     );
-    assert!(
-        swap_stdout.contains("swap → claude/keep"),
-        "{swap_stdout}"
-    );
+    assert!(swap_stdout.contains("swap → claude/keep"), "{swap_stdout}");
     assert!(
         swap_stdout.contains("Keep"),
         "swap should reprint the account overview: {swap_stdout}"

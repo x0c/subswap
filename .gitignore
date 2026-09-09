@@ -26,3 +26,6 @@ state.json
 
 # 隔离开发用的本地 git worktree
 .worktrees/
+
+# Python installer regression test cache
+__pycache__/

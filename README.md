@@ -6,7 +6,7 @@
 
 Languages: English | [简体中文](README.zh-CN.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
 
-**A local-first multi-account switcher for AI coding tools that respects each client's native login state and quota boundaries.**
+**Switch AI coding accounts without logging out. See which account has quota left.**
 
 subswap safely switches accounts for Claude Code, OpenAI Codex / ChatGPT, Kimi Code, Cursor, and OpenCode Go. It keeps private local credential snapshots, shows quota status, and can optionally move to another eligible account when usage reaches your threshold.
 
@@ -22,18 +22,6 @@ If this saves you from logging out and back in all day, please [star the repo](h
 - **Know your remaining headroom.** See Claude, Codex, Kimi, Cursor, and OpenCode quota windows in one place.
 - **Stay in control.** A manual `swap` never waits for a network or quota API; automatic swapping is optional and respects accounts marked manual-only.
 - **Use parallel terminals when it is safe.** Claude, Codex, Kimi, and OpenCode can run in isolated environments without changing the global active account.
-
-## Supported clients
-
-| Client | Import and switch | Quota and auto-swap | Isolated run | Important boundary |
-|---|---:|---:|---:|---|
-| Claude Code | Yes | Yes | Yes | Custom API endpoints are manual-only. |
-| Codex CLI / ChatGPT | Yes | Yes | Yes | Quota lookup uses the official app-server channel. |
-| Kimi Code | Yes | Yes | Yes | Sign in with the native client, then import. |
-| Cursor desktop | Yes | Yes | No | Switching coordinates a desktop-app restart and its SQLite state. |
-| OpenCode Go | Yes | Yes | Yes | Only the `opencode-go` entry is changed; other entries stay untouched. |
-
-The CLI is tested in CI on macOS, Linux, and Windows. The background daemon is Unix-only: it auto-starts on Linux, requires explicit opt-in on macOS, and is unavailable on Windows.
 
 ## Install
 
@@ -66,7 +54,29 @@ subswap --help
 
 `cargo install --git` follows repository source rather than a verified release. Prefer Homebrew or a release asset for normal use.
 
+## Supported clients
+
+| Client | Import and switch | Quota and auto-swap | Isolated run | Important boundary |
+|---|---:|---:|---:|---|
+| Claude Code | Yes | Yes | Yes | Custom API endpoints are manual-only. |
+| Codex CLI / ChatGPT | Yes | Yes | Yes | Quota lookup uses the official app-server channel. |
+| Kimi Code | Yes | Yes | Yes | Sign in with the native client, then import. |
+| Cursor desktop | Yes | Yes | No | Switching coordinates a desktop-app restart and its SQLite state. |
+| OpenCode Go | Yes | Yes | Yes | Only the `opencode-go` entry is changed; other entries stay untouched. |
+
+The CLI is tested in CI on macOS, Linux, and Windows. The background daemon is Unix-only: it auto-starts on Linux, requires explicit opt-in on macOS, and is unavailable on Windows.
+
 ## Quick start
+
+### Start with manual switching
+
+Sign in to a supported client first. Then install subswap above and run:
+
+```bash
+subswap autoswap off  # Turn off automatic switching while you try it.
+subswap               # Import your existing login and see the account list.
+subswap swap 2        # Replace 2 with a number from your list.
+```
 
 ### Import an account already signed in to a native client
 

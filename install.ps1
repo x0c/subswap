@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Version,
+    [long]$ReleaseId = 0,
     [switch]$SkipPathUpdate
 )
 
@@ -69,7 +70,18 @@ try {
     $headers = Get-RequestHeaders
     $apiBase = "https://api.github.com/repos/$repository/releases"
 
-    if ($Version) {
+    if ($ReleaseId -ne 0) {
+        if ($ReleaseId -lt 0 -or -not $Version -or -not $headers.ContainsKey("Authorization")) {
+            throw "Release verification requires a positive release ID, an expected version, and authentication."
+        }
+        $tag = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
+        Write-Step "Resolving release $tag by ID..."
+        $release = Invoke-RestMethod -Uri "$apiBase/$ReleaseId" -Headers $headers
+        if ($release.tag_name -ne $tag) {
+            throw "Release ID does not match expected tag $tag."
+        }
+    }
+    elseif ($Version) {
         $tag = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
         $encodedTag = [Uri]::EscapeDataString($tag)
         Write-Step "Resolving release $tag..."
@@ -81,7 +93,7 @@ try {
         $tag = [string]$release.tag_name
     }
 
-    if ($release.draft) {
+    if ($release.draft -and $ReleaseId -eq 0) {
         throw "Release $tag is still a draft and cannot be installed."
     }
 
@@ -110,8 +122,16 @@ try {
         $archivePath = Join-Path $temporaryDirectory $archiveName
         $checksumPath = Join-Path $temporaryDirectory $checksumName
         Write-Step "Downloading $tag for Windows..."
-        Invoke-WebRequest -Uri $archiveAsset.browser_download_url -Headers $headers -OutFile $archivePath -UseBasicParsing
-        Invoke-WebRequest -Uri $checksumAsset.browser_download_url -Headers $headers -OutFile $checksumPath -UseBasicParsing
+        if ($ReleaseId -gt 0) {
+            $assetHeaders = $headers.Clone()
+            $assetHeaders.Accept = "application/octet-stream"
+            Invoke-WebRequest -Uri $archiveAsset.url -Headers $assetHeaders -OutFile $archivePath -UseBasicParsing
+            Invoke-WebRequest -Uri $checksumAsset.url -Headers $assetHeaders -OutFile $checksumPath -UseBasicParsing
+        }
+        else {
+            Invoke-WebRequest -Uri $archiveAsset.browser_download_url -Headers $headers -OutFile $archivePath -UseBasicParsing
+            Invoke-WebRequest -Uri $checksumAsset.browser_download_url -Headers $headers -OutFile $checksumPath -UseBasicParsing
+        }
 
         $checksumText = Get-Content -LiteralPath $checksumPath -Raw
         $checksumMatch = [Regex]::Match($checksumText, '(?i)\b[0-9a-f]{64}\b')

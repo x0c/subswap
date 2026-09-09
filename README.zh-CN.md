@@ -6,7 +6,7 @@
 
 语言：[English](README.md) | 简体中文 | [日本語](README.ja.md) | [한국어](README.ko.md)
 
-**一个尊重各客户端原生登录状态与额度边界的本地多账号切换工具。**
+**无需反复登录，快速切换 AI 编程账号，一眼看清谁还有额度。**
 
 subswap 可以安全切换 Claude Code、OpenAI Codex / ChatGPT、Kimi Code、Cursor 和 OpenCode Go 账号。它把私有凭证快照留在本地，显示额度状态，并可在用量到达你的阈值时自动切到另一个符合条件的账号。
 
@@ -22,18 +22,6 @@ subswap 可以安全切换 Claude Code、OpenAI Codex / ChatGPT、Kimi Code、Cu
 - **一眼看到可用额度。** 在一个界面查看 Claude、Codex、Kimi、Cursor 与 OpenCode 的额度窗口。
 - **始终由你决定。** 手动 `swap` 不等待网络或额度接口；自动换号可选，并会排除只允许手动选择的账号。
 - **安全时才并行。** Claude、Codex、Kimi、OpenCode 能在隔离环境并行运行，不改变全局当前账号。
-
-## 支持的客户端
-
-| 客户端 | 导入与切换 | 额度与自动换号 | 隔离运行 | 重要边界 |
-|---|---:|---:|---:|---|
-| Claude Code | 是 | 是 | 是 | 自定义 API 端点只能手动选择。 |
-| Codex CLI / ChatGPT | 是 | 是 | 是 | 额度查询走官方 app-server 通道。 |
-| Kimi Code | 是 | 是 | 是 | 先在原生客户端登录，再导入。 |
-| Cursor 桌面端 | 是 | 是 | 否 | 切换会协调桌面应用重启和 SQLite 状态。 |
-| OpenCode Go | 是 | 是 | 是 | 只修改 `opencode-go` 项，其它项保持不变。 |
-
-CLI 已在 macOS、Linux、Windows CI 中测试。后台 daemon 仅支持 Unix：Linux 自动启动，macOS 需显式开启，Windows 仅使用前台 CLI。
 
 ## 安装
 
@@ -66,7 +54,29 @@ subswap --help
 
 `cargo install --git` 跟随仓库源码，并不等同于已验证的 Release；普通使用优先选择 Homebrew 或 Release 附件。
 
+## 支持的客户端
+
+| 客户端 | 导入与切换 | 额度与自动换号 | 隔离运行 | 重要边界 |
+|---|---:|---:|---:|---|
+| Claude Code | 是 | 是 | 是 | 自定义 API 端点只能手动选择。 |
+| Codex CLI / ChatGPT | 是 | 是 | 是 | 额度查询走官方 app-server 通道。 |
+| Kimi Code | 是 | 是 | 是 | 先在原生客户端登录，再导入。 |
+| Cursor 桌面端 | 是 | 是 | 否 | 切换会协调桌面应用重启和 SQLite 状态。 |
+| OpenCode Go | 是 | 是 | 是 | 只修改 `opencode-go` 项，其它项保持不变。 |
+
+CLI 已在 macOS、Linux、Windows CI 中测试。后台 daemon 仅支持 Unix：Linux 自动启动，macOS 需显式开启，Windows 仅使用前台 CLI。
+
 ## 快速开始
+
+### 先试手动换号
+
+先在一个支持的客户端登录，按上方说明安装 subswap，再运行：
+
+```bash
+subswap autoswap off  # 初次体验时先关闭自动换号。
+subswap               # 导入已有登录，查看账号列表。
+subswap swap 2        # 把 2 换成列表中要使用的账号编号。
+```
 
 ### 导入已经在原生客户端登录的账号
 
