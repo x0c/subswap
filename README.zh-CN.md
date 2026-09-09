@@ -13,6 +13,10 @@ subswap 可以安全切换 Claude Code、OpenAI Codex / ChatGPT、Kimi Code、Cu
 如果它帮你少登出登录几次，请给仓库[点个 star](https://github.com/x0c/subswap)，方便更多人发现。
 
 <p align="center">
+  <img src="docs/images/demo-doctor.gif" width="920" alt="Animated terminal demo: subswap doctor checks config paths and provider credentials">
+</p>
+
+<p align="center">
   <img src="docs/images/demo-status.svg" width="920" alt="subswap 状态示例：Claude、Codex、Cursor 账号与剩余额度，以及换号与隔离运行提示">
 </p>
 

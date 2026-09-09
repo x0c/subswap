@@ -13,6 +13,10 @@ subswap safely switches accounts for Claude Code, OpenAI Codex / ChatGPT, Kimi C
 If this saves you from logging out and back in all day, please [star the repo](https://github.com/x0c/subswap) so others can find it.
 
 <p align="center">
+  <img src="docs/images/demo-doctor.gif" width="920" alt="Animated terminal demo: subswap doctor checks config paths and provider credentials">
+</p>
+
+<p align="center">
   <img src="docs/images/demo-status.svg" width="920" alt="Example subswap status: Claude, Codex, and Cursor accounts with quota left, plus swap and isolated-run tips">
 </p>
 

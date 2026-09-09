@@ -11,6 +11,10 @@ Claude アカウント切り替えツール、Codex アカウント管理ツー�
 役に立ったら [Star](https://github.com/x0c/subswap) をお願いします。見つけてもらいやすくなります。
 
 <p align="center">
+  <img src="docs/images/demo-doctor.gif" width="920" alt="Animated terminal demo: subswap doctor checks config paths and provider credentials">
+</p>
+
+<p align="center">
   <img src="docs/images/demo-status.svg" width="920" alt="subswap のステータス例">
 </p>
 

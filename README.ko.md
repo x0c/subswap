@@ -11,6 +11,10 @@ Claude 계정 전환 도구, Codex 계정 관리자, ChatGPT quota tracker, 또�
 도움이 되었다면 [star](https://github.com/x0c/subswap)를 눌러 주세요. 다른 사람이 찾기 쉬워집니다.
 
 <p align="center">
+  <img src="docs/images/demo-doctor.gif" width="920" alt="Animated terminal demo: subswap doctor checks config paths and provider credentials">
+</p>
+
+<p align="center">
   <img src="docs/images/demo-status.svg" width="920" alt="subswap 상태 예시">
 </p>
 
