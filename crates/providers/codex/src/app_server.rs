@@ -84,7 +84,6 @@ fn codex_binary() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("codex"))
 }
 
-
 struct SanitizedHome {
     directory: tempfile::TempDir,
 }
