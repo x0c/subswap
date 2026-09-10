@@ -197,9 +197,7 @@ pub(crate) fn is_terminal_oauth_failure(status: u16, body: &str) -> bool {
     }
     let Ok(parsed) = serde_json::from_str::<OAuthTokenResponse>(body) else {
         let lower = body.to_ascii_lowercase();
-        return TERMINAL_AUTH_CODES
-            .iter()
-            .any(|code| lower.contains(code));
+        return TERMINAL_AUTH_CODES.iter().any(|code| lower.contains(code));
     };
     if let Some(error) = parsed.error {
         let (code, message) = error.code_and_message();
@@ -316,7 +314,10 @@ mod tests {
             400,
             r#"{"error":"invalid_grant","error_description":"expired"}"#
         ));
-        assert!(!is_terminal_oauth_failure(500, r#"{"error":"server_error"}"#));
+        assert!(!is_terminal_oauth_failure(
+            500,
+            r#"{"error":"server_error"}"#
+        ));
         assert!(is_terminal_oauth_failure(403, "forbidden"));
     }
 
