@@ -8,6 +8,7 @@
 mod app_server;
 mod codex_files;
 mod legacy;
+mod oauth;
 mod openai_usage;
 mod paths;
 mod quota;

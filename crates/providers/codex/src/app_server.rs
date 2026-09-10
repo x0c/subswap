@@ -1,11 +1,10 @@
-//! 通过官方 Codex app-server 查询当前账号额度，并为停用号委托官方刷新。
+//! 通过官方 Codex app-server 查询**当前号**额度。
 //!
 //! 优先代理到现有控制通道，共享官方客户端进程内的最新认证状态；没有控制通道时也会短暂
 //! 启动独立 app-server。若普通 Codex 正在运行，只调用官方额度查询，不再额外发起强制刷新；
-//! 明确没有并发客户端时，认证失败才允许显式刷新并重试。该模块从不自行实现 OAuth。
+//! 明确没有并发客户端时，认证失败才允许显式刷新并重试。
 //!
-//! 停用号刷新见 [`refresh_parked_blob`]：把仓库里的**完整** `auth.json`（含 refresh）写入临时
-//! `CODEX_HOME`，再跑官方 app-server；禁止套用清空 refresh 的 [`SanitizedHome`]（那只保护 live 并发）。
+//! 停用号令牌刷新不在本模块——见 [`crate::oauth`]（直连 OpenAI OAuth，与社区换号工具对齐）。
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -14,13 +13,10 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use subswap_core::defaults::REFRESH_SLACK_MS;
-use subswap_provider_common::{extract_access_token, extract_refresh_token, RefreshOutcome};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdout, Command};
 use tokio::time::timeout;
 
-use crate::codex_files::access_token_needs_refresh;
 use crate::paths::codex_home;
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(8);
@@ -28,7 +24,6 @@ const SESSION_TIMEOUT: Duration = Duration::from_secs(20);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const CODEX_BINARY_ENV: &str = "SUBSWAP_CODEX_BINARY";
 
-/// 使用官方协议取得当前账号额度，并转换成旧解析器能消费的稳定字段。
 pub async fn fetch_usage() -> Result<Value> {
     let home = codex_home();
     let socket = home
@@ -83,140 +78,12 @@ pub fn allows_compat_fallback(error: &anyhow::Error) -> bool {
         .unwrap_or(true)
 }
 
-/// 停用号：完整 auth blob → 临时 `CODEX_HOME` → 官方 app-server 按需刷新 → 吸收轮换结果。
-///
-/// - access 仍在预刷新窗口外 → [`RefreshOutcome::Unsupported`]（不启进程）
-/// - 无 refresh / 二进制不可用 / 传输失败 → `Unsupported`（降级，不拖垮整表）
-/// - 官方认证明确失败 → [`RefreshOutcome::DeadToken`]
-/// - auth 内 access/refresh 任一变化 → [`RefreshOutcome::Rotated`]
-pub async fn refresh_parked_blob(blob: &str) -> Result<RefreshOutcome> {
-    refresh_parked_blob_with_binary(blob, &codex_binary()).await
-}
-
 fn codex_binary() -> PathBuf {
     std::env::var_os(CODEX_BINARY_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("codex"))
 }
 
-async fn refresh_parked_blob_with_binary(blob: &str, binary: &Path) -> Result<RefreshOutcome> {
-    if extract_refresh_token(blob).is_none() {
-        return Ok(RefreshOutcome::Unsupported);
-    }
-    let now = chrono::Utc::now().timestamp();
-    let slack_secs = REFRESH_SLACK_MS / 1000;
-    if !access_token_needs_refresh(blob, now, slack_secs) {
-        return Ok(RefreshOutcome::Unsupported);
-    }
-
-    let parked = ParkedHome::create(blob).await?;
-    let query = query_command(
-        binary,
-        &["app-server", "--stdio"],
-        None,
-        parked.path(),
-        true,
-    )
-    .await;
-    let after = match tokio::fs::read_to_string(parked.path().join("auth.json")).await {
-        Ok(raw) => raw,
-        Err(error) => {
-            tracing::debug!(error = %error, "read parked Codex auth after app-server failed");
-            return match query {
-                Ok(_) => Ok(RefreshOutcome::Unsupported),
-                Err(error) if is_authentication_error(&error) => Ok(RefreshOutcome::DeadToken),
-                Err(error) if is_spawn_or_transport_error(&error) => {
-                    tracing::debug!(error = %error, "Codex app-server unavailable for parked refresh");
-                    Ok(RefreshOutcome::Unsupported)
-                }
-                Err(error) => Err(error),
-            };
-        }
-    };
-
-    if credentials_rotated(blob, &after) {
-        // 即使额度解析失败，只要官方已轮换 token，也必须写回仓库，否则下次仍用死 access。
-        if let Err(error) = &query {
-            tracing::debug!(
-                error = %error,
-                "parked Codex app-server query failed after token rotation; absorbing auth anyway"
-            );
-        }
-        return Ok(RefreshOutcome::Rotated(after));
-    }
-
-    match query {
-        Ok(_) => Ok(RefreshOutcome::Unsupported),
-        Err(error) if is_authentication_error(&error) => Ok(RefreshOutcome::DeadToken),
-        Err(error) if is_spawn_or_transport_error(&error) => {
-            tracing::debug!(error = %error, "Codex app-server unavailable for parked refresh");
-            Ok(RefreshOutcome::Unsupported)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn credentials_rotated(before: &str, after: &str) -> bool {
-    extract_access_token(before) != extract_access_token(after)
-        || extract_refresh_token(before) != extract_refresh_token(after)
-}
-
-fn is_authentication_error(error: &anyhow::Error) -> bool {
-    error
-        .downcast_ref::<RpcFailure>()
-        .is_some_and(RpcFailure::is_authentication_failure)
-        || {
-            let message = error.to_string().to_ascii_lowercase();
-            ["401", "unauthorized", "authentication", "not logged in"]
-                .iter()
-                .any(|needle| message.contains(needle))
-        }
-}
-
-fn is_spawn_or_transport_error(error: &anyhow::Error) -> bool {
-    if error
-        .downcast_ref::<RpcFailure>()
-        .is_some_and(|failure| !failure.remote)
-    {
-        return true;
-    }
-    let message = error.to_string().to_ascii_lowercase();
-    [
-        "start codex app-server",
-        "no such file",
-        "not found",
-        "timed out",
-        "broken pipe",
-        "codex app-server closed",
-    ]
-    .iter()
-    .any(|needle| message.contains(needle))
-}
-
-/// 停用号专用：写入**完整** auth（含 refresh），与清空 refresh 的 [`SanitizedHome`] 相对。
-struct ParkedHome {
-    directory: tempfile::TempDir,
-}
-
-impl ParkedHome {
-    async fn create(blob: &str) -> Result<Self> {
-        let _: Value = serde_json::from_str(blob).context("parked Codex auth is not valid JSON")?;
-        let directory = tokio::task::spawn_blocking(tempfile::tempdir)
-            .await
-            .context("create parked Codex home task")?
-            .context("create parked Codex home")?;
-        let auth_path = directory.path().join("auth.json");
-        tokio::fs::write(&auth_path, blob.as_bytes())
-            .await
-            .context("write parked Codex auth")?;
-        set_owner_only_permissions(&auth_path).await?;
-        Ok(Self { directory })
-    }
-
-    fn path(&self) -> &Path {
-        self.directory.path()
-    }
-}
 
 struct SanitizedHome {
     directory: tempfile::TempDir,
@@ -717,149 +584,5 @@ done
             unchanged["tokens"]["refresh_token"],
             Value::String("live-secret".into())
         );
-    }
-
-    fn fake_access_jwt(exp: i64) -> String {
-        let payload = base64_url_encode(
-            format!(r#"{{"exp":{exp},"email":"parked@example.com"}}"#).as_bytes(),
-        );
-        format!("hdr.{payload}.sig")
-    }
-
-    fn base64_url_encode(input: &[u8]) -> String {
-        const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-        let mut out = String::new();
-        let mut i = 0;
-        while i < input.len() {
-            let b0 = input[i];
-            let b1 = input.get(i + 1).copied();
-            let b2 = input.get(i + 2).copied();
-            out.push(TABLE[(b0 >> 2) as usize] as char);
-            out.push(TABLE[(((b0 & 0x03) << 4) | (b1.unwrap_or(0) >> 4)) as usize] as char);
-            if b1.is_none() {
-                break;
-            }
-            out.push(
-                TABLE[(((b1.unwrap() & 0x0f) << 2) | (b2.unwrap_or(0) >> 6)) as usize] as char,
-            );
-            if b2.is_none() {
-                break;
-            }
-            out.push(TABLE[(b2.unwrap() & 0x3f) as usize] as char);
-            i += 3;
-        }
-        out
-    }
-
-    fn parked_auth_blob(access: &str, refresh: &str) -> String {
-        json!({
-            "auth_mode": "chatgpt",
-            "tokens": {
-                "id_token": "id",
-                "access_token": access,
-                "refresh_token": refresh,
-                "account_id": "acct"
-            }
-        })
-        .to_string()
-    }
-
-    #[tokio::test]
-    async fn parked_refresh_skips_when_access_still_fresh() {
-        let access = fake_access_jwt(chrono::Utc::now().timestamp() + 3600);
-        let blob = parked_auth_blob(&access, "refresh-secret");
-        let outcome = refresh_parked_blob(&blob).await.unwrap();
-        assert!(matches!(outcome, RefreshOutcome::Unsupported));
-    }
-
-    #[tokio::test]
-    async fn parked_refresh_skips_without_refresh_token() {
-        let access = fake_access_jwt(chrono::Utc::now().timestamp() - 10);
-        let blob = parked_auth_blob(&access, "");
-        let outcome = refresh_parked_blob(&blob).await.unwrap();
-        assert!(matches!(outcome, RefreshOutcome::Unsupported));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn parked_refresh_absorbs_rotated_auth_from_isolated_home() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let temp = tempfile::tempdir().unwrap();
-        let script = temp.path().join("codex");
-        let new_access = fake_access_jwt(chrono::Utc::now().timestamp() + 7200);
-        fs::write(
-            &script,
-            format!(
-                r#"#!/bin/sh
-while IFS= read -r line; do
-  case "$line" in
-    *'"id":1'*) printf '%s\n' '{{"id":1,"result":{{"codexHome":"/tmp","platformFamily":"unix","platformOs":"linux","userAgent":"fake"}}}}' ;;
-    *'"id":2'*)
-      printf '%s\n' '{{"auth_mode":"chatgpt","tokens":{{"id_token":"id","access_token":"{new_access}","refresh_token":"rotated-refresh","account_id":"acct"}}}}' > "$CODEX_HOME/auth.json"
-      printf '%s\n' '{{"id":2,"result":{{"rateLimits":{{"primary":{{"usedPercent":4,"windowDurationMins":300,"resetsAt":1800000000}}}}}}}}'
-      ;;
-  esac
-done
-"#
-            ),
-        )
-        .unwrap();
-        let mut permissions = fs::metadata(&script).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script, permissions).unwrap();
-
-        let old_access = fake_access_jwt(chrono::Utc::now().timestamp() - 60);
-        let blob = parked_auth_blob(&old_access, "old-refresh");
-        let outcome = refresh_parked_blob_with_binary(&blob, &script)
-            .await
-            .unwrap();
-
-        match outcome {
-            RefreshOutcome::Rotated(new_blob) => {
-                assert!(new_blob.contains(&new_access));
-                assert!(new_blob.contains("rotated-refresh"));
-            }
-            other => panic!(
-                "expected Rotated, got {}",
-                match other {
-                    RefreshOutcome::DeadToken => "DeadToken",
-                    RefreshOutcome::Unsupported => "Unsupported",
-                    RefreshOutcome::Rotated(_) => "Rotated",
-                }
-            ),
-        }
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn parked_refresh_marks_dead_token_when_official_auth_fails() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let temp = tempfile::tempdir().unwrap();
-        let script = temp.path().join("codex");
-        fs::write(
-            &script,
-            r#"#!/bin/sh
-while IFS= read -r line; do
-  case "$line" in
-    *'"id":1'*) printf '%s\n' '{"id":1,"result":{"codexHome":"/tmp","platformFamily":"unix","platformOs":"linux","userAgent":"fake"}}' ;;
-    *'"id":2'*) printf '%s\n' '{"id":2,"error":{"code":-32000,"message":"HTTP 401 unauthorized"}}' ;;
-    *'"id":3'*) printf '%s\n' '{"id":3,"error":{"code":-32000,"message":"HTTP 401 unauthorized"}}' ;;
-  esac
-done
-"#,
-        )
-        .unwrap();
-        let mut permissions = fs::metadata(&script).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script, permissions).unwrap();
-
-        let old_access = fake_access_jwt(chrono::Utc::now().timestamp() - 60);
-        let blob = parked_auth_blob(&old_access, "dead-refresh");
-        let outcome = refresh_parked_blob_with_binary(&blob, &script)
-            .await
-            .unwrap();
-        assert!(matches!(outcome, RefreshOutcome::DeadToken));
     }
 }
