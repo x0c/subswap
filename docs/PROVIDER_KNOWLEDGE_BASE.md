@@ -202,15 +202,15 @@ active **不首选**兼容 HTTP：先经官方 `codex app-server` JSONL 调 `acc
 
 ### Codex 官方额度通道与刷新边界
 
-subswap **不实现 OpenAI OAuth**、不硬编码 OAuth client id、不直接调 token 端点。active 刷新只委托官方 app-server：
+subswap **不实现 OpenAI OAuth 去抢刷当前号（active）**。active 刷新只委托官方 app-server：
 
 1. 控制 socket 存在 → `codex app-server proxy --sock <socket>` 复用运行中认证状态。
 2. 无 socket、确认无普通 Codex 进程 → 可短暂 `codex app-server --stdio`；先读额度；仅官方认证失败时 `account/read {refreshToken:true}` 强刷一次再重试额度一次。
 3. 无 socket、但普通 Codex 在跑 → 仍可启临时 app-server，用 `0600` 临时 `CODEX_HOME`，只复制 live `auth.json` **并清空 refresh token**（能用现有 access，绝不与运行中 Codex 抢刷）。
 4. 官方不可用/认证失败/方法不支持 → 回退 `wham/usage`；官方 429 与其它服务错误**原样返回，禁止二次回退再打**。
 
-parked 查额度前由引擎调 `runtime.refresh()`：`CodexRuntime::refresh` → `app_server::refresh_parked_blob`——把仓库**完整** `auth.json`（含 refresh）写入临时 `CODEX_HOME`，委托官方 `app-server` 按需刷新并吸收轮换结果，再用新 access 打 `wham/usage`。access 仍在 `REFRESH_SLACK_MS` 外则跳过；无 refresh / 二进制不可用则降级。  
-**禁止**只物化 access、清空 refresh（`SanitizedHome` 仅用于保护 live 并发，不适用于停用号自愈）。见 [troubleshooting/2026-09-07](troubleshooting/2026-09-07-codex-parked-quota-401.md)。
+parked 查额度前由引擎调 `runtime.refresh()`：`CodexRuntime::refresh` → `oauth::refresh_parked_blob`——**直连** `POST https://auth.openai.com/oauth/token`（Codex 公开 `client_id`，与 `codex-switch` / `shuvquota` / `codex-multi-auth` 同路径），合并新 access/refresh/id 进完整 `auth.json` blob，经引擎 `store.set` 写回仓库，再用新 access 打 `wham/usage`。access 仍在 `REFRESH_SLACK_MS` 外则跳过；无 refresh / 传输失败则降级。仅 `refresh_token_reused` / `invalid_grant` / 401·403 等终态标 `DeadToken`（进程内 refresh 指纹守卫禁止再打第二枪）。  
+**禁止**只物化 access、清空 refresh 去刷停用号；**禁止**用临时 app-server 刷停用号却漏吸收（会制造 `refresh_token_reused`）。见 [troubleshooting/2026-09-07](troubleshooting/2026-09-07-codex-parked-quota-401.md)。
 
 外层 `quota.fetch_timeout_ms`（默认 20s）须盖住本会话上限；过短 → `quota fetch timeout` → 默认入口 `timeout after N attempts` 回落旧缓存。Kimi active 401 自愈（官方锁 + 持锁刷新）同受此超时约束。
 
@@ -220,7 +220,7 @@ parked 查额度前由引擎调 `runtime.refresh()`：`CodexRuntime::refresh` �
 
 **两边 refresh 都是一次性轮换。** 与原生客户端各持一份并各自刷 → `refresh token already used` 强制重登（[troubleshooting/2026-06-08](troubleshooting/2026-06-08-codex-refresh-token-already-used.md)）。
 
-**不变量：active 只能在原生认可的协调机制内轮换。** Claude/Cursor active 只读不刷；Codex 只委托 app-server；Kimi 仅识别官方锁并成功持锁时自愈。parked 可由 subswap 按各 Provider 串行化边界刷新；Cursor 用跨进程文件锁。
+**不变量：active 只能在原生认可的协调机制内轮换。** Claude/Cursor active 只读不刷；Codex **active** 只委托 app-server；Kimi 仅识别官方锁并成功持锁时自愈。parked 可由 subswap 按各 Provider 串行化边界刷新（Codex parked = 直连 OAuth）；Cursor 用跨进程文件锁。
 
 1. **Capture-on-leave**：`Provider::activate` 覆盖 live 前，读 live → 找受管 owner → 回写 store（Codex/Kimi 共享引擎，Claude/Cursor 各自实现）。所有 swap（手动 + daemon）唯一经 `activate`。找不到 owner 跳过（best-effort）。
    Claude 重复切换当前账号：只回灌并返回，禁止用 store 陈旧 token 盖回 live。

@@ -22,5 +22,6 @@ reqwest.workspace = true
 tracing.workspace = true
 directories.workspace = true
 chrono.workspace = true
-tokio = { workspace = true, features = ["io-util", "process"] }
+sha2.workspace = true
+tokio = { workspace = true, features = ["io-util", "process", "net", "macros", "rt"] }
 tempfile = "3"

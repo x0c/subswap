@@ -52,9 +52,8 @@ impl FileBlobRuntime for CodexRuntime {
     }
 
     async fn refresh(&self, blob: &str) -> Result<RefreshOutcome> {
-        crate::app_server::refresh_parked_blob(blob)
-            .await
-            .map_err(|e| subswap_core::error::Error::Provider(format!("Codex parked refresh: {e}")))
+        // 停用号：社区同款直连 OAuth + 引擎写回；当前号不走这里（引擎只对 parked 调 refresh）。
+        crate::oauth::refresh_parked_blob(blob).await
     }
 
     async fn fetch_quota(&self, access_token: &str, account: &Account) -> Result<Vec<Quota>> {
