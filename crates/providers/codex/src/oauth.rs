@@ -12,7 +12,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use subswap_core::defaults::REFRESH_SLACK_MS;
 use subswap_core::error::{Error, Result};
@@ -265,6 +265,7 @@ pub(crate) fn apply_refreshed_tokens(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
