@@ -2,6 +2,7 @@
 
 | 文档 | 何时该读 |
 |---|---|
+| [2026-09-11 Codex 已切换但对话仍用旧号 / 以为没自动切号](2026-09-11-codex-swap-requires-restart.md) | Codex 手动或自动切号后客户端仍是旧号、误以为「没做 Codex 自动切」、或排查「能不能热切不重启 / 要不要装热补丁」前必读 |
 | [2026-09-07 Codex 停用号长期 `401 auth failed`（只有当前号有额度）](2026-09-07-codex-parked-quota-401.md) | Codex 带 `*` 的号正常、其余 `quota 401 auth failed`；或改停用号额度 / `CodexRuntime.refresh` / 临时 `CODEX_HOME`+app-server 前必读 |
 | [2026-09-05 Cursor 全员 1st 见底却切到全空号（放过 API 余量）](2026-09-05-cursor-auto-swap-to-empty-over-api-remaining.md) | Cursor `! auto: swapped to` 目标 `1st`/`API` 都是 `0%`、旁边号 `API` 还有余量；或改 Cursor 三池并行自动换号前必读 |
 | [2026-09-05 Cursor Credits 误当成 `$20` API 池](2026-09-05-cursor-credits-zero-despite-claimed-remaining.md) | Cursor `$ [$0.00 left]` 与 Spending 不符、把 Pro `$20`/API 当成 Credits、某号**没有** Credits/`$` 列、或改 `get-credit-grants-balance` / 并行池换号前必读 |
