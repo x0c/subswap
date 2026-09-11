@@ -15,6 +15,10 @@
 
 `add-api` / `login` / `swap <目标>` / `rm` 成功后的 status-after-action 见下节。
 
+### Codex 切换生效（须重启客户端）
+
+Codex 的手动 `swap` 与自动换号都会改 `~/.codex/auth.json`（及 registry），**默认入口与 `subswapd` 均已覆盖 Codex**。官方 Codex 把登录态缓存在进程内，**已打开的会话不会热读新号**——须重启 Codex CLI，或重载 IDE 窗口后再开对话。立刻用某号且不动全局活号：用 `subswap run codex <账号>`。禁止指望社区 Codex 热补丁。详见 [PROVIDER_KNOWLEDGE_BASE.md](PROVIDER_KNOWLEDGE_BASE.md)「切换生效边界」与 [troubleshooting/2026-09-11](troubleshooting/2026-09-11-codex-swap-requires-restart.md)。
+
 ### 账号环境隔离（`run` / `shell` / `env`）
 
 与 `swap`（全局原地切换）并存：不同终端可并行用不同账号，不改全局活账号。
@@ -53,7 +57,7 @@ eval "$(subswap env codex/bob@x.com)"   # 临时把当前 shell 指向某 codex 
 
 隐藏一次性命令：`subswap migrate-local` —— 从旧版本地账号目录搬到 subswap；`--help` 不可见。
 
-辅助二进制 `subswapd`：默认入口自动 detach 拉起，负责周期 quota 轮询 / 自动切换 / Claude token 后台保活。Unix-only；Windows 只提供前台 CLI；macOS 默认不自动拉起（避免 Keychain 额外授权弹窗）。启用 macOS 自动拉起：`SUBSWAP_AUTO_DAEMON=1`。单实例靠 `<state>/subswapd.pid` 文件锁。关掉：`pkill subswapd`；禁止自动拉起：`SUBSWAP_NO_DAEMON=1`。
+辅助二进制 `subswapd`：默认入口自动 detach 拉起，负责周期 quota 轮询 / 自动切换 / Claude token 后台保活。Unix-only；Windows 只提供前台 CLI；macOS 默认不自动拉起（避免 Keychain 额外授权弹窗）。启用 macOS 自动拉起：`SUBSWAP_AUTO_DAEMON=1`。单实例靠 `<state>/subswapd.pid` 文件锁。关掉：`pkill subswapd`；禁止自动拉起：`SUBSWAP_NO_DAEMON=1`。**在 macOS 未启用自动拉起时，Codex/其它 provider 的后台自动切号不会跑**——只有主动执行无参 `subswap` 才会采样并自动切；切完仍须重启已打开的 Codex 才生效（上一节）。
 
 ## OpenCode Go
 

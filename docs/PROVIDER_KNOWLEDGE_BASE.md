@@ -198,7 +198,29 @@ active **不首选**兼容 HTTP：先经官方 `codex app-server` JSONL 调 `acc
 |---|---|
 | `~/.codex/auth.json` | 当前激活；**CLI / VSCode / 桌面端共用** |
 
-切换 = 只写这一文件即可同步三端。
+切换 = 原子重写这一文件。**新启动**的 CLI / 扩展 / 桌面端都会读到新号；**已在跑的 Codex 进程不会自动跟上**（见下节「切换生效边界」）。
+
+### 切换生效边界（官方不热读 · 2026-09-11 裁定）
+
+**【裁定】** subswap 的 Codex 手动 `swap` 与自动换号**都已实现**（默认入口 `try_auto_swap_ready_provider`、daemon `run_cycle`、共享引擎 `FileBlobProvider::activate`）。用户感觉「没有自动切 / 切了不生效」，优先按下列边界排查，**禁止**当成「Codex 自动切号未落地」去重做。
+
+官方 Codex `AuthManager`（`codex-rs/login`）启动时把 `auth.json` 读进内存，并写明：外部改写磁盘 **不会**被观察，除非进程显式 `reload()`。自愈路径里的 `reload_if_account_id_matches` 在 **账号 ID 变化时故意跳过**——正好挡住「换到另一个号」的热灌。因此：
+
+| 场景 | 实际效果 |
+|---|---|
+| `subswap` / `subswapd` 切号成功 | live `auth.json` + registry 已是新号 |
+| 已打开的 Codex CLI / IDE 会话 | 继续用内存旧号，须**重启 Codex**（或重载 IDE 窗口后再开对话） |
+| `subswap run codex <账号>` | 新进程 + 私有 `CODEX_HOME`，立刻用目标号；不动全局 live |
+| 指望官方热读换号 / 捆绑社区 Codex 热补丁 | **禁止**：官方设计不允许；非官方补丁跟版本、签名、安全均不可控 |
+
+同类开源换号工具（写 `auth.json` 的）同样要求重启。若要做体验补丁，只能走「切号后提示或协调重启」（对标 Cursor 退出再拉起），**不是**进程内热切换。
+
+易被误判成「没自动切」的旁因：
+
+1. **macOS 默认不拉起 `subswapd`**（避钥匙串弹窗）；后台轮询需 `SUBSWAP_AUTO_DAEMON=1`。平时只有跑无参 `subswap` 才会采样并自动切一次。见 [CLI.md](CLI.md)。
+2. **自动策略只对小时级窗口做阈值触发**；Codex 月度等长窗口接近阈值不切，只有明确 `Exhausted` 才硬阻断。见 [AUTO_SWAP_DESIGN.md](design/AUTO_SWAP_DESIGN.md) §1.1。
+
+排障入口：[troubleshooting/2026-09-11](troubleshooting/2026-09-11-codex-swap-requires-restart.md)。
 
 ### Codex 官方额度通道与刷新边界
 
@@ -264,6 +286,7 @@ API-key 型 `auth.json` 示例：
 
 1. 整段重写 `~/.codex/auth.json`（原子，0o600）
 2. `fs2::FileExt::lock_exclusive` 于 `<codex_home>/.subswap.lock`
+3. **不**向运行中的 Codex 发 reload / 不代为重启（当前边界）；生效见上节「切换生效边界」
 
 ### 与其他本地账号工具共存
 

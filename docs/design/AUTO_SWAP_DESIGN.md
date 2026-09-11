@@ -141,6 +141,8 @@ daemon 除自动切换外，负责**非活跃 Claude 账号 token 保活**：
 
 动机：non-active 无人刷 token → 切过去立刻 401。Codex 不需要：access_token 都流过 `~/.codex/auth.json`，CLI 自刷新。
 
+**Codex 自动切号已接通，但客户端不热读。** 默认入口与 `subswapd` 都会对 Codex 跑同一套 `decide` → `activate`（写 live `auth.json`）。已运行的官方 Codex **不会**因此换成新号，须重启；macOS 默认不拉起 daemon 时后台也不会自动切。细则与禁令见 [PROVIDER_KNOWLEDGE_BASE.md](../PROVIDER_KNOWLEDGE_BASE.md)「切换生效边界」与 [troubleshooting/2026-09-11](../troubleshooting/2026-09-11-codex-swap-requires-restart.md)。
+
 ## 6. 配置项（config.toml）
 
 字段语义与默认以 [CONFIG.md](../CONFIG.md) / `defaults.rs` 为准。结构示意：
