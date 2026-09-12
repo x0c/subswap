@@ -1,14 +1,21 @@
+<p align="center">
+  <a href="README.md"><img src="https://img.shields.io/badge/English-gray" alt="English"></a>
+  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-%E2%9C%93-blue" alt="简体中文"></a>
+  <a href="README.ja.md"><img src="https://img.shields.io/badge/%E6%97%A5%E6%9C%AC%E8%AA%9E-gray" alt="日本語"></a>
+  <a href="README.ko.md"><img src="https://img.shields.io/badge/%ED%95%9C%EA%B5%AD%EC%96%B4-gray" alt="한국어"></a>
+</p>
+
 # subswap
 
-[![CI](https://github.com/x0c/subswap/actions/workflows/ci.yml/badge.svg)](https://github.com/x0c/subswap/actions/workflows/ci.yml)
-[![Release](https://github.com/x0c/subswap/actions/workflows/release.yml/badge.svg)](https://github.com/x0c/subswap/actions/workflows/release.yml)
-[![License](https://img.shields.io/github/license/x0c/subswap)](LICENSE)
+<p align="center">
+  <a href="https://github.com/x0c/subswap/actions/workflows/ci.yml"><img src="https://github.com/x0c/subswap/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/x0c/subswap/actions/workflows/release.yml"><img src="https://github.com/x0c/subswap/actions/workflows/release.yml/badge.svg" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/x0c/subswap" alt="License"></a>
+</p>
 
-语言：[English](README.md) | 简体中文 | [日本語](README.ja.md) | [한국어](README.ko.md)
+**工作和私人 Claude Code、ChatGPT、Codex、Cursor 账号，不用登出就能切换。**
 
-**无需反复登录，快速切换 AI 编程账号，一眼看清谁还有额度。**
-
-subswap 可以安全切换 Claude Code、OpenAI Codex / ChatGPT、Kimi Code、Cursor 和 OpenCode Go 账号。它把私有凭证快照留在本地，显示额度状态，并可在用量到达你的阈值时自动切到另一个符合条件的账号。
+一台电脑上同时留着多个 AI 编程登录。subswap 切换 Claude Code、Codex / ChatGPT、Cursor、Kimi Code 和 OpenCode Go，不必反复登出再登录，并一眼看出哪个账号还有用量。
 
 如果它帮你少登出登录几次，请给仓库[点个 star](https://github.com/x0c/subswap)，方便更多人发现。
 
@@ -22,7 +29,7 @@ subswap 可以安全切换 Claude Code、OpenAI Codex / ChatGPT、Kimi Code、Cu
 
 ## 为什么用 subswap
 
-- **工作、个人和客户账号互不混淆。** 无需反复登出、再登录。
+- **工作、个人和客户账号互不混淆。** 切换 Claude Code、ChatGPT、Codex、Cursor 账号，无需反复登出再登录。
 - **一眼看到可用额度。** 在一个界面查看 Claude、Codex、Kimi、Cursor 与 OpenCode 的额度窗口。
 - **始终由你决定。** 手动 `swap` 不等待网络或额度接口；自动换号可选，并会排除只允许手动选择的账号。
 - **安全时才并行。** Claude、Codex、Kimi、OpenCode 能在隔离环境并行运行，不改变全局当前账号。
@@ -74,7 +81,7 @@ CLI 已在 macOS、Linux、Windows CI 中测试。后台 daemon 仅支持 Unix�
 
 ### 先试手动换号
 
-先在一个支持的客户端登录，按上方说明安装 subswap，再运行：
+先在一个支持的客户端登录（工作或私人账号均可），按上方说明安装 subswap，再运行：
 
 ```bash
 subswap autoswap off  # 初次体验时先关闭自动换号。
@@ -98,7 +105,7 @@ subswap swap alice@example.com
 subswap swap claude/alice@example.com
 ```
 
-### 新增 Claude 或 Codex 账号
+### 新增 Claude、ChatGPT 或 Codex 账号
 
 ```bash
 subswap login claude

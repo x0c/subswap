@@ -1,14 +1,21 @@
+<p align="center">
+  <a href="README.md"><img src="https://img.shields.io/badge/English-%E2%9C%93-blue" alt="English"></a>
+  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-gray" alt="简体中文"></a>
+  <a href="README.ja.md"><img src="https://img.shields.io/badge/%E6%97%A5%E6%9C%AC%E8%AA%9E-gray" alt="日本語"></a>
+  <a href="README.ko.md"><img src="https://img.shields.io/badge/%ED%95%9C%EA%B5%AD%EC%96%B4-gray" alt="한국어"></a>
+</p>
+
 # subswap
 
-[![CI](https://github.com/x0c/subswap/actions/workflows/ci.yml/badge.svg)](https://github.com/x0c/subswap/actions/workflows/ci.yml)
-[![Release](https://github.com/x0c/subswap/actions/workflows/release.yml/badge.svg)](https://github.com/x0c/subswap/actions/workflows/release.yml)
-[![License](https://img.shields.io/github/license/x0c/subswap)](LICENSE)
+<p align="center">
+  <a href="https://github.com/x0c/subswap/actions/workflows/ci.yml"><img src="https://github.com/x0c/subswap/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/x0c/subswap/actions/workflows/release.yml"><img src="https://github.com/x0c/subswap/actions/workflows/release.yml/badge.svg" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/x0c/subswap" alt="License"></a>
+</p>
 
-Languages: English | [简体中文](README.zh-CN.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
+**Switch work and personal Claude Code, ChatGPT, Codex, and Cursor accounts without logging out.**
 
-**Switch AI coding accounts without logging out. See which account has quota left.**
-
-subswap safely switches accounts for Claude Code, OpenAI Codex / ChatGPT, Kimi Code, Cursor, and OpenCode Go. It keeps private local credential snapshots, shows quota status, and can optionally move to another eligible account when usage reaches your threshold.
+Keep multiple AI coding logins on one machine. subswap switches Claude Code, Codex / ChatGPT, Cursor, Kimi Code, and OpenCode Go without signing out, and shows which account still has usage left.
 
 If this saves you from logging out and back in all day, please [star the repo](https://github.com/x0c/subswap) so others can find it.
 
@@ -22,7 +29,7 @@ If this saves you from logging out and back in all day, please [star the repo](h
 
 ## Why subswap
 
-- **Keep work, personal, and client accounts separate.** Switch an account without repeatedly logging out and back in.
+- **Keep work, personal, and client accounts separate.** Switch Claude Code, ChatGPT, Codex, and Cursor accounts without repeatedly logging out and back in.
 - **Know your remaining headroom.** See Claude, Codex, Kimi, Cursor, and OpenCode quota windows in one place.
 - **Stay in control.** A manual `swap` never waits for a network or quota API; automatic swapping is optional and respects accounts marked manual-only.
 - **Use parallel terminals when it is safe.** Claude, Codex, Kimi, and OpenCode can run in isolated environments without changing the global active account.
@@ -74,7 +81,7 @@ The CLI is tested in CI on macOS, Linux, and Windows. The background daemon is U
 
 ### Start with manual switching
 
-Sign in to a supported client first. Then install subswap above and run:
+Sign in to a supported client first (work or personal). Then install subswap above and run:
 
 ```bash
 subswap autoswap off  # Turn off automatic switching while you try it.
@@ -98,7 +105,7 @@ subswap swap alice@example.com
 subswap swap claude/alice@example.com
 ```
 
-### Add another Claude or Codex account
+### Add another Claude, ChatGPT, or Codex account
 
 ```bash
 subswap login claude
