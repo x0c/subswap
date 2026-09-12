@@ -1,12 +1,21 @@
+<p align="center">
+  <a href="README.md"><img src="https://img.shields.io/badge/English-gray" alt="English"></a>
+  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-gray" alt="简体中文"></a>
+  <a href="README.ja.md"><img src="https://img.shields.io/badge/%E6%97%A5%E6%9C%AC%E8%AA%9E-gray" alt="日本語"></a>
+  <a href="README.ko.md"><img src="https://img.shields.io/badge/%ED%95%9C%EA%B5%AD%EC%96%B4-%E2%9C%93-blue" alt="한국어"></a>
+</p>
+
 # subswap
 
-Languages: [English](README.md) | [简体中文](README.zh-CN.md) | [日本語](README.ja.md) | 한국어
+<p align="center">
+  <a href="https://github.com/x0c/subswap/actions/workflows/ci.yml"><img src="https://github.com/x0c/subswap/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/x0c/subswap/actions/workflows/release.yml"><img src="https://github.com/x0c/subswap/actions/workflows/release.yml/badge.svg" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/x0c/subswap" alt="License"></a>
+</p>
 
-**로그아웃 없이 AI 코딩 계정을 바꾸고, 남은 사용량을 확인하세요.**
+**업무용과 개인용 Claude Code, ChatGPT, Codex, Cursor 계정을 로그아웃 없이 전환하세요.**
 
-subswap은 Claude Code, OpenAI Codex / ChatGPT, Kimi Code, Cursor, OpenCode Go의 여러 AI 구독 계정을 관리하는 Rust CLI입니다. 로컬 로그인 상태와 quota를 읽고 활성 계정을 수동 또는 자동으로 전환합니다.
-
-Claude 계정 전환 도구, Codex 계정 관리자, ChatGPT quota tracker, 또는 여러 Provider를 통합하는 구독 전환 도구로 사용할 수 있습니다.
+한 대의 컴퓨터에 여러 AI 코딩 로그인을 남겨 둘 수 있습니다. subswap은 Claude Code, Codex / ChatGPT, Cursor, Kimi Code, OpenCode Go를 다시 로그인하지 않고 바꾸고, 아직 사용량이 남은 계정을 보여 줍니다.
 
 도움이 되었다면 [star](https://github.com/x0c/subswap)를 눌러 주세요. 다른 사람이 찾기 쉬워집니다.
 
@@ -66,7 +75,7 @@ cargo install --git https://github.com/x0c/subswap --path crates/cli
 
 ## 기능
 
-- **Claude Code, Codex CLI, Kimi Code, Cursor, OpenCode Go 다중 계정 전환**: 다시 로그인하지 않고 활성 계정을 바꿉니다.
+- **업무용과 개인용을 포함한 다중 계정 전환**: Claude Code, ChatGPT, Codex, Cursor, Kimi Code, OpenCode Go를 로그아웃 없이 바꿉니다.
 - **Claude Code 커스텀 API 엔드포인트**: 인터랙티브 위저드로 DeepSeek, Kimi 등 Anthropic 호환 엔드포인트를 추가하고 일반 Claude 계정처럼 전환할 수 있습니다.
 - **Claude / Codex / Kimi / OpenCode 계정 격리 병렬 환경**: `subswap run`·`shell`·`env`로 사용할 수 있습니다. Cursor는 데스크톱 SQLite 상태 때문에 이 모드를 지원하지 않습니다.
 - **Quota-aware status**: Claude / Kimi / Codex window와 Cursor의 `First-Party Models` / `API` 사용률을 표시합니다.
