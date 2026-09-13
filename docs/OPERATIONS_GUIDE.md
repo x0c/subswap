@@ -125,7 +125,7 @@ release run 内直接调用：
 3. Windows 资产上传到 draft 后，`verify-windows-installer` 会用该次 tag 真实运行 `install.ps1`、校验 SHA-256 并检查安装后的版本号；这是发布前门槛，不用历史版本安装烟雾替代。
 4. `publish` 仅在上述门槛成功后把 draft 切成 published（`gh release edit ... --draft=false`）。
 5. `publish` 成功后，`release.yml` 的 `homebrew` 作业以 `workflow_call`（`uses: ./.github/workflows/update-homebrew.yml`、`secrets: inherit`）在同一次 run 内调用 formula 更新，绕开递归防护。
-6. `update-homebrew.yml` 从 Release assets 下载各平台的 `.sha256` 文件，用 Python 渲染新 formula，通过 GitHub API PUT 到 `homebrew-tap` 仓库。
+6. `update-homebrew.yml` 从 Release assets 下载各平台的 `.sha256` 文件，用 Python 渲染新 formula，通过 GitHub API PUT 到 `homebrew-tap` 仓库。所有 formula 更新共享一个串行队列；写入前重读当前文件，遇到并发 `409 Conflict` 时有界重试，并拒绝让旧 tag 覆盖已发布的新版本。相邻 tag 可以连续发布，但最终 formula 必须保持指向最高版本。
 
 `update-homebrew.yml` 另保留 `workflow_dispatch`（手动补跑某个 tag：`gh workflow run update-homebrew.yml -f tag=vX.Y.Z`）
 与 `release: published`（仅人工在 Release 页面手动发布时兜底）两个入口。
