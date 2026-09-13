@@ -220,7 +220,9 @@ fn normalize_provider(provider: &str) -> Result<&'static str> {
         "opencode" | "opencode-go" => Ok("opencode"),
         "commandcode" | "command-code" | "cmd" => Ok("commandcode"),
         other => {
-            bail!("unknown provider: {other} (expected codex, claude, kimi, opencode or commandcode)")
+            bail!(
+                "unknown provider: {other} (expected codex, claude, kimi, opencode or commandcode)"
+            )
         }
     }
 }

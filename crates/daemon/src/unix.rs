@@ -30,9 +30,9 @@ use subswap_core::{
 };
 use subswap_provider_claude::ClaudeProvider;
 use subswap_provider_codex::CodexProvider;
+use subswap_provider_commandcode::CommandcodeProvider;
 use subswap_provider_cursor::CursorProvider;
 use subswap_provider_kimi::KimiProvider;
-use subswap_provider_commandcode::CommandcodeProvider;
 use subswap_provider_opencode::OpencodeProvider;
 use tokio::signal::unix::{signal, SignalKind};
 
