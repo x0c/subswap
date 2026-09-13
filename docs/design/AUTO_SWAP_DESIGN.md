@@ -63,7 +63,8 @@
 6. **查询失败候选兜底**：当前已明确耗尽、无已知可用候选时，允许切到因网络/超时/429 等导致 `query_quota` 失败的账号。**401/403、`needs re-login`、凭据缺失例外：即使有旧 quota 缓存也必须排除。**
 7. **active 查询失败兜底**：存在额度明确可用的其他账号则切走；无明确可用候选才降级；禁止未知→未知盲切。
 8. **active 仍在加载兜底**：有明确可用候选则立即切；否则继续等待，不提前定案。
-8.5. **新激活沉淀宽限（settle grace）**：`last_used_at` 距今 < `auto_swap.settle_grace_ms`（默认 60s；手动/自动切换都刷新）时，**不因第 7、8 条 loading/查询失败切走** → `NoOp`。**只挡不确定状态**：已达 threshold / `Exhausted` 仍正常切走。宽限期须覆盖一次冷 quota 查询（含重试）。改默认只动 `crates/core/src/defaults.rs::AUTO_SWAP_SETTLE_GRACE_MS`。
+8.5. **新激活沉淀宽限（settle grace）**：`last_used_at` 距今 < `auto_swap.settle_grace_ms`（默认 60s；手动/自动切换都刷新）时，**不因第 7、8 条 loading/查询失败切走** → `NoOp`。**只挡不确定状态**：已达 threshold / `Exhausted` 仍正常切走。宽限期须覆盖一次冷 quota 查询（含重试）。改默认只动 `crates/core/src/defaults.rs::AUTO_SWAP_SETTLE_GRACE_MS`。**默认入口的 live 对齐不刷新该标记**（`clear_settled_marker`）：原生客户端里的外部切号只是「标记 active」，不产生切换语义，否则外部切号会被宽限误保护。
+8.6. **手动切换保持（manual hold）**：用户经 subswap 手动 `swap` / `login` 某 provider 后，该 provider 在 `auto_swap.manual_hold_ms`（默认 10min）内**暂停一切自动切换** → `NoOp`（`… manually selected; auto swap held for Ns`）。与 8.5 正交：settle 只挡不确定状态且不分手动自动；hold 只认 subswap 手动切换（`<state_dir>/manual_hold/<provider>.json` 落盘，CLI 短命进程与 daemon 重启都认），但**连确定性额度切换一起挡**。`0` 或负数关闭。实现：`crates/core/src/manual_hold.rs` + `decide()` 开头；写入口在 `swap.rs` / `login.rs` 成功分支（best-effort，写失败不挡切换）。
 9. **`manual_only`**：`Account.extra.manual_only == true` → active 立即 `NoOp`（即使 loading/失败也不切走）；inactive 从所有候选路径排除。Claude 自定义 API 用此语义。
 10. **执行前重验 active**：daemon 执行前重读 registry；仅当当前 active 仍等于决策快照且非 `manual_only` 才执行，否则丢弃过期决策。
 
@@ -155,6 +156,7 @@ enabled = true                  # 总开关
 # threshold = <0.0~1.0>         # 权威：defaults::AUTO_SWAP_THRESHOLD
 cooldown_seconds = 300          # 切换冷却
 # settle_grace_ms = ...         # 新激活沉淀宽限；权威：AUTO_SWAP_SETTLE_GRACE_MS
+# manual_hold_ms = ...          # 手动切换保持；权威：AUTO_SWAP_MANUAL_HOLD_MS（默认 10min）
 poll_interval_seconds = 60      # daemon 轮询周期
 allow_unknown = false           # 是否允许 status=Unknown 候选
 max_flap_per_5min = 3           # 抖动上限，超过进 Degraded

@@ -87,6 +87,15 @@ impl AppPaths {
         self.state_dir.join("snapshots")
     }
 
+    /// 手动切换保持标记：`<state_dir>/manual_hold/<provider>.json`（`{"until_ms": <epoch 毫秒>}`）。
+    ///
+    /// `subswap swap/login` 写，CLI 默认入口与 daemon 读；文件缺失 / 解析失败视为无保持。
+    pub fn manual_hold_file(&self, provider: &str) -> PathBuf {
+        self.state_dir
+            .join("manual_hold")
+            .join(format!("{provider}.json"))
+    }
+
     /// subswapd 守护进程 PID 文件:`<state_dir>/subswapd.pid`。
     /// 通过 fs2 文件锁标识唯一存活实例;退出后保留 PID 仅作信息参考。
     pub fn daemon_pid_file(&self) -> PathBuf {

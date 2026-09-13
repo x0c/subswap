@@ -30,6 +30,11 @@ pub async fn run(ctx: &AppContext, id_input: Option<&str>, json: bool) -> Result
                 &acc.provider,
                 Some(acc.id.0.as_str()),
             ));
+            // 手动保持：该 provider 暂停自动切换一段时间，避免下一轮采样把显式选择掰回去。
+            // 写失败只 warn，不挡切换本身（fail-open）。
+            if let Err(e) = subswap_core::record_manual_swap(&acc.provider) {
+                tracing::warn!(err = %e, provider = %acc.provider, "record manual hold failed");
+            }
             println!("swap → {}/{}", acc.provider, acc.id);
             if !json {
                 print_status_overview(ctx).await?;

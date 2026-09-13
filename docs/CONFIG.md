@@ -39,6 +39,7 @@ Windows: %APPDATA%\subswap\subswap\config\config.toml
 | `auto_swap.threshold` | `defaults::AUTO_SWAP_THRESHOLD` | 0.0~1.0 | 小时级窗口 `used/limit ≥` 此值 → 自动切换；7d/月度等长窗口只在明确耗尽时阻断 |
 | `auto_swap.cooldown_ms` | `300000` | 毫秒 | 切换后该账号冷却期，daemon 内不再选回 |
 | `auto_swap.settle_grace_ms` | `60000` | 毫秒 | 账号刚激活后此窗口内不因 quota loading / 查询失败被自动切走，避免顶掉手动选择 |
+| `auto_swap.manual_hold_ms` | `600000` | 毫秒 | 手动 `swap` / `login` 后该 provider 暂停一切自动切换（含确定性额度切换），避免把显式选择掰回去；`0` 关闭 |
 | `quota.warn_pct` | `90.0` | 0~100 | CLI 显示 `warn` 的阈值；不参与切换决策 |
 | `quota.exhausted_pct` | `100.0` | 0~100 | CLI 显示 `full` 的阈值；不参与切换决策 |
 | `quota.fetch_timeout_ms` | `20000` | 毫秒 | 单次 quota 查询 attempt 的超时；需盖住 Codex app-server（≤20s）与 Kimi 401 自愈；超时后按 `quota.fetch_retries` 决定是否重试 |

@@ -25,6 +25,24 @@ pub struct PolicyConfig {
     /// 新激活账号沉淀宽限期（毫秒）。active 账号 `last_used_at` 距今小于此值时，
     /// 不因 quota loading / 拉取失败这类不确定状态把它自动切走（避免顶掉手动选择）。
     pub settle_grace_ms: i64,
+    /// 手动切换保持期（毫秒）。用户手动 `swap` / `login` 后，该 provider 在此窗口内
+    /// 暂停一切自动切换（连确定性额度切换一起挡），避免把显式选择掰回去。
+    /// `hold_remaining_ms()` 为 fail-open 文件态；`0` 或负数关闭。
+    pub manual_hold_ms: i64,
+}
+
+/// 测试专用构造：显式字段 + 保持关闭，避免 `SUBSWAP_HOME` 环境互相干扰、
+/// 某个用例写的保持文件污染其他用例的 `PolicyConfig::default()`。
+/// 生产路径一律用 `PolicyConfig::default()`（读全局 settings）。
+#[cfg(test)]
+fn test_config(settle_grace_ms: i64) -> PolicyConfig {
+    PolicyConfig {
+        enabled: true,
+        threshold: 0.98,
+        allow_unknown: false,
+        settle_grace_ms,
+        manual_hold_ms: 0,
+    }
 }
 
 impl Default for PolicyConfig {
@@ -35,6 +53,7 @@ impl Default for PolicyConfig {
             threshold: s.auto_swap.threshold,
             allow_unknown: false,
             settle_grace_ms: s.auto_swap.settle_grace_ms,
+            manual_hold_ms: s.auto_swap.manual_hold_ms,
         }
     }
 }
@@ -121,6 +140,23 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
         return PolicyDecision::NoOp {
             reason: format!("{} is manual-only", active.account.id),
         };
+    }
+
+    // 手动保持：用户刚手动切换过该 provider 时，整个 provider 暂停自动切换
+    // （连确定性额度切换一起挡），把显式选择留给用户。fail-open：文件缺失/损坏视为无保持。
+    if config.manual_hold_ms > 0 {
+        let remaining = crate::manual_hold::hold_remaining_ms(&snapshot.provider);
+        if remaining > 0 {
+            let active_name = active
+                .map(|a| a.account.id.to_string())
+                .unwrap_or_else(|| "-".into());
+            return PolicyDecision::NoOp {
+                reason: format!(
+                    "{active_name} manually selected; auto swap held for {}s",
+                    remaining.max(1000) / 1000,
+                ),
+            };
+        }
     }
 
     // 1. active 账号自身额度尚未可用时，若有额度明确可用的其他账号则切走。
@@ -534,6 +570,16 @@ fn compare_unknown_candidates(a: &AccountWithQuotas, b: &AccountWithQuotas) -> s
         .then(a.account.id.0.cmp(&b.account.id.0))
 }
 
+/// `SUBSWAP_HOME` 进程锁：auto_policy 与 manual_hold 的触碰环境的测试共用。
+/// 放在非 test 模块（`#[cfg(test)]` 下才编译），避免跨 `#[cfg(test)]` mod 不可见。
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
+#[cfg(test)]
+pub(crate) fn hold_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 /// 最忙窗口的使用率分数（万分比）。Credits 存分、百分比窗口存 0~100，
 /// 直接比 `used` 会让金额窗口永远显得更忙；只看 gating 窗口。
 fn busiest_used(quotas: &[Quota]) -> u64 {
@@ -545,6 +591,7 @@ fn busiest_used(quotas: &[Quota]) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use super::hold_test_lock;
     use super::*;
     use crate::model::{AccountId, Quota, QuotaStatus, QuotaWindow};
 
@@ -608,7 +655,7 @@ mod tests {
                 mk_awq("b", false, 0, QuotaStatus::Ok),
             ],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(matches!(d, PolicyDecision::NoOp { .. }));
     }
 
@@ -622,7 +669,7 @@ mod tests {
                 mk_awq("c", false, 30, QuotaStatus::Ok),
             ],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         match d {
             PolicyDecision::Swap { from, to, .. } => {
                 assert_eq!(from.unwrap().0, "a");
@@ -645,7 +692,7 @@ mod tests {
                 mk_awq("c", false, 30, QuotaStatus::Ok),
             ],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         match d {
             PolicyDecision::Swap { from, to, .. } => {
                 assert_eq!(from.unwrap().0, "a");
@@ -668,7 +715,7 @@ mod tests {
             provider: "claude".into(),
             accounts: vec![active, mk_awq("b", false, 10, QuotaStatus::Ok)],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
     }
 
@@ -685,7 +732,7 @@ mod tests {
             provider: "claude".into(),
             accounts: vec![mk_awq("a", true, 99, QuotaStatus::Warn), candidate],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(
             matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "b"),
             "got {d:?}"
@@ -705,7 +752,7 @@ mod tests {
             provider: "claude".into(),
             accounts: vec![active, mk_awq("b", false, 10, QuotaStatus::Ok)],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(
             matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "b"),
             "got {d:?}"
@@ -721,7 +768,7 @@ mod tests {
                 mk_awq("b", false, 100, QuotaStatus::Exhausted),
             ],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(matches!(d, PolicyDecision::Degraded { .. }));
     }
 
@@ -733,7 +780,7 @@ mod tests {
             provider: "claude".into(),
             accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(matches!(d, PolicyDecision::Swap { to, .. } if to.0 == "b"));
     }
 
@@ -746,8 +793,43 @@ mod tests {
             provider: "claude".into(),
             accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(matches!(d, PolicyDecision::Swap { to, .. } if to.0 == "b"));
+    }
+
+    /// 手动保持：保持期内连「已明确耗尽」的确定性切换一起挡（settle grace 只挡不确定状态）。
+    #[test]
+    fn manual_hold_blocks_even_exhausted_active() {
+        let _guard = hold_test_lock().lock().unwrap();
+        let prev = std::env::var_os("SUBSWAP_HOME");
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("SUBSWAP_HOME", tmp.path().join("subswap"));
+        crate::manual_hold::record_manual_swap_with_hold("claude", 600_000).unwrap();
+        let snap = ProviderSnapshot {
+            provider: "claude".into(),
+            accounts: vec![
+                mk_awq("a", true, 100, QuotaStatus::Exhausted),
+                mk_awq("b", false, 10, QuotaStatus::Ok),
+            ],
+        };
+        let mut cfg = test_config(60_000);
+        cfg.manual_hold_ms = 600_000;
+        let d = decide(&snap, &cfg);
+        assert!(
+            matches!(d, PolicyDecision::NoOp { ref reason } if reason.contains("manually selected")),
+            "got {d:?}"
+        );
+        // 保持关闭（0）时同一快照恢复确定性切换。
+        let cfg = test_config(60_000);
+        let d = decide(&snap, &cfg);
+        assert!(
+            matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "b"),
+            "got {d:?}"
+        );
+        match prev {
+            Some(v) => std::env::set_var("SUBSWAP_HOME", v),
+            None => std::env::remove_var("SUBSWAP_HOME"),
+        }
     }
 
     /// 刚激活的账号 quota 还在 loading 时，沉淀宽限期内不应被自动切走
@@ -762,10 +844,7 @@ mod tests {
             provider: "claude".into(),
             accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
         };
-        let cfg = PolicyConfig {
-            settle_grace_ms: 60_000,
-            ..PolicyConfig::default()
-        };
+        let cfg = test_config(60_000);
         let d = decide(&snap, &cfg);
         assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
     }
@@ -780,10 +859,7 @@ mod tests {
             provider: "claude".into(),
             accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
         };
-        let cfg = PolicyConfig {
-            settle_grace_ms: 60_000,
-            ..PolicyConfig::default()
-        };
+        let cfg = test_config(60_000);
         let d = decide(&snap, &cfg);
         assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
     }
@@ -797,10 +873,7 @@ mod tests {
             provider: "claude".into(),
             accounts: vec![a, mk_awq("b", false, 10, QuotaStatus::Ok)],
         };
-        let cfg = PolicyConfig {
-            settle_grace_ms: 60_000,
-            ..PolicyConfig::default()
-        };
+        let cfg = test_config(60_000);
         let d = decide(&snap, &cfg);
         assert!(
             matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "b"),
@@ -819,10 +892,7 @@ mod tests {
             provider: "claude".into(),
             accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
         };
-        let cfg = PolicyConfig {
-            settle_grace_ms: 60_000,
-            ..PolicyConfig::default()
-        };
+        let cfg = test_config(60_000);
         let d = decide(&snap, &cfg);
         assert!(
             matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "b"),
@@ -840,7 +910,7 @@ mod tests {
             provider: "claude".into(),
             accounts: vec![api, mk_awq("oauth", false, 0, QuotaStatus::Ok)],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(matches!(d, PolicyDecision::NoOp { .. }));
     }
 
@@ -852,7 +922,7 @@ mod tests {
             provider: "claude".into(),
             accounts: vec![mk_awq("oauth", true, 100, QuotaStatus::Exhausted), api],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(matches!(d, PolicyDecision::Degraded { .. }));
     }
 
@@ -866,7 +936,7 @@ mod tests {
             provider: "claude".into(),
             accounts: vec![a, b],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(matches!(d, PolicyDecision::Degraded { .. }));
     }
 
@@ -879,7 +949,7 @@ mod tests {
                 mk_awq("b", false, 5, QuotaStatus::Ok),
             ],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         match d {
             PolicyDecision::Swap { from, to, .. } => {
                 assert!(from.is_none());
@@ -899,7 +969,7 @@ mod tests {
                 mk_awq("b", false, 99, QuotaStatus::Warn),
             ],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(matches!(d, PolicyDecision::Degraded { .. }), "got {d:?}");
     }
 
@@ -917,7 +987,7 @@ mod tests {
                     candidate,
                 ],
             },
-            &PolicyConfig::default(),
+            &test_config(60_000),
         );
         assert!(matches!(d, PolicyDecision::Swap { to, .. } if to.0 == "candidate"));
     }
@@ -938,7 +1008,7 @@ mod tests {
                     candidate,
                 ],
             },
-            &PolicyConfig::default(),
+            &test_config(60_000),
         );
         assert!(matches!(d, PolicyDecision::Degraded { .. }));
     }
@@ -957,7 +1027,7 @@ mod tests {
                     candidate,
                 ],
             },
-            &PolicyConfig::default(),
+            &test_config(60_000),
         );
         assert!(matches!(d, PolicyDecision::Degraded { .. }));
     }
@@ -979,7 +1049,7 @@ mod tests {
             provider: "claude".into(),
             accounts: vec![active, more_headroom, soonest_reset],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         match d {
             // c 剩余更少，但重置更快，应该被优先选中
             PolicyDecision::Swap { to, .. } => assert_eq!(to.0, "c"),
@@ -997,7 +1067,7 @@ mod tests {
             provider: "claude".into(),
             accounts: vec![mk_awq("a", true, 99, QuotaStatus::Warn), b, c],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         match d {
             PolicyDecision::Swap { to, .. } => assert_eq!(to.0, "c"),
             other => panic!("expected Swap, got {other:?}"),
@@ -1038,7 +1108,7 @@ mod tests {
             provider: "codex".into(),
             accounts: vec![active, later, sooner],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         match d {
             PolicyDecision::Swap { to, .. } => assert_eq!(to.0, "b"),
             other => panic!("expected Swap, got {other:?}"),
@@ -1066,7 +1136,7 @@ mod tests {
             provider: "codex".into(),
             accounts: vec![active, later],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
     }
 
@@ -1124,7 +1194,7 @@ mod tests {
                 ),
             ],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(
             matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "kimberly"),
             "got {d:?}"
@@ -1156,7 +1226,7 @@ mod tests {
                 ),
             ],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
     }
 
@@ -1186,7 +1256,7 @@ mod tests {
                 ),
             ],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(
             matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "kimberly"),
             "got {d:?}"
@@ -1219,7 +1289,7 @@ mod tests {
                 ),
             ],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(
             matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "warn"),
             "got {d:?}"
@@ -1250,7 +1320,7 @@ mod tests {
             provider: "cursor".into(),
             accounts: vec![active, candidate],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(
             matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "api-ok"),
             "got {d:?}"
@@ -1324,7 +1394,7 @@ mod tests {
                 ),
             ],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(
             matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "kochis"),
             "got {d:?}"
@@ -1355,7 +1425,7 @@ mod tests {
                 ),
             ],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
     }
 
@@ -1383,7 +1453,7 @@ mod tests {
                 ),
             ],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
     }
 
@@ -1411,7 +1481,7 @@ mod tests {
                 ),
             ],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(
             matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "fresh"),
             "got {d:?}"
@@ -1442,7 +1512,7 @@ mod tests {
                 ),
             ],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
     }
 
@@ -1478,7 +1548,7 @@ mod tests {
                 ),
             ],
         };
-        let d = decide(&snap, &PolicyConfig::default());
+        let d = decide(&snap, &test_config(60_000));
         assert!(
             matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "credits-spent-1st-ok"),
             "got {d:?}"

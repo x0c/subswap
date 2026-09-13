@@ -784,7 +784,7 @@ fn default_entry_auto_swaps_exhausted_opencode_go_and_keeps_neighbor_providers()
 
     write(
         &app_config_dir(&tmp).join("config.toml"),
-        "[quota]\nmin_refresh_interval_ms = 0\nfetch_retries = 0\n",
+        "[quota]\nmin_refresh_interval_ms = 0\nfetch_retries = 0\n[auto_swap]\nmanual_hold_ms = 0\n",
     );
 
     let stdout = assert_success(
@@ -831,7 +831,7 @@ fn default_entry_does_not_auto_swap_opencode_to_401_key() {
 
     write(
         &app_config_dir(&tmp).join("config.toml"),
-        "[quota]\nmin_refresh_interval_ms = 0\nfetch_retries = 0\n",
+        "[quota]\nmin_refresh_interval_ms = 0\nfetch_retries = 0\n[auto_swap]\nmanual_hold_ms = 0\n",
     );
 
     let stdout = assert_success(
@@ -935,7 +935,7 @@ fn default_entry_auto_swaps_exhausted_commandcode() {
 
     write(
         &app_config_dir(&tmp).join("config.toml"),
-        "[quota]\nmin_refresh_interval_ms = 0\nfetch_retries = 0\n",
+        "[quota]\nmin_refresh_interval_ms = 0\nfetch_retries = 0\n[auto_swap]\nmanual_hold_ms = 0\n",
     );
 
     let stdout = assert_success(
@@ -981,7 +981,7 @@ fn default_entry_does_not_auto_swap_commandcode_to_401_key() {
 
     write(
         &app_config_dir(&tmp).join("config.toml"),
-        "[quota]\nmin_refresh_interval_ms = 0\nfetch_retries = 0\n",
+        "[quota]\nmin_refresh_interval_ms = 0\nfetch_retries = 0\n[auto_swap]\nmanual_hold_ms = 0\n",
     );
 
     let stdout = assert_success(
