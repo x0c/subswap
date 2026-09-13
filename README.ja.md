@@ -5,7 +5,11 @@
   <a href="README.ko.md"><img src="https://img.shields.io/badge/%ED%95%9C%EA%B5%AD%EC%96%B4-gray" alt="한국어"></a>
 </p>
 
-# subswap
+<h1 align="center">subswap</h1>
+
+<p align="center"><strong>仕事用と個人用の Claude Code、ChatGPT、Codex、Cursor アカウントを、ログアウトせずに切り替え。</strong></p>
+
+<p align="center">1 台のマシンに複数の AI コーディングログインを残せます。まだ使えるアカウントが一目で分かり、コマンド一つで切り替え — ブラウザでログインし直す必要はありません。</p>
 
 <p align="center">
   <a href="https://github.com/x0c/subswap/actions/workflows/ci.yml"><img src="https://github.com/x0c/subswap/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -13,30 +17,22 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/x0c/subswap" alt="License"></a>
 </p>
 
-**仕事用と個人用の Claude Code、ChatGPT、Codex、Cursor アカウントを、ログアウトせずに切り替え。**
-
-1 台のマシンに複数の AI コーディングログインを残せます。subswap は Claude Code、Codex / ChatGPT、Cursor、Kimi Code、OpenCode Go をサインアウトせずに切り替え、まだ使えるアカウントが一目で分かります。
-
-役に立ったら [Star](https://github.com/x0c/subswap) をお願いします。見つけてもらいやすくなります。
-
 <p align="center">
-  <img src="docs/images/demo-doctor.gif" width="920" alt="Animated terminal demo: subswap doctor checks config paths and provider credentials">
+  <img src="docs/images/demo-swap.gif" width="920" alt="サンプル：アカウント一覧のあと subswap swap で別の Codex に切り替え（ログアウト不要）">
 </p>
+<p align="center"><em>サンプルアカウントのデモです。あなたのマシンの録画ではありません。</em></p>
 
 <p align="center">
   <img src="docs/images/demo-status.svg" width="920" alt="subswap のステータス例">
 </p>
 
-**プラットフォームサポート**: CLI と 5 Provider は macOS / Linux / Windows の CI で検証されています。バックグラウンド daemon は Unix 専用で、Windows ではフォアグラウンド CLI を使用します。
-
 ## インストール
 
 ### macOS / Linux (Homebrew)
 
-Homebrew を使う場合:
-
 ```bash
 brew install x0c/tap/subswap
+subswap
 ```
 
 先に tap してから名前でインストールすることもできます。
@@ -263,6 +259,8 @@ Issues と PR を歓迎します。注意事項：
 
 - `docs/` と `AGENTS.md` の内部文書は中国語です。コードコメントは中国語です。ユーザーに見える内容（CLI テキスト、エラーメッセージ、tracing ログ、crate description）は英語です。
 - PR を開く前に `cargo check --workspace` と `cargo test --workspace` を実行してください。
+
+役に立ったら [Star](https://github.com/x0c/subswap) しておくと、あとから見つけやすくなります。
 
 ## License
 

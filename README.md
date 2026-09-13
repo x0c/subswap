@@ -5,7 +5,11 @@
   <a href="README.ko.md"><img src="https://img.shields.io/badge/%ED%95%9C%EA%B5%AD%EC%96%B4-gray" alt="한국어"></a>
 </p>
 
-# subswap
+<h1 align="center">subswap</h1>
+
+<p align="center"><strong>Switch work and personal Claude Code, ChatGPT, Codex, and Cursor accounts without logging out.</strong></p>
+
+<p align="center">Keep several AI coding logins on one machine. See which account still has usage left, then switch in one command — no browser dance.</p>
 
 <p align="center">
   <a href="https://github.com/x0c/subswap/actions/workflows/ci.yml"><img src="https://github.com/x0c/subswap/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -13,48 +17,40 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/x0c/subswap" alt="License"></a>
 </p>
 
-**Switch work and personal Claude Code, ChatGPT, Codex, and Cursor accounts without logging out.**
-
-Keep multiple AI coding logins on one machine. subswap switches Claude Code, Codex / ChatGPT, Cursor, Kimi Code, and OpenCode Go without signing out, and shows which account still has usage left.
-
-If this saves you from logging out and back in all day, please [star the repo](https://github.com/x0c/subswap) so others can find it.
+<p align="center">
+  <img src="docs/images/demo-swap.gif" width="920" alt="Sample terminal demo: list accounts, then subswap swap to another Codex login without logging out">
+</p>
+<p align="center"><em>Sample demo with example accounts — not a recording of your machine.</em></p>
 
 <p align="center">
-  <img src="docs/images/demo-doctor.gif" width="920" alt="Animated terminal demo: subswap doctor checks config paths and provider credentials">
+  <img src="docs/images/demo-status.svg" width="920" alt="Example account list with quota left and a swap tip">
 </p>
-
-<p align="center">
-  <img src="docs/images/demo-status.svg" width="920" alt="Example subswap status: Claude, Codex, and Cursor accounts with quota left, plus swap and isolated-run tips">
-</p>
-
-## Why subswap
-
-- **Keep work, personal, and client accounts separate.** Switch Claude Code, ChatGPT, Codex, and Cursor accounts without repeatedly logging out and back in.
-- **Know your remaining headroom.** See Claude, Codex, Kimi, Cursor, and OpenCode quota windows in one place.
-- **Stay in control.** A manual `swap` never waits for a network or quota API; automatic swapping is optional and respects accounts marked manual-only.
-- **Use parallel terminals when it is safe.** Claude, Codex, Kimi, and OpenCode can run in isolated environments without changing the global active account.
 
 ## Install
 
-### macOS / Linux
+On **macOS or Linux with Homebrew**:
 
 ```bash
 brew install x0c/tap/subswap
+subswap
 ```
 
-Or use the [latest GitHub Release](https://github.com/x0c/subswap/releases/latest) and verify the accompanying SHA-256 file before installing.
+<details>
+<summary>Windows / GitHub Release / from source</summary>
 
-### Windows
+**Windows**
 
 ```powershell
 irm https://raw.githubusercontent.com/x0c/subswap/main/install.ps1 | iex
 ```
 
-The installer downloads the latest Windows release, verifies its SHA-256 checksum, and adds `subswap.exe` to your user `PATH`. You can also download the zip and checksum yourself from the [latest release](https://github.com/x0c/subswap/releases/latest).
+The installer downloads the latest Windows release, verifies its SHA-256 checksum, and adds `subswap.exe` to your user `PATH`. You can also download the zip and checksum from the [latest release](https://github.com/x0c/subswap/releases/latest).
 
-### From source
+**GitHub Release (any OS)**
 
-For development or an unreleased build, Rust 1.80+ is required:
+Download from the [latest release](https://github.com/x0c/subswap/releases/latest) and verify the accompanying SHA-256 file before installing.
+
+**From source** (Rust 1.80+, for development)
 
 ```bash
 git clone https://github.com/x0c/subswap
@@ -63,9 +59,50 @@ cargo install --path crates/cli
 subswap --help
 ```
 
-`cargo install --git` follows repository source rather than a verified release. Prefer Homebrew or a release asset for normal use.
+Prefer Homebrew or a release asset for normal use.
 
-## Supported clients
+</details>
+
+## What you can do
+
+- **Keep work, personal, and client accounts separate** — switch Claude Code, ChatGPT, Codex, and Cursor without logging out and back in.
+- **See remaining headroom** — Claude, Codex, Kimi, Cursor, and OpenCode quota windows in one list.
+- **Switch offline when you must** — manual `swap` never waits on a network or quota API; auto-swap is optional.
+- **Run a second account in parallel when it is safe** — Claude, Codex, Kimi, and OpenCode isolation without changing the global active login.
+- **Cursor on the desktop** — import, switch, and quota; Cursor does not support isolated `run` / `shell` / `env`.
+
+## First use
+
+Sign in to a supported client first, then:
+
+```bash
+subswap autoswap off   # stay manual while you try it
+subswap                # import local logins and list accounts
+subswap swap 2         # use a number from your list
+```
+
+<details>
+<summary>More import / login / isolated-run examples</summary>
+
+```bash
+subswap login kimi
+subswap login cursor
+subswap login opencode
+subswap login claude
+subswap login codex
+
+subswap swap alice@example.com
+subswap swap claude/alice@example.com
+
+subswap run codex bob@example.com -- --version
+subswap shell claude/alice@example.com
+eval "$(subswap env codex/bob@example.com)"
+```
+
+</details>
+
+<details>
+<summary>Supported clients</summary>
 
 | Client | Import and switch | Quota and auto-swap | Isolated run | Important boundary |
 |---|---:|---:|---:|---|
@@ -77,49 +114,16 @@ subswap --help
 
 The CLI is tested in CI on macOS, Linux, and Windows. The background daemon is Unix-only: it auto-starts on Linux, requires explicit opt-in on macOS, and is unavailable on Windows.
 
-## Quick start
+</details>
 
-### Start with manual switching
+<details>
+<summary>Environment check (`subswap doctor`)</summary>
 
-Sign in to a supported client first (work or personal). Then install subswap above and run:
+<p align="center">
+  <img src="docs/images/demo-doctor.gif" width="920" alt="Animated terminal demo: subswap doctor checks config paths and provider credentials">
+</p>
 
-```bash
-subswap autoswap off  # Turn off automatic switching while you try it.
-subswap               # Import your existing login and see the account list.
-subswap swap 2        # Replace 2 with a number from your list.
-```
-
-### Import an account already signed in to a native client
-
-```bash
-# Import the current local login state, show quota status, and print the active account.
-subswap
-
-# Import a native login explicitly when needed.
-subswap login kimi
-subswap login cursor
-subswap login opencode
-
-# Switch by account id, or add the client prefix when the id is ambiguous.
-subswap swap alice@example.com
-subswap swap claude/alice@example.com
-```
-
-### Add another Claude, ChatGPT, or Codex account
-
-```bash
-subswap login claude
-subswap login codex
-subswap
-```
-
-### Run an account without changing the global active account
-
-```bash
-subswap run codex bob@example.com -- --version
-subswap shell claude/alice@example.com
-eval "$(subswap env codex/bob@example.com)"
-```
+</details>
 
 ## Before you start
 
@@ -160,6 +164,8 @@ No. Claude Code, Codex / ChatGPT, Kimi Code, Cursor, and OpenCode Go are support
 ## Contributing and security
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) for the supported contribution paths and local checks. Do not open a public issue with credentials, refresh tokens, login files, real email addresses, or billing screenshots. See [SECURITY.md](SECURITY.md) for private vulnerability reporting.
+
+If subswap saves you from logging out all day, [star the repo](https://github.com/x0c/subswap) so you can find it again later.
 
 ## License
 
