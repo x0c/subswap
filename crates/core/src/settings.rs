@@ -55,6 +55,9 @@ pub struct AutoSwap {
     /// 新激活账号沉淀宽限期（毫秒）：刚 active 的账号在此窗口内不因 quota
     /// loading / 拉取失败被自动切走，避免顶掉用户刚做的手动选择。
     pub settle_grace_ms: i64,
+    /// 手动切换保持期（毫秒）：用户手动 `swap` / `login` 后，该 provider 在此窗口内
+    /// 暂停一切自动切换（连确定性额度切换一起挡），避免把显式选择掰回去。
+    pub manual_hold_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -111,6 +114,7 @@ impl Default for AutoSwap {
             threshold: defaults::AUTO_SWAP_THRESHOLD,
             cooldown_ms: defaults::AUTO_SWAP_COOLDOWN_MS,
             settle_grace_ms: defaults::AUTO_SWAP_SETTLE_GRACE_MS,
+            manual_hold_ms: defaults::AUTO_SWAP_MANUAL_HOLD_MS,
         }
     }
 }
@@ -240,6 +244,10 @@ mod tests {
         assert_eq!(
             s.auto_swap.settle_grace_ms,
             defaults::AUTO_SWAP_SETTLE_GRACE_MS
+        );
+        assert_eq!(
+            s.auto_swap.manual_hold_ms,
+            defaults::AUTO_SWAP_MANUAL_HOLD_MS
         );
         assert_eq!(s.daemon.poll_interval_ms, defaults::DAEMON_POLL_INTERVAL_MS);
         assert_eq!(

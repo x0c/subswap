@@ -49,6 +49,9 @@ pub async fn run(
                 Some(account.id.0.as_str()),
             ));
             println!("login → claude/{}", account_ref(&account.id.0));
+            if let Err(e) = subswap_core::record_manual_swap("claude") {
+                tracing::warn!(err = %e, provider = "claude", "record manual hold failed");
+            }
             return finish(ctx, json).await;
         }
         "codex" | "openai" | "chatgpt" => {
@@ -75,6 +78,9 @@ pub async fn run(
                 Some(account.id.0.as_str()),
             ));
             println!("login → codex/{}", account_ref(&account.id.0));
+            if let Err(e) = subswap_core::record_manual_swap("codex") {
+                tracing::warn!(err = %e, provider = "codex", "record manual hold failed");
+            }
             return finish(ctx, json).await;
         }
         "kimi" | "moonshot" => {
@@ -92,6 +98,9 @@ pub async fn run(
             ctx.audit
                 .append(AuditEvent::ok("login", "kimi", Some(account.id.0.as_str())));
             println!("login → kimi/{}", account_ref(&account.id.0));
+            if let Err(e) = subswap_core::record_manual_swap("kimi") {
+                tracing::warn!(err = %e, provider = "kimi", "record manual hold failed");
+            }
             return finish(ctx, json).await;
         }
         "opencode" | "opencode-go" => {
@@ -127,6 +136,9 @@ pub async fn run(
                 Some(account.id.0.as_str()),
             ));
             println!("login → opencode/{}", account_ref(&account.id.0));
+            if let Err(e) = subswap_core::record_manual_swap("opencode") {
+                tracing::warn!(err = %e, provider = "opencode", "record manual hold failed");
+            }
             return finish(ctx, json).await;
         }
         "commandcode" | "command-code" | "cmd" => {
@@ -162,6 +174,9 @@ pub async fn run(
                 Some(account.id.0.as_str()),
             ));
             println!("login → commandcode/{}", account_ref(&account.id.0));
+            if let Err(e) = subswap_core::record_manual_swap("commandcode") {
+                tracing::warn!(err = %e, provider = "commandcode", "record manual hold failed");
+            }
             return finish(ctx, json).await;
         }
         "cursor" => {
@@ -179,6 +194,9 @@ pub async fn run(
                 Some(account.id.0.as_str()),
             ));
             println!("login → cursor/{}", account_ref(&account.id.0));
+            if let Err(e) = subswap_core::record_manual_swap("cursor") {
+                tracing::warn!(err = %e, provider = "cursor", "record manual hold failed");
+            }
             return finish(ctx, json).await;
         }
         other => {

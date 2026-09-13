@@ -109,6 +109,7 @@ pub async fn run() -> Result<()> {
             threshold: snapshot_settings.auto_swap.threshold,
             allow_unknown: false,
             settle_grace_ms: snapshot_settings.auto_swap.settle_grace_ms,
+            manual_hold_ms: snapshot_settings.auto_swap.manual_hold_ms,
         };
         if let Err(e) = run_cycle(
             &providers,
@@ -304,6 +305,10 @@ async fn run_cycle(
             }
             PolicyDecision::Degraded { reason } => {
                 tracing::debug!(provider = %snap.provider, reason = %reason, "degraded");
+            }
+            // 手动保持走 info（用户显式选择值得在日志里露出一行），其余 NoOp 仍 debug。
+            PolicyDecision::NoOp { reason } if reason.contains("manually selected") => {
+                tracing::info!(provider = %snap.provider, reason = %reason, "auto swap held");
             }
             PolicyDecision::NoOp { .. } => {}
         }
@@ -610,6 +615,7 @@ mod tests {
             threshold: 0.98,
             allow_unknown: false,
             settle_grace_ms: 0,
+            manual_hold_ms: 0,
         };
 
         assert!(matches!(

@@ -193,8 +193,8 @@ async fn sync_local_active(ctx: &AppContext) -> Vec<AutoLine> {
     if let Ok(id) = ctx.claude.live_account_id() {
         match ctx.claude.import_active(None) {
             Ok(account) => {
-                if let Err(e) = ctx.registry.set_active("claude", &account.id) {
-                    tracing::debug!(err=%e, "skip claude active marker");
+                if ctx.registry.set_active("claude", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "claude", &account.id);
                 }
             }
             Err(e) => notices.push(signed_in_but_untracked("claude", &id, e)),
@@ -203,8 +203,8 @@ async fn sync_local_active(ctx: &AppContext) -> Vec<AutoLine> {
     if let Ok(id) = ctx.codex.live_account_id() {
         match ctx.codex.sync_active_metadata(None) {
             Ok(account) => {
-                if let Err(e) = ctx.registry.set_active("codex", &account.id) {
-                    tracing::debug!(err=%e, "skip codex active marker");
+                if ctx.registry.set_active("codex", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "codex", &account.id);
                 }
             }
             Err(e) => notices.push(signed_in_but_untracked("codex", &id, e)),
@@ -213,8 +213,8 @@ async fn sync_local_active(ctx: &AppContext) -> Vec<AutoLine> {
     if let Ok(id) = ctx.kimi.live_account_id() {
         match ctx.kimi.sync_active_metadata(None) {
             Ok(account) => {
-                if let Err(e) = ctx.registry.set_active("kimi", &account.id) {
-                    tracing::debug!(err=%e, "skip kimi active marker");
+                if ctx.registry.set_active("kimi", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "kimi", &account.id);
                 }
             }
             Err(e) => notices.push(signed_in_but_untracked("kimi", &id, e)),
@@ -223,8 +223,8 @@ async fn sync_local_active(ctx: &AppContext) -> Vec<AutoLine> {
     if let Ok(id) = ctx.cursor.live_account_id().await {
         match ctx.cursor.sync_active_metadata(None).await {
             Ok(account) => {
-                if let Err(e) = ctx.registry.set_active("cursor", &account.id) {
-                    tracing::debug!(err=%e, "skip cursor active marker");
+                if ctx.registry.set_active("cursor", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "cursor", &account.id);
                 }
             }
             Err(e) => notices.push(signed_in_but_untracked("cursor", &id, e)),
@@ -233,8 +233,8 @@ async fn sync_local_active(ctx: &AppContext) -> Vec<AutoLine> {
     if let Ok(id) = ctx.opencode.live_account_id() {
         match ctx.opencode.sync_active_metadata(None) {
             Ok(account) => {
-                if let Err(e) = ctx.registry.set_active("opencode", &account.id) {
-                    tracing::debug!(err=%e, "skip opencode active marker");
+                if ctx.registry.set_active("opencode", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "opencode", &account.id);
                 }
             }
             Err(e) => notices.push(signed_in_but_untracked("opencode", &id, e)),
@@ -243,8 +243,8 @@ async fn sync_local_active(ctx: &AppContext) -> Vec<AutoLine> {
     if let Ok(id) = ctx.commandcode.live_account_id() {
         match ctx.commandcode.sync_active_metadata(None) {
             Ok(account) => {
-                if let Err(e) = ctx.registry.set_active("commandcode", &account.id) {
-                    tracing::debug!(err=%e, "skip commandcode active marker");
+                if ctx.registry.set_active("commandcode", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "commandcode", &account.id);
                 }
             }
             Err(e) => notices.push(signed_in_but_untracked("commandcode", &id, e)),
@@ -253,13 +253,35 @@ async fn sync_local_active(ctx: &AppContext) -> Vec<AutoLine> {
     notices
 }
 
+/// 默认入口的 live 对齐只做「标记 active」，不产生切换语义：
+/// 对齐后把新 active 的 `last_used_at` 清零，避免原生客户端里的外部切号
+/// 被 settle-grace 误当成 subswap 刚做的切换而保护起来。
+/// （manual-hold 只认 subswap 自己的 swap/login 写入，不受 last_used_at 影响。）
+fn clear_settled_marker(ctx: &AppContext, provider: &str, id: &subswap_core::AccountId) {
+    let Ok(mut all) = ctx.registry.load() else {
+        return;
+    };
+    let mut touched = false;
+    for a in &mut all {
+        if a.provider == provider && a.id == *id && a.last_used_at.is_some() {
+            a.last_used_at = None;
+            touched = true;
+        }
+    }
+    if touched {
+        if let Err(e) = ctx.registry.save(&all) {
+            tracing::debug!(err=%e, provider=%provider, "clear settled marker failed");
+        }
+    }
+}
+
 async fn sync_local_active_metadata(ctx: &AppContext) -> Vec<AutoLine> {
     let mut notices = Vec::new();
     if let Ok(id) = ctx.claude.live_account_id() {
         match ctx.claude.sync_active_metadata(None) {
             Ok(account) => {
-                if let Err(e) = ctx.registry.set_active("claude", &account.id) {
-                    tracing::debug!(err=%e, "skip claude active marker");
+                if ctx.registry.set_active("claude", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "claude", &account.id);
                 }
             }
             Err(e) => notices.push(signed_in_but_untracked("claude", &id, e)),
@@ -268,8 +290,8 @@ async fn sync_local_active_metadata(ctx: &AppContext) -> Vec<AutoLine> {
     if let Ok(id) = ctx.codex.live_account_id() {
         match ctx.codex.sync_active_metadata(None) {
             Ok(account) => {
-                if let Err(e) = ctx.registry.set_active("codex", &account.id) {
-                    tracing::debug!(err=%e, "skip codex active marker");
+                if ctx.registry.set_active("codex", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "codex", &account.id);
                 }
             }
             Err(e) => notices.push(signed_in_but_untracked("codex", &id, e)),
@@ -278,8 +300,8 @@ async fn sync_local_active_metadata(ctx: &AppContext) -> Vec<AutoLine> {
     if let Ok(id) = ctx.kimi.live_account_id() {
         match ctx.kimi.sync_active_metadata(None) {
             Ok(account) => {
-                if let Err(e) = ctx.registry.set_active("kimi", &account.id) {
-                    tracing::debug!(err=%e, "skip kimi active marker");
+                if ctx.registry.set_active("kimi", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "kimi", &account.id);
                 }
             }
             Err(e) => notices.push(signed_in_but_untracked("kimi", &id, e)),
@@ -288,8 +310,8 @@ async fn sync_local_active_metadata(ctx: &AppContext) -> Vec<AutoLine> {
     if let Ok(id) = ctx.cursor.live_account_id().await {
         match ctx.cursor.sync_active_metadata(None).await {
             Ok(account) => {
-                if let Err(e) = ctx.registry.set_active("cursor", &account.id) {
-                    tracing::debug!(err=%e, "skip cursor active marker");
+                if ctx.registry.set_active("cursor", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "cursor", &account.id);
                 }
             }
             Err(e) => notices.push(signed_in_but_untracked("cursor", &id, e)),
@@ -298,8 +320,8 @@ async fn sync_local_active_metadata(ctx: &AppContext) -> Vec<AutoLine> {
     if let Ok(id) = ctx.opencode.live_account_id() {
         match ctx.opencode.sync_active_metadata(None) {
             Ok(account) => {
-                if let Err(e) = ctx.registry.set_active("opencode", &account.id) {
-                    tracing::debug!(err=%e, "skip opencode active marker");
+                if ctx.registry.set_active("opencode", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "opencode", &account.id);
                 }
             }
             Err(e) => notices.push(signed_in_but_untracked("opencode", &id, e)),
@@ -308,8 +330,8 @@ async fn sync_local_active_metadata(ctx: &AppContext) -> Vec<AutoLine> {
     if let Ok(id) = ctx.commandcode.live_account_id() {
         match ctx.commandcode.sync_active_metadata(None) {
             Ok(account) => {
-                if let Err(e) = ctx.registry.set_active("commandcode", &account.id) {
-                    tracing::debug!(err=%e, "skip commandcode active marker");
+                if ctx.registry.set_active("commandcode", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "commandcode", &account.id);
                 }
             }
             Err(e) => notices.push(signed_in_but_untracked("commandcode", &id, e)),
@@ -491,6 +513,16 @@ async fn try_auto_swap_ready_provider(
             return Ok(());
         }
         // 沉默是金。额度可能还在补,下一份回来时会重判,不在此处锁死。
+        // 手动保持是用户显式选择,值得露出一行(默认入口是用户看到保持的唯一地方)。
+        PolicyDecision::NoOp { reason } if reason.contains("manually selected") => {
+            set_auto_line(
+                auto_lines,
+                provider,
+                format!("auto: held ({reason})"),
+                AutoLineKind::Info,
+            );
+            return Ok(());
+        }
         PolicyDecision::NoOp { .. } => return Ok(()),
     };
 
@@ -809,6 +841,7 @@ mod tests {
             threshold: 0.98,
             allow_unknown: false,
             settle_grace_ms: 60_000,
+            manual_hold_ms: 0,
         };
         let tmp = tempfile::tempdir().unwrap();
         let audit = AuditLog::new(tmp.path().join("audit.log"));
@@ -956,6 +989,7 @@ mod tests {
             threshold: 0.98,
             allow_unknown: false,
             settle_grace_ms: 60_000,
+            manual_hold_ms: 0,
         };
         let tmp = tempfile::tempdir().unwrap();
         let audit = AuditLog::new(tmp.path().join("audit.log"));
@@ -1047,6 +1081,7 @@ mod tests {
             allow_unknown: false,
             // 关闭沉淀宽限:否则切到 escape(Failed)后会被 settle-grace 拦住升级。
             settle_grace_ms: 0,
+            manual_hold_ms: 0,
         };
         let tmp = tempfile::tempdir().unwrap();
         let audit = AuditLog::new(tmp.path().join("audit.log"));
