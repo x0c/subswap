@@ -204,7 +204,8 @@ mod tests {
 
     #[test]
     fn exceeded_is_full() {
-        let body = r#"{"windowLimits":{"fiveHour":{"used":1,"cap":3,"exceeded":true,"resetAt":1}}}"#;
+        let body =
+            r#"{"windowLimits":{"fiveHour":{"used":1,"cap":3,"exceeded":true,"resetAt":1}}}"#;
         let q = parse_credits(body, "commandcode", &AccountId("x".into()));
         assert_eq!(q[0].used, 100);
         assert_eq!(q[0].status, QuotaStatus::Exhausted);
@@ -325,7 +326,10 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_429_is_not_authentication_failure() {
-        let server = MockServer::start(vec![("429 Too Many Requests", r#"{"error":"rate_limited"}"#)]);
+        let server = MockServer::start(vec![(
+            "429 Too Many Requests",
+            r#"{"error":"rate_limited"}"#,
+        )]);
         let err = fetch_quota_at("cc-live", &sample_account(), server.base_url())
             .await
             .unwrap_err();
