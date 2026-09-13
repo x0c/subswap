@@ -13,6 +13,8 @@
 - 适用窗口：只看小时级（当前可可靠识别 `FiveHour`）。Claude 7d、Codex 月度、OpenCode weekly/monthly 等长窗口即使接近阈值也不触发。OpenCode `rolling`（约 5 小时）映射为 `FiveHour`，走阈值触发。
 - 硬阻断：对 **Claude / Codex 等叠加上限**，任一参与自动切换的窗口 `Exhausted` 即触发/阻断。
   **Cursor 例外**：`1st`、**Credits**、**API** 是并行可用池——任一池仍有余量即可承接；
+  全部耗尽才切（`cursor_parallel_pools` 要求 `provider == "cursor"`）。其它 provider
+  （如 Command Code）即使发出 `Credits` 窗口，仍按叠加语义处理。
   仅当所有池都耗尽才触发/阻断。因此「全员 1st 见底、某号 API 仍有 10%」必须切到该号，
   **禁止**按重置时间优先挑全空号。反过来：`1st` 仍有余量时，也不要因 API 耗尽就切走
   （见 2026-08-21）。实现见 `auto_policy` 的 `cursor_parallel_pools`。

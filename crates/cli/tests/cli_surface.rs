@@ -28,6 +28,8 @@ fn isolated_subswap(tmp: &tempfile::TempDir) -> Command {
         .env("KIMI_CODE_HOME", tmp.path().join("kimi"))
         // 隔离测试专用一次性目录，绝不碰真实 `~/.local/share/opencode/auth.json`。
         .env("SUBSWAP_OPENCODE_HOME", tmp.path().join("opencode"))
+        // 隔离测试专用一次性目录，绝不碰真实 `~/.commandcode/auth.json`。
+        .env("SUBSWAP_COMMANDCODE_HOME", tmp.path().join("commandcode"))
         // Cursor 的平台默认路径不受 HOME/SUBSWAP_HOME 统一覆盖，必须显式指向临时目录。
         .env(
             "SUBSWAP_CURSOR_STATE_DB_PATH",
@@ -846,6 +848,157 @@ fn default_entry_does_not_auto_swap_opencode_to_401_key() {
     let live: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&auth).unwrap()).unwrap();
     assert_eq!(live["opencode-go"]["key"], OPENCODE_EXHAUSTED_KEY);
+}
+
+#[test]
+fn login_commandcode_imports_api_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_fast_quota_timeout(&tmp);
+
+    let stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["login", "commandcode", "--", "cc-test-key-1234"])
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        stdout.contains("login → commandcode/cc-"),
+        "expected imported Command Code account, got: {stdout}"
+    );
+
+    let auth = tmp.path().join("commandcode").join("auth.json");
+    let live: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&auth).unwrap()).unwrap();
+    assert_eq!(live["apiKey"], "cc-test-key-1234");
+}
+
+#[test]
+fn run_commandcode_unknown_account_reports_not_found() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = isolated_subswap(&tmp)
+        .args(["run", "commandcode", "ghost-cc"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("account not found"),
+        "expected account-not-found error, got: {stderr}"
+    );
+}
+
+fn login_commandcode_key(tmp: &tempfile::TempDir, key: &str) -> String {
+    let stdout = assert_success(
+        isolated_subswap(tmp)
+            .args(["login", "commandcode", "--", key])
+            .output()
+            .unwrap(),
+    );
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("login → commandcode/"))
+        .unwrap_or_else(|| panic!("missing commandcode login id in: {stdout}"))
+        .to_string()
+}
+
+const COMMANDCODE_EXHAUSTED_KEY: &str = "cc-test-exhausted-0000";
+const COMMANDCODE_HEALTHY_KEY: &str = "cc-test-healthy-9999";
+const COMMANDCODE_DEAD_KEY: &str = "cc-test-deadkey-1111";
+const COMMANDCODE_EXHAUSTED_CREDITS: &str = r#"{"credits":{"monthlyCredits":0,"purchasedCredits":0,"freeCredits":0},"windowLimits":{"fiveHour":{"used":3,"cap":3,"exceeded":true,"resetAt":1786775976124},"weekly":{"used":1,"cap":6,"exceeded":false,"resetAt":1787310657649}}}"#;
+const COMMANDCODE_HEALTHY_CREDITS: &str = r#"{"credits":{"monthlyCredits":8.68,"purchasedCredits":0,"freeCredits":0},"windowLimits":{"fiveHour":{"used":0.12,"cap":3,"exceeded":false,"resetAt":1786775976124},"weekly":{"used":1.32,"cap":6,"exceeded":false,"resetAt":1787310657649}}}"#;
+
+#[test]
+fn default_entry_auto_swaps_exhausted_commandcode() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_fast_quota_timeout(&tmp);
+    let exhausted_id = login_commandcode_key(&tmp, COMMANDCODE_EXHAUSTED_KEY);
+    let healthy_id = login_commandcode_key(&tmp, COMMANDCODE_HEALTHY_KEY);
+    assert_ne!(exhausted_id, healthy_id);
+
+    assert_success(
+        isolated_subswap(&tmp)
+            .args(["swap", &format!("commandcode/{exhausted_id}")])
+            .output()
+            .unwrap(),
+    );
+
+    let mut bodies = HashMap::new();
+    bodies.insert(
+        COMMANDCODE_EXHAUSTED_KEY.to_string(),
+        (200_u16, COMMANDCODE_EXHAUSTED_CREDITS.to_string()),
+    );
+    bodies.insert(
+        COMMANDCODE_HEALTHY_KEY.to_string(),
+        (200, COMMANDCODE_HEALTHY_CREDITS.to_string()),
+    );
+    let server = KeyedUsageServer::start(bodies);
+
+    write(
+        &app_config_dir(&tmp).join("config.toml"),
+        "[quota]\nmin_refresh_interval_ms = 0\nfetch_retries = 0\n",
+    );
+
+    let stdout = assert_success(
+        isolated_subswap(&tmp)
+            .env("SUBSWAP_COMMANDCODE_BASE", server.base_url())
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        stdout.contains("auto: swapped to cc-…9999"),
+        "exhausted Command Code 5h window must auto-swap to the healthy key: {stdout}"
+    );
+
+    let auth = tmp.path().join("commandcode").join("auth.json");
+    let live: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&auth).unwrap()).unwrap();
+    assert_eq!(live["apiKey"], COMMANDCODE_HEALTHY_KEY);
+}
+
+#[test]
+fn default_entry_does_not_auto_swap_commandcode_to_401_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_fast_quota_timeout(&tmp);
+    let exhausted_id = login_commandcode_key(&tmp, COMMANDCODE_EXHAUSTED_KEY);
+    let _dead_id = login_commandcode_key(&tmp, COMMANDCODE_DEAD_KEY);
+    assert_success(
+        isolated_subswap(&tmp)
+            .args(["swap", &format!("commandcode/{exhausted_id}")])
+            .output()
+            .unwrap(),
+    );
+
+    let mut bodies = HashMap::new();
+    bodies.insert(
+        COMMANDCODE_EXHAUSTED_KEY.to_string(),
+        (200_u16, COMMANDCODE_EXHAUSTED_CREDITS.to_string()),
+    );
+    bodies.insert(
+        COMMANDCODE_DEAD_KEY.to_string(),
+        (401, r#"{"error":"invalid_api_key"}"#.into()),
+    );
+    let server = KeyedUsageServer::start(bodies);
+
+    write(
+        &app_config_dir(&tmp).join("config.toml"),
+        "[quota]\nmin_refresh_interval_ms = 0\nfetch_retries = 0\n",
+    );
+
+    let stdout = assert_success(
+        isolated_subswap(&tmp)
+            .env("SUBSWAP_COMMANDCODE_BASE", server.base_url())
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        !stdout.contains("auto: swapped"),
+        "401 Command Code key must not become an auto-swap target: {stdout}"
+    );
+
+    let auth = tmp.path().join("commandcode").join("auth.json");
+    let live: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&auth).unwrap()).unwrap();
+    assert_eq!(live["apiKey"], COMMANDCODE_EXHAUSTED_KEY);
 }
 
 /// 按 Bearer API key 返回不同 `/usage` 响应；并发可重入，供默认入口同时查多个账号。

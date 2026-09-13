@@ -129,6 +129,41 @@ pub async fn run(
             println!("login → opencode/{}", account_ref(&account.id.0));
             return finish(ctx, json).await;
         }
+        "commandcode" | "command-code" | "cmd" => {
+            if email.is_some() || sso || device_auth {
+                bail!("--email/--sso/--device-auth are not supported for commandcode login");
+            }
+            let account = if let Some(key) = extra_args
+                .first()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                let blob = subswap_provider_commandcode::blob_from_key(key);
+                let account = ctx
+                    .commandcode
+                    .import_raw(blob, None, Some(true))
+                    .context("import Command Code API key")?;
+                ctx.commandcode
+                    .activate(&account.id)
+                    .await
+                    .context("write Command Code key into auth.json")?;
+                account
+            } else {
+                ctx.commandcode.import_active(None).context(
+                    "import Command Code login; run `command-code login` or pass the API key after `--`",
+                )?
+            };
+            ctx.registry
+                .set_active("commandcode", &account.id)
+                .context("mark Command Code login active")?;
+            ctx.audit.append(AuditEvent::ok(
+                "login",
+                "commandcode",
+                Some(account.id.0.as_str()),
+            ));
+            println!("login → commandcode/{}", account_ref(&account.id.0));
+            return finish(ctx, json).await;
+        }
         "cursor" => {
             if email.is_some() || sso || device_auth || !extra_args.is_empty() {
                 bail!("login options are not supported for cursor login");
@@ -147,7 +182,7 @@ pub async fn run(
             return finish(ctx, json).await;
         }
         other => {
-            bail!("unknown provider: {other} (expected claude, codex, kimi, cursor or opencode)")
+            bail!("unknown provider: {other} (expected claude, codex, kimi, cursor, opencode or commandcode)")
         }
     }
 }

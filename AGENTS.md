@@ -144,6 +144,7 @@ crates/providers/codex/   Codex / ChatGPT Provider（adapter，跑在 common 引
 crates/providers/claude/  Claude / Anthropic Provider（keychain 特化，独立于 common 引擎）
 crates/providers/kimi/    Kimi / Moonshot Provider（adapter，跑在 common 引擎上）
 crates/providers/opencode/ OpenCode Go Provider（adapter，跑在 common 引擎上；只改 auth.json 的 opencode-go 项）
+crates/providers/commandcode/ Command Code Provider（adapter，跑在 common 引擎上；切 ~/.commandcode/auth.json）
 crates/providers/cursor/  Cursor Provider（SQLite + GUI 生命周期特化，独立于 common 引擎）
 docs/                     中文项目文档
 ```
@@ -152,7 +153,7 @@ docs/                     中文项目文档
 
 | 文档 | 用途 |
 |---|---|
-| [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) | 改、评审、分析或排查 Provider 切换、认证、额度、refresh token、自定义 API、Claude/Codex/Kimi/Cursor/OpenCode Go 本地激活状态、**Codex 切号后须重启才生效 / 官方不热读 auth.json / 禁止依赖热补丁**、OpenCode 号池（登录文件切换 vs 请求途中换 key）、原生客户端并发协调、文件型 OAuth 切换共享引擎（`crates/providers/common`）、或排查 Cursor **缺 Credits/`$` 列**（是否没余额）前**必读**。不读会把社区「号池限流当场换 key」误做成只改本地登录文件、把「切了不生效」误修成「没做 Codex 自动切号」，或把「无赠送不画列」误修成硬显示 `$0.00` |
+| [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) | 改、评审、分析或排查 Provider 切换、认证、额度、refresh token、自定义 API、Claude/Codex/Kimi/Cursor/OpenCode Go/Command Code 本地激活状态、**Codex 切号后须重启才生效 / 官方不热读 auth.json / 禁止依赖热补丁**、OpenCode 号池（登录文件切换 vs 请求途中换 key）、Command Code `/alpha/billing/credits`（undocumented，API Key 鉴权）、原生客户端并发协调、文件型 OAuth 切换共享引擎（`crates/providers/common`）、或排查 Cursor **缺 Credits/`$` 列**（是否没余额）前**必读**。不读会把社区「号池限流当场换 key」误做成只改本地登录文件、把「切了不生效」误修成「没做 Codex 自动切号」，或把「无赠送不画列」误修成硬显示 `$0.00` |
 | [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) | 改、评审或分析 workspace 分层、Provider 抽象、核心数据流、凭证文件布局、新 Provider 接入前**必读**。不读会把新 Provider 塞错引擎（文件型 vs keychain/SQLite 特化）或改坏激活/回滚边界 |
 | [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md) | 改、评审或排查自动切换候选筛选、阈值、manual_only、防抖/振荡刹车、daemon token 保活，或排查「默认入口渐进式重判 / 一次 subswap 多次切换 / 连跑结果不同 / 卡在耗尽号 / **Codex 已自动切但客户端仍旧号 / macOS 未拉 daemon 像没自动切** / 自动切到 0% 号（Cursor 1st 还有余量却切到全空） / Cursor 全员 1st 见底却切到全空号放过 API 余量 / Cursor 1st·Credits·API 三池并行 / 账号间无限横跳(A→B→A 振荡)」前**必读**。不读会改错候选窗或阈值语义，把可切号切成卡死/横跳，或把 Codex 客户端不热读误判成自动切未实现 |
 | [docs/design/PREWARM_DESIGN.md](docs/design/PREWARM_DESIGN.md) | 设计、评审或实现窗口预热、预热阈值、预热通知与自动切换协同时**必读**。不读会把预热做成高频打额度或与 AutoSwap 抢触发 |

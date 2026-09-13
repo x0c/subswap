@@ -32,6 +32,7 @@ use subswap_provider_claude::ClaudeProvider;
 use subswap_provider_codex::CodexProvider;
 use subswap_provider_cursor::CursorProvider;
 use subswap_provider_kimi::KimiProvider;
+use subswap_provider_commandcode::CommandcodeProvider;
 use subswap_provider_opencode::OpencodeProvider;
 use tokio::signal::unix::{signal, SignalKind};
 
@@ -78,12 +79,17 @@ pub async fn run() -> Result<()> {
         store.clone(),
         registry.clone(),
     ));
+    let commandcode = Arc::new(subswap_provider_commandcode::new(
+        store.clone(),
+        registry.clone(),
+    ));
     let mut providers = ProviderRegistry::new();
     providers.register(claude.clone());
     providers.register(codex.clone());
     providers.register(kimi.clone());
     providers.register(cursor.clone());
     providers.register(opencode.clone());
+    providers.register(commandcode.clone());
 
     let mut state = DaemonState::new();
 
@@ -111,6 +117,7 @@ pub async fn run() -> Result<()> {
             &kimi,
             &cursor,
             &opencode,
+            &commandcode,
             &audit,
             &mut state,
             &policy,
@@ -157,6 +164,7 @@ async fn run_cycle(
     kimi: &Arc<KimiProvider>,
     cursor: &Arc<CursorProvider>,
     opencode: &Arc<OpencodeProvider>,
+    commandcode: &Arc<CommandcodeProvider>,
     audit: &AuditLog,
     state: &mut DaemonState,
     policy: &PolicyConfig,
@@ -174,6 +182,7 @@ async fn run_cycle(
     reconcile_file_blob_provider(codex, "codex").await;
     reconcile_file_blob_provider(kimi, "kimi").await;
     reconcile_file_blob_provider(opencode, "opencode").await;
+    reconcile_file_blob_provider(commandcode, "commandcode").await;
     // Cursor 只有一份 live 凭证。此处必须在读额度前先将外部新登录账号入池；失败时
     // 本轮禁止覆盖 Cursor，避免旧账号池把用户刚完成的原生登录写回去。
     let cursor_sync_ready = match cursor.reconcile_active_from_live().await {

@@ -92,6 +92,7 @@ cargo install --git https://github.com/x0c/subswap --path crates/cli
 | Kimi / Moonshot | Kimi Code (`~/.kimi-code`) | OAuth 자격 증명, 활성 계정, 5h / 7d 사용량 |
 | Cursor | Cursor desktop (`state.vscdb`) | 계정 전환, First-Party Models / API 사용률, 결제 주기 reset |
 | OpenCode Go | OpenCode (`~/.local/share/opencode/auth.json`) | `opencode-go` API key만 전환(같은 파일의 다른 provider는 유지), 5h / 주 / 월 quota |
+| Command Code | Command Code (`~/.commandcode/auth.json`) | API key, 5h / 주 / `$` credits (`/alpha/billing/credits`) |
 
 ## 일반적인 사용 사례
 
@@ -155,6 +156,7 @@ subswap swap deepseek
 subswap login kimi
 subswap login cursor
 subswap login opencode
+subswap login commandcode
 
 # 글로벌 활성 계정을 변경하지 않고 격리 환경에서 계정 사용
 subswap run codex bob@example.com -- --version   # bob 계정으로 codex 격리 실행
@@ -206,7 +208,7 @@ eval "$(subswap env codex/bob@x.com)"  # 현재 셸을 임시로 codex 계정에
 
 | 도구 | 초점 | 차이점 |
 |---|---|---|
-| 단일 Provider 계정 전환 도구 | 한 번에 하나의 upstream | subswap은 Claude, Codex / ChatGPT, Kimi, Cursor, OpenCode Go를 지원 |
+| 단일 Provider 계정 전환 도구 | 한 번에 하나의 upstream | subswap은 Claude, Codex / ChatGPT, Kimi, Cursor, OpenCode Go, Command Code를 지원 |
 | quota dashboard | 사용량 표시만 제공 | subswap은 quota window가 가득 찼을 때 다른 로컬 계정을 활성화할 수도 있음 |
 | 수동 로그인/로그아웃 | 한 번에 한 계정 | subswap은 등록 계정을 보관하고 활성 로컬 파일을 원자적으로 전환 |
 
@@ -226,7 +228,7 @@ token과 refresh token은 앱 데이터 디렉터리의 자격 증명 파일에 
 
 ### Claude / Codex 전용인가요?
 
-아니요. Claude / Anthropic, Codex / ChatGPT, Kimi / Moonshot, Cursor, OpenCode Go를 지원합니다.
+아니요. Claude / Anthropic, Codex / ChatGPT, Kimi / Moonshot, Cursor, OpenCode Go, Command Code를 지원합니다.
 
 ### Windows에서 동작하나요?
 

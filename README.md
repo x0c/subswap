@@ -66,9 +66,9 @@ Prefer Homebrew or a release asset for normal use.
 ## What you can do
 
 - **Keep work, personal, and client accounts separate** — switch Claude Code, ChatGPT, Codex, and Cursor without logging out and back in.
-- **See remaining headroom** — Claude, Codex, Kimi, Cursor, and OpenCode quota windows in one list.
+- **See remaining headroom** — Claude, Codex, Kimi, Cursor, OpenCode, and Command Code quota windows in one list.
 - **Switch offline when you must** — manual `swap` never waits on a network or quota API; auto-swap is optional.
-- **Run a second account in parallel when it is safe** — Claude, Codex, Kimi, and OpenCode isolation without changing the global active login.
+- **Run a second account in parallel when it is safe** — Claude, Codex, Kimi, OpenCode, and Command Code isolation without changing the global active login.
 - **Cursor on the desktop** — import, switch, and quota; Cursor does not support isolated `run` / `shell` / `env`.
 
 ## First use
@@ -88,6 +88,7 @@ subswap swap 2         # use a number from your list
 subswap login kimi
 subswap login cursor
 subswap login opencode
+subswap login commandcode
 subswap login claude
 subswap login codex
 
@@ -111,6 +112,7 @@ eval "$(subswap env codex/bob@example.com)"
 | Kimi Code | Yes | Yes | Yes | Sign in with the native client, then import. |
 | Cursor desktop | Yes | Yes | No | Switching coordinates a desktop-app restart and its SQLite state. |
 | OpenCode Go | Yes | Yes | Yes | Only the `opencode-go` entry is changed; other entries stay untouched. |
+| Command Code | Yes | Yes | Yes | Switches `~/.commandcode/auth.json`; quota via `/alpha/billing/credits`. |
 
 The CLI is tested in CI on macOS, Linux, and Windows. The background daemon is Unix-only: it auto-starts on Linux, requires explicit opt-in on macOS, and is unavailable on Windows.
 
@@ -159,7 +161,7 @@ Not completely. Cursor supports import, switching, and quota status, but not `ru
 
 ### Is this only for Claude or Codex?
 
-No. Claude Code, Codex / ChatGPT, Kimi Code, Cursor, and OpenCode Go are supported today.
+No. Claude Code, Codex / ChatGPT, Kimi Code, Cursor, OpenCode Go, and Command Code are supported today.
 
 ## Contributing and security
 
