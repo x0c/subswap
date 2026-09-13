@@ -24,6 +24,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: homebrew-formula-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   update-formula:
     name: update homebrew-tap formula
@@ -50,11 +54,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VER="${TAG#v}"
-          sha() { awk '{print $1}' "$1.sha256"; }
 
           python3 - <<PYEOF
-          import base64, json, os, urllib.request
+          import base64, json, os, re, time, urllib.error, urllib.request
 
           tag = os.environ["TAG"]
           ver = tag.lstrip("v")
@@ -113,21 +115,48 @@ jobs:
               "Authorization": f"Bearer {token}",
               "Content-Type": "application/json",
               "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
           }
 
-          # 获取当前文件 SHA
-          req = urllib.request.Request(api, headers=headers)
-          with urllib.request.urlopen(req) as r:
-              file_sha = json.loads(r.read())["sha"]
+          def version_tuple(value):
+              match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", value)
+              if not match:
+                  raise ValueError(f"unsupported formula version: {value!r}")
+              return tuple(int(part) for part in match.groups())
 
-          # 推送新版本
-          payload = json.dumps({
-              "message": f"chore: bump subswap to {tag}",
-              "content": base64.b64encode(formula.encode()).decode(),
-              "sha": file_sha,
-          }).encode()
-          req = urllib.request.Request(api, data=payload, headers=headers, method="PUT")
-          with urllib.request.urlopen(req) as r:
-              commit = json.loads(r.read())["commit"]["sha"]
-          print(f"Formula updated to {tag} (commit {commit})")
+          for attempt in range(5):
+              request = urllib.request.Request(api, headers=headers)
+              with urllib.request.urlopen(request) as response:
+                  current = json.loads(response.read())
+
+              current_formula = base64.b64decode(current["content"]).decode()
+              match = re.search(r'^\s*version "([^"]+)"', current_formula, re.MULTILINE)
+              if not match:
+                  raise RuntimeError("current Homebrew formula has no version")
+
+              current_version = match.group(1)
+              if version_tuple(current_version) > version_tuple(ver):
+                  print(f"Formula already points to newer v{current_version}; skip {tag}")
+                  break
+              if current_version == ver and current_formula == formula:
+                  print(f"Formula already points to {tag}")
+                  break
+
+              payload = json.dumps({
+                  "message": f"chore: bump subswap to {tag}",
+                  "content": base64.b64encode(formula.encode()).decode(),
+                  "sha": current["sha"],
+              }).encode()
+              request = urllib.request.Request(api, data=payload, headers=headers, method="PUT")
+              try:
+                  with urllib.request.urlopen(request) as response:
+                      commit = json.loads(response.read())["commit"]["sha"]
+                  print(f"Formula updated to {tag} (commit {commit})")
+                  break
+              except urllib.error.HTTPError as error:
+                  if error.code != 409 or attempt == 4:
+                      raise
+                  delay = 2 ** attempt
+                  print(f"Formula changed concurrently; retrying in {delay}s")
+                  time.sleep(delay)
           PYEOF
