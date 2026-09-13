@@ -206,7 +206,17 @@ struct AppServerSession {
 
 impl AppServerSession {
     fn spawn(mut command: Command) -> Result<Self> {
-        let mut child = command.spawn().context("start Codex app-server")?;
+        let mut attempt = 0u64;
+        let mut child = loop {
+            match command.spawn() {
+                Ok(child) => break child,
+                Err(error) if executable_file_busy(&error) && attempt < 2 => {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(attempt * 10));
+                }
+                Err(error) => return Err(error).context("start Codex app-server"),
+            }
+        };
         let stdin = child.stdin.take().context("open Codex app-server stdin")?;
         let stdout = child
             .stdout
@@ -300,6 +310,18 @@ impl AppServerSession {
             let _ = self.child.wait().await;
         }
     }
+}
+
+#[cfg(unix)]
+fn executable_file_busy(error: &std::io::Error) -> bool {
+    // Linux may briefly reject exec while an upgraded binary or a freshly
+    // written test fixture is still being closed by the filesystem.
+    error.raw_os_error() == Some(26)
+}
+
+#[cfg(not(unix))]
+fn executable_file_busy(_error: &std::io::Error) -> bool {
+    false
 }
 
 type RpcResult<T> = std::result::Result<T, RpcFailure>;
