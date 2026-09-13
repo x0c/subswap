@@ -5,10 +5,10 @@
 | `subswap` | 默认入口：扫本地自动 import → 立即显示账号骨架 → quota 渐进刷新 → 单 Provider 就绪即做 AutoSwap 决策 → 最终状态；同时 best-effort 拉起 `subswapd`（用户无感） |
 | `subswap add-api` | 交互式登记 Claude Code 兼容 API；DeepSeek / Kimi 预设只需输入名称与隐藏 API Key；保存后不自动激活 |
 | `subswap login <claude\|codex>` | 调用官方 CLI 登录流程，完成后导入/覆盖当前登录账号并标记为 active |
-| `subswap login <kimi\|cursor\|opencode>` | **不驱动登录**：用户先在对应客户端登录（OpenCode 也可把 API key 写在 `--` 后面），本命令只导入当前状态并标记为 active |
+| `subswap login <kimi\|cursor\|opencode\|commandcode>` | **不驱动登录**：用户先在对应客户端登录（OpenCode / Command Code 也可把 API key 写在 `--` 后面），本命令只导入当前状态并标记为 active |
 | `subswap swap [<id\|N>]` | 手动切换；`<id>` 用 id/label/`<provider>/<id>`，`<N>` 用默认入口列出的全局序号。无参只打印编号清单（不查 quota） |
 | `subswap rm <id\|N>` | 删除账号（registry + keyring），引用形式同 `swap`。显式删过的号打开列表不会自动加回；没删过的当前登录仍会自动收入。要重新纳入已删的号，用对应 provider 的 `login` |
-| `subswap run <provider> <id> [-- args]` | 账号隔离启动：把该账号凭证投影到私有目录，设隔离环境变量后启动原生 CLI（codex/claude/kimi/opencode），**不动全局活账号**；退出时吸收轮换后的凭证。Cursor 不支持此模式 |
+| `subswap run <provider> <id> [-- args]` | 账号隔离启动：把该账号凭证投影到私有目录，设隔离环境变量后启动原生 CLI（codex/claude/kimi/opencode/commandcode），**不动全局活账号**；退出时吸收轮换后的凭证。Cursor 不支持此模式 |
 | `subswap shell <id>` | 起一个导出好隔离环境变量的子 shell，交互里连跑多条命令；provider 从账号推断；退出时吸收凭证 |
 | `subswap env <id>` | 打印 `export` 行供 `eval`。**注意**：eval 模式不持锁、退出后不吸收凭证，仅供临时短用 |
 | `subswap doctor` | 环境自检 |
@@ -62,6 +62,10 @@ eval "$(subswap env codex/bob@x.com)"   # 临时把当前 shell 指向某 codex 
 ## OpenCode Go
 
 `subswap login opencode` 不驱动官方登录：先在 OpenCode TUI `/connect` 粘贴 Go 订阅 key，或把 key 写在 `--` 后面直接导入。切换时只改 `auth.json` 里的 `opencode-go` 项，同文件其它供应商（如 openai / anthropic）原样保留。5 小时滚动窗口走自动换号阈值；周 / 月窗口只在明确耗尽时触发。隔离运行同时设 `XDG_DATA_HOME` 与 `OPENCODE_AUTH_CONTENT`。
+
+## Command Code
+
+`subswap login commandcode` 不驱动官方登录：先 `command-code login`，或把 API key 写在 `--` 后面直接导入（别名 `command-code` / `cmd`）。切换覆盖 `~/.commandcode/auth.json`。额度走 undocumented `GET /alpha/billing/credits`（与官方 CLI `/usage` 同源，Bearer API key，**不用** Web Cookie 的 `/internal/usage`）：5h / weekly 百分比窗口 + `$` 余量（monthly+purchased+free）。5 小时滚动窗口走自动换号阈值；周 / Credits 只在明确耗尽时触发。隔离运行设 `HOME`（物化 `.commandcode/auth.json`）并注入 `COMMANDCODE_API_KEY`。
 
 ## Cursor
 

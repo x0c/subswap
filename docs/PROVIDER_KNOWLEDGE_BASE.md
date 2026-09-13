@@ -444,6 +444,57 @@ Go 订阅 = API key（`{"type":"api","key":"sk-..."}`），无 refresh，不刷�
 
 ---
 
+## Command Code
+
+共享引擎第四个文件型 provider：`crates/providers/commandcode/`。
+官方 `~/.commandcode/auth.json` 只服务 Command Code；subswap 导入时归一成 `{"type":"api","key":...}`，激活写回 `{"apiKey":...}`（官方 CLI / 第三方都能读）。无 refresh，不刷新。
+
+### 本地凭证路径
+
+| 项 | 值 |
+|---|---|
+| 工作目录 | `SUBSWAP_COMMANDCODE_HOME` > `~/.commandcode` |
+| 当前激活凭证 | `<home>/auth.json` |
+| live 形态 | 优先 `apiKey`；也认 `commandcode` / `command-code` 槽或 OAuth `access` |
+
+### 主键与展示名
+
+- `primary_id` / `dedup_key` = `cc-` + API key SHA-256 前 16 hex
+- `label` = `cc-…` + 末 4 位
+- store 存归一化条目 JSON
+
+### Usage 端点与窗口映射
+
+| 用途 | 方法 | URL |
+|---|---|---|
+| 用量查询 | GET | `{SUBSWAP_COMMANDCODE_BASE:-https://api.commandcode.ai}/alpha/billing/credits` |
+
+- `Authorization: Bearer <api_key>`；`User-Agent: subswap/<version>`
+- **undocumented `/alpha/*`**：官方 CLI `/usage` 在用，但未进公开 Provider API 契约；解析必须宽容。禁止改走需 Web Cookie 的 `/internal/usage`
+- 响应：
+  - `windowLimits.fiveHour` / `weekly`：`used`/`cap` 为美元 → 已用% = `used/cap*100`（`exceeded:true` → 100%）；`resetAt` 为 epoch **毫秒**
+  - `credits.monthlyCredits` + `purchasedCredits` + `freeCredits`：余量美元之和 → `QuotaWindow::Credits`（存分）；未知套餐总额时有余量 `used=0/limit=remaining_cents`，耗尽 `1/1`
+- 窗口：`fiveHour` → 5h，`weekly` → 7d，credits → `$`
+- `401` / `403` = key 无效（需重新导入）；**不得**把 `429` 当 key 作废
+- 自动换号：5h 过默认阈值切走；7d / Credits 只在明确耗尽时触发。Credits **不**进 Cursor 并行池（`cursor_parallel_pools` 要求 `provider == "cursor"`）
+- 测试：`SUBSWAP_COMMANDCODE_BASE` → mock
+
+### 隔离运行
+
+官方 CLI 用 `homedir()/.commandcode/auth.json`。隔离：
+
+1. `HOME` → 私有目录，合成 `auth.json` 写到 `<env>/.commandcode/auth.json`
+2. `COMMANDCODE_API_KEY` = 同一把 key（给只读环境变量的工具）
+
+### 登录方式
+
+- `subswap login commandcode`：从 live `auth.json` 导入（用户先 `command-code login`）
+- `subswap login commandcode -- <api-key>`：直接导入并写回 live
+- 别名：`command-code` / `cmd`
+- `--email` / `--sso` / `--device-auth` 不支持
+
+---
+
 ## Cursor
 
 非文件型 JSON Provider：登录在本地客户端存储，切换可能协调 GUI 退出/重启。独立 `Provider`，不接 `crates/providers/common`，不支持 `subswap run/shell/env` 隔离。

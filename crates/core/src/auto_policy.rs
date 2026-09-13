@@ -318,7 +318,7 @@ fn account_needs_swap(a: &AccountWithQuotas, threshold: f64) -> bool {
         return false;
     }
     // Cursor 的 1st / Credits 并行：任一池仍可用就不必切；全部耗尽才切。
-    if cursor_parallel_pools(&quotas) {
+    if cursor_parallel_pools(&a.account.provider, &quotas) {
         let fivehour_over = quotas
             .iter()
             .any(|q| quota_exceeds_auto_threshold(q, threshold));
@@ -368,7 +368,7 @@ fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: boo
     let no_above_threshold = quotas
         .iter()
         .all(|q| !quota_exceeds_auto_threshold(q, threshold));
-    if cursor_parallel_pools(&quotas) {
+    if cursor_parallel_pools(&a.account.provider, &quotas) {
         let any_usable = quotas
             .iter()
             .any(|q| matches!(q.status, QuotaStatus::Ok | QuotaStatus::Warn));
@@ -415,7 +415,7 @@ fn reset_ready_at(
     }
 
     // Cursor 并行池：只要还有可用窗口，就不走「等重置」兜底。
-    if cursor_parallel_pools(&quotas) {
+    if cursor_parallel_pools(&a.account.provider, &quotas) {
         let any_usable = quotas
             .iter()
             .any(|q| matches!(q.status, QuotaStatus::Ok | QuotaStatus::Warn));
@@ -468,13 +468,16 @@ fn quota_gates_auto_swap(_q: &Quota) -> bool {
 }
 
 /// Cursor：带有 `1st` / Credits / `API` 任一产品池时走并行语义（见 `account_needs_swap`）。
-fn cursor_parallel_pools(quotas: &[&Quota]) -> bool {
-    quotas.iter().any(|q| {
-        matches!(
-            q.window,
-            QuotaWindow::FirstPartyModels | QuotaWindow::Credits | QuotaWindow::Api
-        )
-    })
+/// 必须同时要求 provider 是 cursor——其它 provider（如 Command Code）也可能发出 Credits，
+/// 但应按叠加窗口语义处理，不能误进 Cursor 并行池。
+fn cursor_parallel_pools(provider: &str, quotas: &[&Quota]) -> bool {
+    provider == "cursor"
+        && quotas.iter().any(|q| {
+            matches!(
+                q.window,
+                QuotaWindow::FirstPartyModels | QuotaWindow::Credits | QuotaWindow::Api
+            )
+        })
 }
 
 fn auto_swap_quotas(quotas: &[Quota]) -> impl Iterator<Item = &Quota> {
@@ -1077,8 +1080,10 @@ mod tests {
         reset_days: i64,
     ) -> AccountWithQuotas {
         let reset_at = Some(Utc::now() + chrono::Duration::days(reset_days));
+        let mut account = mk_account(id, active);
+        account.provider = "cursor".into();
         AccountWithQuotas {
-            account: mk_account(id, active),
+            account,
             quotas: vec![
                 mk_quota_with_window(
                     first_used,
@@ -1226,6 +1231,7 @@ mod tests {
     fn cursor_api_only_account_still_swaps_when_api_exhausted() {
         let reset_at = Some(Utc::now() + chrono::Duration::days(19));
         let mut active = mk_awq("api-dead", true, 100, QuotaStatus::Exhausted);
+        active.account.provider = "cursor".into();
         active.quotas = vec![mk_quota_with_window(
             100,
             QuotaStatus::Exhausted,
@@ -1233,6 +1239,7 @@ mod tests {
             reset_at,
         )];
         let mut candidate = mk_awq("api-ok", false, 10, QuotaStatus::Ok);
+        candidate.account.provider = "cursor".into();
         candidate.quotas = vec![mk_quota_with_window(
             10,
             QuotaStatus::Ok,
@@ -1261,7 +1268,7 @@ mod tests {
         let mut account = cursor_account(id, active, first.0, first.1, api.0, api.1, reset_days);
         let reset_at = account.quotas[0].reset_at;
         account.quotas.push(Quota {
-            provider: "test".into(),
+            provider: "cursor".into(),
             account_id: AccountId(id.into()),
             window: QuotaWindow::Credits,
             used: credits.0,

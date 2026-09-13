@@ -25,9 +25,11 @@
 │ providers/codex       │             │ providers/claude        │
 │ providers/kimi        │             │ - keyring + 备份替换    │
 │ providers/opencode    │             │ - Anthropic usage 端点  │
-│ - Codex/Kimi/OpenCode │             │ - 同步 ~/.claude        │
-│   Runtime             │             │ - 自定义 API 账号       │
-│ - 只写差异点：本地路径│             │ - 独立实现，不接 common │
+│ providers/commandcode │             │ - 同步 ~/.claude        │
+│ - Codex/Kimi/OpenCode │             │ - 自定义 API 账号       │
+│   /Command Code       │             │ - 独立实现，不接 common │
+│   Runtime             │             │                         │
+│ - 只写差异点：本地路径│             │                         │
 │   解析/元数据/刷新/   │             │                         │
 │   usage 查询          │             │                         │
 └──────────┬────────────┘             └──────────┬─────────────┘
@@ -58,14 +60,14 @@
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Codex / Kimi / OpenCode Go → `providers/common`（原子写、快照回滚、capture-on-leave、parked-only 刷新、隔离导出/吸收）；各自只实现 `FileBlobRuntime` 差异点。OpenCode 另覆盖 `extract_blob` / `compose_live`（`auth.json` 多供应商共存，只改 `opencode-go` 项）。Claude（Keychain + 自定义 API、无本地凭证文件）与 Cursor（SQLite + GUI 生命周期）独立实现 `Provider`，不接共享引擎。
+Codex / Kimi / OpenCode Go / Command Code → `providers/common`（原子写、快照回滚、capture-on-leave、parked-only 刷新、隔离导出/吸收）；各自只实现 `FileBlobRuntime` 差异点。OpenCode 另覆盖 `extract_blob` / `compose_live`（`auth.json` 多供应商共存，只改 `opencode-go` 项）。Command Code 覆盖 `extract_blob` / `compose_live`（归一多种 live 形态，激活写 `apiKey`）。Claude（Keychain + 自定义 API、无本地凭证文件）与 Cursor（SQLite + GUI 生命周期）独立实现 `Provider`，不接共享引擎。
 
 ## 2. 设计模式
 
 | 模式 | 落地位置 | 作用 |
 |---|---|---|
 | Strategy + Factory | `Provider` trait + `ProviderRegistry` | 多 Provider 多策略，新增 = 加一行注册 |
-| Adapter | `providers/codex`、`providers/kimi`、`providers/opencode` | 各自实现 `FileBlobRuntime`，把本地路径/元数据/刷新/usage 查询的差异适配进 `providers/common` 共享引擎；Claude/Cursor 直接实现 `Provider` trait，不属于这个 Adapter 关系 |
+| Adapter | `providers/codex`、`providers/kimi`、`providers/opencode`、`providers/commandcode` | 各自实现 `FileBlobRuntime`，把本地路径/元数据/刷新/usage 查询的差异适配进 `providers/common` 共享引擎；Claude/Cursor 直接实现 `Provider` trait，不属于这个 Adapter 关系 |
 | Repository | `CredentialStore` trait + `FileStore` / `KeyringStore` | 默认私有文件仓库；旧 keyring 只作懒迁移源 |
 | Observer | M4 的 `UsageMonitor` → `AutoSwapPolicy` | 周期采样触发自动切换 |
 | Chain of Responsibility | M4 的 `AutoSwapPolicy` 内部 | 阈值 → 限流 → 候选筛选 → 选优 |
@@ -76,7 +78,7 @@ Codex / Kimi / OpenCode Go → `providers/common`（原子写、快照回滚、c
 
 ```
 ① sync_local_active
-   └─ claude/codex/kimi/cursor 同步当前本地账号
+   └─ claude/codex/kimi/cursor/opencode/commandcode 同步当前本地账号
       （读各原生客户端登录状态，upsert registry；失败静默跳过）
 
 ② build_loading_snapshots
@@ -234,6 +236,7 @@ Linux keyutils 按**内核 session keyring** 隔离。`subswapd` 经 `fork + set
 - Claude：`~/.claude/`
 - Kimi：`~/.kimi-code/credentials/kimi-code.json`（`KIMI_CODE_HOME` 可覆盖）
 - OpenCode Go：`~/.local/share/opencode/auth.json` 的 `opencode-go` 项（`SUBSWAP_OPENCODE_HOME` 可覆盖）
+- Command Code：`~/.commandcode/auth.json`（`SUBSWAP_COMMANDCODE_HOME` 可覆盖）
 - Cursor：各平台 `Cursor/User/globalStorage/state.vscdb`（详见 Provider 知识库）
 
 切换写上游状态；完整 token 在 `FileStore`；`registry.toml` 只存非敏感元数据。

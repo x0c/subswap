@@ -92,6 +92,7 @@ cargo install --git https://github.com/x0c/subswap --path crates/cli
 | Kimi / Moonshot | Kimi Code (`~/.kimi-code`) | OAuth 認証情報、アクティブアカウント、5h / 7d 使用量 |
 | Cursor | Cursor デスクトップ (`state.vscdb`) | アカウント切り替え、First-Party Models / API 使用率、請求サイクルリセット |
 | OpenCode Go | OpenCode (`~/.local/share/opencode/auth.json`) | `opencode-go` API key のみ（同ファイルの他プロバイダは維持）、5h / 週 / 月クォータ |
+| Command Code | Command Code (`~/.commandcode/auth.json`) | API key、5h / 週 / `$` クレジット（`/alpha/billing/credits`） |
 
 ## よくある用途
 
@@ -155,6 +156,7 @@ subswap swap deepseek
 subswap login kimi
 subswap login cursor
 subswap login opencode
+subswap login commandcode
 
 # グローバルのアクティブアカウントを変えずに分離環境でアカウントを使う
 subswap run codex bob@example.com -- --version   # bob のアカウントで codex を分離起動
@@ -206,7 +208,7 @@ eval "$(subswap env codex/bob@x.com)"  # 現在のシェルを一時的に codex
 
 | ツール | 主な用途 | subswap との違い |
 |---|---|---|
-| 単一 Provider のアカウント切り替えツール | 1 つの上流のみを対象 | subswap は Claude、Codex / ChatGPT、Kimi、Cursor、OpenCode Go をサポート |
+| 単一 Provider のアカウント切り替えツール | 1 つの上流のみを対象 | subswap は Claude、Codex / ChatGPT、Kimi、Cursor、OpenCode Go、Command Code をサポート |
 | クォータダッシュボード | 使用量の可視化のみ | subswap はクォータウィンドウが埋まったときに別のローカルアカウントをアクティブ化可能 |
 | 手動ログイン/ログアウト | 一度に 1 アカウント | subswap は登録済みアカウントを保持し、ローカルファイルをアトミックに切り替え |
 
@@ -226,7 +228,7 @@ token と refresh token はアプリデータディレクトリ内の認証情�
 
 ### Claude / Codex 専用ですか？
 
-いいえ。Claude / Anthropic、Codex / ChatGPT、Kimi / Moonshot、Cursor、OpenCode Go に対応しています。
+いいえ。Claude / Anthropic、Codex / ChatGPT、Kimi / Moonshot、Cursor、OpenCode Go、Command Code に対応しています。
 
 ### Windows で動きますか？
 

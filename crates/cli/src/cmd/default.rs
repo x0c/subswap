@@ -240,6 +240,16 @@ async fn sync_local_active(ctx: &AppContext) -> Vec<AutoLine> {
             Err(e) => notices.push(signed_in_but_untracked("opencode", &id, e)),
         }
     }
+    if let Ok(id) = ctx.commandcode.live_account_id() {
+        match ctx.commandcode.sync_active_metadata(None) {
+            Ok(account) => {
+                if let Err(e) = ctx.registry.set_active("commandcode", &account.id) {
+                    tracing::debug!(err=%e, "skip commandcode active marker");
+                }
+            }
+            Err(e) => notices.push(signed_in_but_untracked("commandcode", &id, e)),
+        }
+    }
     notices
 }
 
@@ -293,6 +303,16 @@ async fn sync_local_active_metadata(ctx: &AppContext) -> Vec<AutoLine> {
                 }
             }
             Err(e) => notices.push(signed_in_but_untracked("opencode", &id, e)),
+        }
+    }
+    if let Ok(id) = ctx.commandcode.live_account_id() {
+        match ctx.commandcode.sync_active_metadata(None) {
+            Ok(account) => {
+                if let Err(e) = ctx.registry.set_active("commandcode", &account.id) {
+                    tracing::debug!(err=%e, "skip commandcode active marker");
+                }
+            }
+            Err(e) => notices.push(signed_in_but_untracked("commandcode", &id, e)),
         }
     }
     notices
