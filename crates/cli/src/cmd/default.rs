@@ -160,9 +160,14 @@ fn auto_swap_success_text(snap: &ProviderSnapshot, to: &AccountId) -> String {
             }
         });
 
-    match target {
+    let message = match target {
         Some(label) => format!("auto: swapped to {label}"),
         None => "auto: swapped".into(),
+    };
+    if snap.provider == "codex" {
+        format!("{message}; restart running Codex CLI sessions to use it")
+    } else {
+        message
     }
 }
 
@@ -700,7 +705,7 @@ mod tests {
                 &snap,
                 &AccountId("c1311d9b-47d1-4b8b-95e9-3401f967abd6".into())
             ),
-            "auto: swapped to stromandanika707621@gmail.com"
+            "auto: swapped to stromandanika707621@gmail.com; restart running Codex CLI sessions to use it"
         );
     }
 
@@ -716,7 +721,7 @@ mod tests {
                 &snap,
                 &AccountId("c1311d9b-47d1-4b8b-95e9-3401f967abd6".into())
             ),
-            "auto: swapped"
+            "auto: swapped; restart running Codex CLI sessions to use it"
         );
     }
 

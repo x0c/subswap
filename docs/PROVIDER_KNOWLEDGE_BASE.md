@@ -181,6 +181,8 @@ JSON（`subswap list --json`）序列化：`"flat"` / `"metered"` / `"unlimited"
 
 active **不首选**兼容 HTTP：先经官方 `codex app-server` JSONL 调 `account/rateLimits/read`，优先复用 `<CODEX_HOME>/app-server-control/app-server-control.sock`。parked 无法安全物化完整官方认证 → 仍走 `wham/usage`。
 
+The app-server response is usable only when its `accountId` matches the registry account's `chatgpt_account_id`. A control socket may belong to a Codex process that started before a swap and still holds the previous login. A missing or different `accountId` makes subswap try a fresh app-server (isolated when Codex is running), then the compatible usage query if needed; it must never cache that response under the new account. See [the cloned-quota investigation](troubleshooting/2026-09-25-codex-quota-cloned-after-swap.md).
+
 ### Usage 响应字段（不稳定）
 
 `openai_usage::normalize()` 宽松解析：

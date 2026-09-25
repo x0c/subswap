@@ -33,7 +33,7 @@ pub async fn fetch_codex_quota(access_token: &str, account: &Account) -> Result<
     // 2. 当前账号优先复用官方 app-server 的认证状态。停用号由引擎先经
     // `CodexRuntime::refresh`（临时 CODEX_HOME + 完整 auth blob）按需刷新，再走本兼容查询。
     let raw_resp = if account.active {
-        match app_server::fetch_usage().await {
+        match app_server::fetch_usage(&chatgpt_account_id).await {
             Ok(usage) => usage,
             Err(error) if app_server::allows_compat_fallback(&error) => {
                 tracing::debug!(

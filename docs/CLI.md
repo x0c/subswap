@@ -19,6 +19,8 @@
 
 Codex 的手动 `swap` 与自动换号都会改 `~/.codex/auth.json`（及 registry），**默认入口与 `subswapd` 均已覆盖 Codex**。官方 Codex 把登录态缓存在进程内，**已打开的会话不会热读新号**——须重启 Codex CLI，或重载 IDE 窗口后再开对话。立刻用某号且不动全局活号：用 `subswap run codex <账号>`。禁止指望社区 Codex 热补丁。详见 [PROVIDER_KNOWLEDGE_BASE.md](PROVIDER_KNOWLEDGE_BASE.md)「切换生效边界」与 [troubleshooting/2026-09-11](troubleshooting/2026-09-11-codex-swap-requires-restart.md)。
 
+After a successful manual Codex swap, the CLI prints `Restart running Codex CLI sessions to use this account.` The default entry gives the same reminder when it performs an automatic Codex swap. This notice applies to already running sessions; a newly started Codex process reads the selected account.
+
 ### 账号环境隔离（`run` / `shell` / `env`）
 
 与 `swap`（全局原地切换）并存：不同终端可并行用不同账号，不改全局活账号。

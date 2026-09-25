@@ -21,6 +21,12 @@
 4. 要 macOS 后台自动切：设 `SUBSWAP_AUTO_DAEMON=1` 后再走默认入口拉起 daemon；确认 `pgrep` 有 `subswapd` / `__daemon`。
 5. 月额度将满却不自动切：对照 [AUTO_SWAP_DESIGN.md](../design/AUTO_SWAP_DESIGN.md) —— 长窗口非阈值触发。
 
+### 2026-09-25 observed case
+
+The audit recorded an automatic swap to `achesjeremy819@gmail.com` at 17:59 China time and a manual selection of that account at 18:03. The live `~/.codex/auth.json` and a newly started Codex app-server `account/read` both identified this account. Several Codex CLI processes had started before those swaps. The limit error cited September 26 at 16:23, exactly matching the parked `caoozc@outlook.com` account's exhausted weekly quota. This supports a stale running CLI session, not a failed file swap. The affected terminal process was not identified, so do not claim its in-memory account was directly inspected.
+
+Manual and default-entry automatic swaps now print a restart reminder when they select a Codex account. Restart the affected CLI process, then resume the conversation if needed. Do not terminate every Codex process merely to test account switching; other sessions may contain ongoing work.
+
 ## 不采用
 
 - 把症状修成「补做 Codex 自动切号」（功能已在）。

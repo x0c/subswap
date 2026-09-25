@@ -24,7 +24,7 @@ const SESSION_TIMEOUT: Duration = Duration::from_secs(20);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const CODEX_BINARY_ENV: &str = "SUBSWAP_CODEX_BINARY";
 
-pub async fn fetch_usage() -> Result<Value> {
+pub async fn fetch_usage(expected_account_id: &str) -> Result<Value> {
     let home = codex_home();
     let socket = home
         .join("app-server-control")
@@ -38,6 +38,7 @@ pub async fn fetch_usage() -> Result<Value> {
             Some(&socket),
             &home,
             true,
+            expected_account_id,
         )
         .await
         {
@@ -52,7 +53,15 @@ pub async fn fetch_usage() -> Result<Value> {
     }
 
     if no_codex_process_running_async().await {
-        query_command(&binary, &["app-server", "--stdio"], None, &home, true).await
+        query_command(
+            &binary,
+            &["app-server", "--stdio"],
+            None,
+            &home,
+            true,
+            expected_account_id,
+        )
+        .await
     } else {
         let sanitized = SanitizedHome::create(&home).await?;
         query_command(
@@ -61,6 +70,7 @@ pub async fn fetch_usage() -> Result<Value> {
             None,
             sanitized.path(),
             false,
+            expected_account_id,
         )
         .await
     }
@@ -139,6 +149,7 @@ async fn query_command(
     socket: Option<&Path>,
     home: &Path,
     allow_refresh: bool,
+    expected_account_id: &str,
 ) -> Result<Value> {
     let mut command = Command::new(binary);
     command
@@ -153,7 +164,12 @@ async fn query_command(
     }
 
     let mut session = AppServerSession::spawn(command)?;
-    let result = match timeout(SESSION_TIMEOUT, session.query_rate_limits(allow_refresh)).await {
+    let result = match timeout(
+        SESSION_TIMEOUT,
+        session.query_rate_limits(allow_refresh, expected_account_id),
+    )
+    .await
+    {
         Ok(result) => result,
         Err(_) => Err(anyhow!("Codex app-server session timed out")),
     };
@@ -229,7 +245,11 @@ impl AppServerSession {
         })
     }
 
-    async fn query_rate_limits(&mut self, allow_refresh: bool) -> Result<Value> {
+    async fn query_rate_limits(
+        &mut self,
+        allow_refresh: bool,
+        expected_account_id: &str,
+    ) -> Result<Value> {
         self.request(
             1,
             "initialize",
@@ -248,7 +268,7 @@ impl AppServerSession {
             .request(2, "account/rateLimits/read", Value::Null)
             .await
         {
-            Ok(result) => rate_limits_to_usage(result),
+            Ok(result) => rate_limits_to_usage(result, expected_account_id),
             Err(error) if error.is_authentication_failure() && allow_refresh => {
                 self.request(3, "account/read", json!({ "refreshToken": true }))
                     .await
@@ -257,7 +277,7 @@ impl AppServerSession {
                     .request(4, "account/rateLimits/read", Value::Null)
                     .await
                     .context("Codex rate-limit retry failed")?;
-                rate_limits_to_usage(result)
+                rate_limits_to_usage(result, expected_account_id)
             }
             Err(error) => Err(error.into()),
         }
@@ -377,6 +397,7 @@ impl std::error::Error for RpcFailure {}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RateLimitsResponse {
+    account_id: Option<String>,
     rate_limits: RateLimitSnapshot,
 }
 
@@ -394,9 +415,15 @@ struct RateLimitWindow {
     resets_at: Option<i64>,
 }
 
-fn rate_limits_to_usage(result: Value) -> Result<Value> {
+fn rate_limits_to_usage(result: Value, expected_account_id: &str) -> Result<Value> {
     let response: RateLimitsResponse = serde_json::from_value(result)
         .context("Codex rate-limit response has an unsupported shape")?;
+    // 常驻 app-server 可能仍持有切号前的登录态；缺归属也不能贴当前账号标签。
+    if response.account_id.as_deref() != Some(expected_account_id) {
+        return Err(anyhow!(
+            "Codex app-server usage account does not match active account"
+        ));
+    }
     let mut usage = serde_json::Map::new();
     if let Some(primary) = response.rate_limits.primary {
         usage.insert("primary".into(), window_to_usage(primary));
@@ -426,25 +453,43 @@ mod tests {
 
     #[test]
     fn parses_primary_and_secondary_windows() {
-        let usage = rate_limits_to_usage(json!({
-            "rateLimits": {
-                "primary": {
-                    "usedPercent": 17,
-                    "windowDurationMins": 300,
-                    "resetsAt": 1_800_000_000
-                },
-                "secondary": {
-                    "usedPercent": 31,
-                    "windowDurationMins": 10_080,
-                    "resetsAt": 1_800_100_000
+        let usage = rate_limits_to_usage(
+            json!({
+                "accountId": "current-account",
+                "rateLimits": {
+                    "primary": {
+                        "usedPercent": 17,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1_800_000_000
+                    },
+                    "secondary": {
+                        "usedPercent": 31,
+                        "windowDurationMins": 10_080,
+                        "resetsAt": 1_800_100_000
+                    }
                 }
-            }
-        }))
+            }),
+            "current-account",
+        )
         .unwrap();
         assert_eq!(usage["primary"]["used_percent"], 17);
         assert_eq!(usage["primary"]["window_minutes"], 300);
         assert_eq!(usage["secondary"]["used_percent"], 31);
         assert_eq!(usage["secondary"]["window_minutes"], 10_080);
+    }
+
+    #[test]
+    fn rejects_usage_from_old_or_unidentified_app_server_account() {
+        for account_id in [Some("old-account"), None] {
+            let mut result = json!({
+                "rateLimits": {"primary": {"usedPercent": 42}}
+            });
+            if let Some(id) = account_id {
+                result["accountId"] = json!(id);
+            }
+            let error = rate_limits_to_usage(result, "current-account").unwrap_err();
+            assert!(allows_compat_fallback(&error));
+        }
     }
 
     #[test]
@@ -488,7 +533,7 @@ while IFS= read -r line; do
       fi
       ;;
     *'"id":3'*'"refreshToken":true'*) printf '%s\n' '{"id":3,"result":{"account":{"type":"chatgpt"}}}' ;;
-    *'"id":4'*) printf '%s\n' '{"id":4,"result":{"rateLimits":{"primary":{"usedPercent":9,"windowDurationMins":300,"resetsAt":1800000000},"secondary":{"usedPercent":23,"windowDurationMins":10080,"resetsAt":1800100000}}}}' ;;
+    *'"id":4'*) printf '%s\n' '{"id":4,"result":{"accountId":"account","rateLimits":{"primary":{"usedPercent":9,"windowDurationMins":300,"resetsAt":1800000000},"secondary":{"usedPercent":23,"windowDurationMins":10080,"resetsAt":1800100000}}}}' ;;
   esac
 done
 "#,
@@ -498,9 +543,16 @@ done
         permissions.set_mode(0o755);
         fs::set_permissions(&script, permissions).unwrap();
 
-        let usage = query_command(&script, &["app-server", "--stdio"], None, temp.path(), true)
-            .await
-            .unwrap();
+        let usage = query_command(
+            &script,
+            &["app-server", "--stdio"],
+            None,
+            temp.path(),
+            true,
+            "account",
+        )
+        .await
+        .unwrap();
         assert_eq!(usage["primary"]["used_percent"], 9);
         assert_eq!(usage["secondary"]["used_percent"], 23);
     }
@@ -539,6 +591,7 @@ done
             None,
             temp.path(),
             false,
+            "account",
         )
         .await
         .unwrap_err();
@@ -573,7 +626,7 @@ fi
 while IFS= read -r line; do
   case "$line" in
     *'"id":1'*) printf '%s\n' '{"id":1,"result":{"codexHome":"/tmp","platformFamily":"unix","platformOs":"linux","userAgent":"fake"}}' ;;
-    *'"id":2'*) printf '%s\n' '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":12,"windowDurationMins":300,"resetsAt":1800000000}}}}' ;;
+    *'"id":2'*) printf '%s\n' '{"id":2,"result":{"accountId":"account","rateLimits":{"primary":{"usedPercent":12,"windowDurationMins":300,"resetsAt":1800000000}}}}' ;;
   esac
 done
 "#,
@@ -589,6 +642,7 @@ done
             None,
             sanitized.path(),
             false,
+            "account",
         )
         .await
         .unwrap();
