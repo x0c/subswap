@@ -684,6 +684,101 @@ fn login_opencode_imports_go_key_and_preserves_other_providers() {
     assert_eq!(live["opencode-go"]["key"], "sk-test-key-1234");
 }
 
+/// 官方 Console 登录优先于 Go key：fixture `opencode.db` 里有一个 active Console
+/// 凭证时，`login opencode` 应导入 Console 账号（`console-<org>`），且不把 token
+/// 写进 subswap credential store。
+#[test]
+fn login_opencode_prefers_console_login_without_storing_secret() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_fast_quota_timeout(&tmp);
+    let home = tmp.path().join("opencode");
+    fs::create_dir_all(&home).unwrap();
+    let db = home.join("opencode.db");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE credential (
+            id TEXT PRIMARY KEY, integration_id TEXT, label TEXT NOT NULL,
+            value TEXT NOT NULL, connector_id TEXT, method_id TEXT, active INTEGER,
+            time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL
+        );",
+    )
+    .unwrap();
+    let value = serde_json::json!({
+        "type": "oauth",
+        "methodID": "device",
+        "access": "tok_console_fake",
+        "refresh": "refresh_fake",
+        "expires": 9999999999999i64,
+        "metadata": {
+            "accountID": "user_test",
+            "email": "console-test@example.com",
+            "orgID": "wrk_test123",
+            "orgName": "TestOrg",
+            "server": "https://opencode.ai/console",
+        },
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO credential
+         (id, integration_id, label, value, method_id, active, time_created, time_updated)
+         VALUES ('cred_test', 'opencode', 'Default', ?1, 'device', 1, 1, 1)",
+        rusqlite::params![value],
+    )
+    .unwrap();
+    drop(conn);
+
+    let stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["login", "opencode"])
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        stdout.contains("login → opencode/console-wrk_test123"),
+        "expected imported Console account, got: {stdout}"
+    );
+
+    // registry 记元数据 …
+    let registry = fs::read_to_string(app_data_dir(&tmp).join("registry.toml"))
+        .or_else(|_| fs::read_to_string(app_config_dir(&tmp).join("registry.toml")))
+        .unwrap_or_default();
+    assert!(
+        registry.contains("console-wrk_test123"),
+        "registry should track the Console account: {registry}"
+    );
+    // … 但 secret 绝不落 subswap store。
+    let mut store_leaked = false;
+    for entry in walk_files(&tmp.path().join("subswap")) {
+        if entry.extension().and_then(|e| e.to_str()) == Some("toml")
+            || entry.file_name().and_then(|n| n.to_str()).unwrap_or_default()
+                .contains("credential")
+        {
+            if let Ok(text) = fs::read_to_string(&entry) {
+                if text.contains("tok_console_fake") {
+                    store_leaked = true;
+                }
+            }
+        }
+    }
+    assert!(!store_leaked, "Console token must not be stored by subswap");
+}
+
+fn walk_files(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(walk_files(&path));
+        } else {
+            out.push(path);
+        }
+    }
+    out
+}
+
 #[test]
 fn run_opencode_unknown_account_reports_not_found() {
     let tmp = tempfile::tempdir().unwrap();

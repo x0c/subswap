@@ -182,7 +182,7 @@ async fn run_cycle(
     // current-thread runtime 上会直接 panic,此处沿用同一取舍)。
     reconcile_file_blob_provider(codex, "codex").await;
     reconcile_file_blob_provider(kimi, "kimi").await;
-    reconcile_file_blob_provider(opencode, "opencode").await;
+    reconcile_file_blob_provider(&opencode.go_engine(), "opencode").await;
     reconcile_file_blob_provider(commandcode, "commandcode").await;
     // Cursor 只有一份 live 凭证。此处必须在读额度前先将外部新登录账号入池；失败时
     // 本轮禁止覆盖 Cursor，避免旧账号池把用户刚完成的原生登录写回去。

@@ -245,6 +245,16 @@ async fn sync_local_active(ctx: &AppContext) -> Vec<AutoLine> {
             Err(e) => notices.push(signed_in_but_untracked("opencode", &id, e)),
         }
     }
+    if let Ok(id) = ctx.opencode.live_console_id() {
+        match ctx.opencode.sync_console_active_metadata(None) {
+            Ok(account) => {
+                if ctx.registry.set_active("opencode", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "opencode", &account.id);
+                }
+            }
+            Err(e) => notices.push(signed_in_but_untracked("opencode", &id, e)),
+        }
+    }
     if let Ok(id) = ctx.commandcode.live_account_id() {
         match ctx.commandcode.sync_active_metadata(None) {
             Ok(account) => {
@@ -324,6 +334,16 @@ async fn sync_local_active_metadata(ctx: &AppContext) -> Vec<AutoLine> {
     }
     if let Ok(id) = ctx.opencode.live_account_id() {
         match ctx.opencode.sync_active_metadata(None) {
+            Ok(account) => {
+                if ctx.registry.set_active("opencode", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "opencode", &account.id);
+                }
+            }
+            Err(e) => notices.push(signed_in_but_untracked("opencode", &id, e)),
+        }
+    }
+    if let Ok(id) = ctx.opencode.live_console_id() {
+        match ctx.opencode.sync_console_active_metadata(None) {
             Ok(account) => {
                 if ctx.registry.set_active("opencode", &account.id).is_ok() {
                     clear_settled_marker(ctx, "opencode", &account.id);
