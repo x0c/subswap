@@ -40,11 +40,13 @@
 `try_auto_swap_ready_provider`）：**每收到一份 quota 对该 provider 重跑 `decide`**，有更优目标就升级。
 
 单调收敛三点（缺一会抖动）：
-1. `decide` 仅在 active 确实不行（耗尽/超阈值/loading/失败）时返回 `Swap`；切到可用号后 `NoOp`。
+1. `decide` returns `Swap` for confirmed exhaustion/threshold breach and, in the current implementation, also for an active quota still loading or failed when another account is known available. Loading alone does not establish that the active account is unusable; see the known defect below. After selecting an available account, it returns `NoOp`.
 2. `AutoSwapProgress.activated_targets`：本次已切到的目标不重复 `activate`。
 3. `AutoSwapProgress.abandoned`：本次主动离开过的账号不再切回（只升级、不回头）。
 
 与 settle-grace（§2 条 8.5）配合：刚激活号只挡 loading/失败等**不确定**状态；**已耗尽是确定状态**，照样升级走。
+
+**Known defect (2026-09-29):** A candidate result can arrive before the current account's quota, causing an immediate swap even when the current account later proves healthy. The default entry does not undo that swap. This is verified in [the Codex incident](../troubleshooting/2026-09-29-codex-auto-swap-with-healthy-accounts.md). A correction is pending; do not describe `Loading` as confirmed depletion.
 
 ## 2. 候选账号筛选
 
@@ -62,7 +64,7 @@
 5. **无可用候选时的重置兜底**：其他账号也超阈值 / `Exhausted`，但阻塞窗口都带 `reset_at` → 切到最早恢复者。多窗口取所有阻塞窗口 `reset_at` 最大值；若当前 active 已是最早恢复者则不动。
 6. **查询失败候选兜底**：当前已明确耗尽、无已知可用候选时，允许切到因网络/超时/429 等导致 `query_quota` 失败的账号。**401/403、`needs re-login`、凭据缺失例外：即使有旧 quota 缓存也必须排除。**
 7. **active 查询失败兜底**：存在额度明确可用的其他账号则切走；无明确可用候选才降级；禁止未知→未知盲切。
-8. **active 仍在加载兜底**：有明确可用候选则立即切；否则继续等待，不提前定案。
+8. **active 仍在加载兜底（当前实现，存在上述误切缺陷）**：有明确可用候选则立即切；否则继续等待，不提前定案。
 8.5. **新激活沉淀宽限（settle grace）**：`last_used_at` 距今 < `auto_swap.settle_grace_ms`（默认 60s；手动/自动切换都刷新）时，**不因第 7、8 条 loading/查询失败切走** → `NoOp`。**只挡不确定状态**：已达 threshold / `Exhausted` 仍正常切走。宽限期须覆盖一次冷 quota 查询（含重试）。改默认只动 `crates/core/src/defaults.rs::AUTO_SWAP_SETTLE_GRACE_MS`。**默认入口的 live 对齐不刷新该标记**（`clear_settled_marker`）：原生客户端里的外部切号只是「标记 active」，不产生切换语义，否则外部切号会被宽限误保护。
 8.6. **手动切换保持（manual hold）**：用户经 subswap 手动 `swap` / `login` 某 provider 后，该 provider 在 `auto_swap.manual_hold_ms`（默认 10min）内**暂停一切自动切换** → `NoOp`（`… manually selected; auto swap held for Ns`）。与 8.5 正交：settle 只挡不确定状态且不分手动自动；hold 只认 subswap 手动切换（`<state_dir>/manual_hold/<provider>.json` 落盘，CLI 短命进程与 daemon 重启都认），但**连确定性额度切换一起挡**。`0` 或负数关闭。实现：`crates/core/src/manual_hold.rs` + `decide()` 开头；写入口在 `swap.rs` / `login.rs` 成功分支（best-effort，写失败不挡切换）。
 9. **`manual_only`**：`Account.extra.manual_only == true` → active 立即 `NoOp`（即使 loading/失败也不切走）；inactive 从所有候选路径排除。Claude 自定义 API 用此语义。

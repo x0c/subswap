@@ -6,6 +6,8 @@
 - 误以为「subswap 至今没做 Codex 自动切号」：列表里偶发有 `auto: swapped`，或磁盘 `auth.json` 已变，客户端却像没切。
 - macOS 上很少看到后台自动切，只有偶尔跑无参 `subswap` 才动一下。
 
+If both accounts still have quota and the question is why the swap happened at all, use [the quota-order incident](2026-09-29-codex-auto-swap-with-healthy-accounts.md). This record covers the separate case where a completed swap has not reached an already-running client.
+
 ## 根因
 
 1. **官方 Codex 不热读换号后的 `auth.json`。** `AuthManager` 启动缓存登录态；外部改写磁盘须显式 `reload()` 才观察。未授权自愈用的 `reload_if_account_id_matches` 在**账号 ID 不同时跳过**——换到另一号时不会灌进已运行进程。

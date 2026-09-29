@@ -4,4 +4,4 @@
 
 | 任务 | 状态 | 影响范围 | 开始 | 最近更新 | 备注 |
 |---|---|---|---|---|---|
-| 修复 Codex 额度错归属并说明切号生效边界 | 发布中 | 全仓 v1.9.2 | 18:09 | 2026-09-25 18:21 | 本机测试与 release 构建通过；独占发布窗口 |
+| Record Codex quota-order false swaps and macOS daemon default | 验证中 | docs/, Cargo.toml, Cargo.lock, local install, v1.9.3 release | 14:05 | 2026-09-29 14:12 | Links, workspace tests, and locked release build passed |
