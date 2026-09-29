@@ -14,9 +14,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use subswap_core::error::{Error, Result};
-use subswap_core::{Account, AccountId, AccountRegistry, ClientTarget, CredentialStore, Provider, Quota};
+use subswap_core::{
+    Account, AccountId, AccountRegistry, ClientTarget, CredentialStore, Provider, Quota,
+};
 use subswap_provider_common::{
-    BlobMetadata, FileBlobProvider, FileBlobRuntime, IsolationSpec, IsolatedProvider,
+    BlobMetadata, FileBlobProvider, FileBlobRuntime, IsolatedProvider, IsolationSpec,
     RefreshOutcome,
 };
 
@@ -125,9 +127,10 @@ impl OpencodeProvider {
     /// 当前官方 Console 登录对应的 subswap 账号 id。未登录 → Err。
     pub fn live_console_id(&self) -> Result<AccountId> {
         let live = console::read_console_live(&self.go_home())?;
-        live.map(|l| console::account_id_for(&l.org_id)).ok_or_else(|| {
-            Error::Provider("no OpenCode Console login; run `subswap login opencode`".into())
-        })
+        live.map(|l| console::account_id_for(&l.org_id))
+            .ok_or_else(|| {
+                Error::Provider("no OpenCode Console login; run `subswap login opencode`".into())
+            })
     }
 
     /// 导入当前官方 Console 登录（只写元数据，不存 secret），并标 active。
@@ -186,13 +189,11 @@ impl OpencodeProvider {
 
     async fn query_console_quota(&self, account: &Account) -> Result<Vec<Quota>> {
         let home = self.go_home();
-        let live =
-            tokio::task::spawn_blocking(move || console::read_console_live(&home)).await.map_err(
-                |e| Error::Provider(format!("console credential read join failed: {e}")),
-            )??;
-        let live = live.ok_or_else(|| {
-            Error::QuotaFetch("no OpenCode Console login; needs re-login".into())
-        })?;
+        let live = tokio::task::spawn_blocking(move || console::read_console_live(&home))
+            .await
+            .map_err(|e| Error::Provider(format!("console credential read join failed: {e}")))??;
+        let live = live
+            .ok_or_else(|| Error::QuotaFetch("no OpenCode Console login; needs re-login".into()))?;
         let expected = console::account_id_for(&live.org_id);
         if expected != account.id {
             return Err(Error::QuotaFetch(format!(
@@ -286,7 +287,11 @@ impl IsolatedProvider for OpencodeProvider {
 /// 构造 OpenCodeProvider。
 pub fn new(store: Arc<dyn CredentialStore>, registry: Arc<AccountRegistry>) -> OpencodeProvider {
     OpencodeProvider {
-        go: Arc::new(FileBlobProvider::new(OpencodeRuntime, store, registry.clone())),
+        go: Arc::new(FileBlobProvider::new(
+            OpencodeRuntime,
+            store,
+            registry.clone(),
+        )),
         registry,
     }
 }

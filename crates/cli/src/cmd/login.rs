@@ -124,9 +124,9 @@ pub async fn run(
                 account
             } else if ctx.opencode.live_console_id().is_ok() {
                 // 官方 Console 已登录：直接导入当前账号（只存元数据，不碰 secret）。
-                ctx.opencode.import_console_active(None).context(
-                    "import OpenCode Console login",
-                )?
+                ctx.opencode
+                    .import_console_active(None)
+                    .context("import OpenCode Console login")?
             } else if ctx.opencode.live_account_id().is_ok() {
                 // 只有 Go key：沿用旧导入路径。
                 ctx.opencode.import_active(None).context(
@@ -134,16 +134,17 @@ pub async fn run(
                 )?
             } else {
                 // 未登录：调官方命令走原生登录流程，再导入 Console 账号。
-                let major =
-                    tokio::task::spawn_blocking(subswap_provider_opencode::console::detect_major_version)
-                        .await
-                        .context("detect OpenCode version task failed")?
-                        .context("detect OpenCode version")?;
+                let major = tokio::task::spawn_blocking(
+                    subswap_provider_opencode::console::detect_major_version,
+                )
+                .await
+                .context("detect OpenCode version task failed")?
+                .context("detect OpenCode version")?;
                 let args = subswap_provider_opencode::console::login_args(major);
                 run_native_login("opencode", args).await?;
-                ctx.opencode.import_console_active(None).context(
-                    "import OpenCode Console login after native sign-in",
-                )?
+                ctx.opencode
+                    .import_console_active(None)
+                    .context("import OpenCode Console login after native sign-in")?
             };
             ctx.registry
                 .set_active("opencode", &account.id)

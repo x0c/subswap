@@ -54,11 +54,11 @@ pub fn read_console_live(home: &Path) -> Result<Option<ConsoleLive>> {
     if !db.exists() {
         return Ok(None);
     }
-    let conn = rusqlite::Connection::open_with_flags(
-        &db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|e| Error::Provider(format!("open OpenCode database {}: {e}", db.display())))?;
+    let conn =
+        rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| {
+                Error::Provider(format!("open OpenCode database {}: {e}", db.display()))
+            })?;
     let mut stmt = conn
         .prepare(
             "SELECT id, label, value FROM credential \
@@ -80,9 +80,7 @@ pub fn read_console_live(home: &Path) -> Result<Option<ConsoleLive>> {
         .and_then(|s| s.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            Error::Provider("OpenCode Console credential has no access token".into())
-        })?
+        .ok_or_else(|| Error::Provider("OpenCode Console credential has no access token".into()))?
         .to_string();
     let meta = v.get("metadata");
     let field = |keys: &[&str]| {
@@ -127,7 +125,10 @@ pub fn account_from_live(live: &ConsoleLive, existing: Option<&Account>) -> Acco
     let mut extra = serde_json::Map::new();
     extra.insert("kind".into(), serde_json::Value::from(KIND_CONSOLE));
     extra.insert("email".into(), serde_json::Value::from(live.email.clone()));
-    extra.insert("org_id".into(), serde_json::Value::from(live.org_id.clone()));
+    extra.insert(
+        "org_id".into(),
+        serde_json::Value::from(live.org_id.clone()),
+    );
     extra.insert(
         "org_name".into(),
         serde_json::Value::from(live.org_name.clone()),
@@ -140,11 +141,11 @@ pub fn account_from_live(live: &ConsoleLive, existing: Option<&Account>) -> Acco
         "credential_label".into(),
         serde_json::Value::from(live.credential_label.clone()),
     );
-    extra.insert("server".into(), serde_json::Value::from(live.server.clone()));
     extra.insert(
-        "dedup_key".into(),
-        serde_json::Value::from(id.0.clone()),
+        "server".into(),
+        serde_json::Value::from(live.server.clone()),
     );
+    extra.insert("dedup_key".into(), serde_json::Value::from(id.0.clone()));
     Account {
         provider: PROVIDER_ID.into(),
         id,
@@ -164,17 +165,21 @@ pub fn detect_major_version() -> Result<u64> {
         .arg("--version")
         .output()
         .map_err(|e| {
-            Error::Provider(format!("`opencode --version` failed; is OpenCode installed: {e}"))
+            Error::Provider(format!(
+                "`opencode --version` failed; is OpenCode installed: {e}"
+            ))
         })?;
-    parse_major_version(&String::from_utf8_lossy(&out.stdout)).ok_or_else(|| {
-        Error::Provider("cannot parse `opencode --version` output".into())
-    })
+    parse_major_version(&String::from_utf8_lossy(&out.stdout))
+        .ok_or_else(|| Error::Provider("cannot parse `opencode --version` output".into()))
 }
 
 fn parse_major_version(output: &str) -> Option<u64> {
     let token = output.split(|c: char| c.is_whitespace()).find_map(|t| {
         let t = t.trim_start_matches('v');
-        t.chars().next().is_some_and(|c| c.is_ascii_digit()).then_some(t)
+        t.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit())
+            .then_some(t)
     })?;
     let major = token.split('.').next()?;
     major.parse().ok()
@@ -203,9 +208,9 @@ pub fn switch_to(label: &str, major: u64, home: &Path) -> Result<()> {
     let mut cmd = Command::new("opencode");
     cmd.args(["auth", "switch", "opencode", label]);
     apply_home_env(&mut cmd, home);
-    let out = cmd.output().map_err(|e| {
-        Error::Provider(format!("`opencode auth switch` failed to start: {e}"))
-    })?;
+    let out = cmd
+        .output()
+        .map_err(|e| Error::Provider(format!("`opencode auth switch` failed to start: {e}")))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(Error::Provider(format!(
@@ -319,7 +324,10 @@ async fn fetch_console_quota_at(
     account: &Account,
     console_base: &str,
 ) -> Result<Vec<Quota>> {
-    let url = format!("{}/console/api/go/status", console_base.trim_end_matches('/'));
+    let url = format!(
+        "{}/console/api/go/status",
+        console_base.trim_end_matches('/')
+    );
     let client = reqwest::Client::builder()
         .timeout(HTTP_TIMEOUT)
         .build()
@@ -329,7 +337,10 @@ async fn fetch_console_quota_at(
         .header("Authorization", format!("Bearer {}", live.access_token))
         .header("x-org-id", &live.org_id)
         .header("Accept", "application/json")
-        .header("User-Agent", format!("subswap/{}", env!("CARGO_PKG_VERSION")))
+        .header(
+            "User-Agent",
+            format!("subswap/{}", env!("CARGO_PKG_VERSION")),
+        )
         .send()
         .await
         .map_err(|e| Error::QuotaFetch(format!("opencode console status request failed: {e}")))?;
@@ -402,7 +413,8 @@ mod tests {
 
     #[test]
     fn zero_limit_window_is_skipped() {
-        let body = r#"{"access":{"meters":{"fiveHour":{"usedMicroCents":"1","limitMicroCents":"0"}}}}"#;
+        let body =
+            r#"{"access":{"meters":{"fiveHour":{"usedMicroCents":"1","limitMicroCents":"0"}}}}"#;
         assert!(parse_go_status(body, &sample_account()).is_empty());
     }
 

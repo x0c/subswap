@@ -750,7 +750,10 @@ fn login_opencode_prefers_console_login_without_storing_secret() {
     let mut store_leaked = false;
     for entry in walk_files(&tmp.path().join("subswap")) {
         if entry.extension().and_then(|e| e.to_str()) == Some("toml")
-            || entry.file_name().and_then(|n| n.to_str()).unwrap_or_default()
+            || entry
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
                 .contains("credential")
         {
             if let Ok(text) = fs::read_to_string(&entry) {
