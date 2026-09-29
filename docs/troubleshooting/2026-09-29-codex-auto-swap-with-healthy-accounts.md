@@ -16,6 +16,8 @@ On macOS with the installed v1.9.2 binary, no `config.toml` override, and the co
 
 The command displayed B as active and the restart notice. Neither final quota met the 5-hour threshold, and neither 7-day window was exhausted. The audit also shows earlier alternating swaps, but their exact quota completion order was not retained; this reproduction establishes the cause for this one run, not every earlier swap.
 
+A post-install v1.9.3 default-entry check reproduced the same order: B quota ready at 06:13:00.745Z (5h 11% left), successful swap at 06:13:00.749Z, then A quota ready at 06:13:02.186Z (5h 80% left). v1.9.3 changes documentation and the version only; this behavior remains unfixed.
+
 ## Cause
 
 `crates/cli/src/cmd/default.rs::fill_quotas_progressively` queries accounts concurrently and calls `try_auto_swap_ready_provider` after **each** result. `crates/core/src/auto_policy.rs::decide` may select a known-available candidate while the current account's quota remains `Loading` after its settle grace. The activation happens before the current account's own result arrives. Once B is active and known available, the later healthy result for A does not restore A. Thus an account response race can bypass the intended quota threshold without any exhausted account.

@@ -4,4 +4,3 @@
 
 | 任务 | 状态 | 影响范围 | 开始 | 最近更新 | 备注 |
 |---|---|---|---|---|---|
-| Record Codex quota-order false swaps and macOS daemon default | 验证中 | docs/, Cargo.toml, Cargo.lock, local install, v1.9.3 release | 14:05 | 2026-09-29 14:12 | Links, workspace tests, and locked release build passed |
