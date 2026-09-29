@@ -1,8 +1,8 @@
-//! OpenCode Provider：Go API key（文件型）+ Console 官方登录（SQLite + 官方命令）双账号。
+//! OpenCode 官方账号与 Go API key 分属两个 Provider。
 //!
-//! Go 部分沿用文件型共享引擎（只切换 `auth.json` 的 `opencode-go` 条目）；
+//! Go 部分复用文件型共享引擎保存 Key；V2 切换走官方凭证数据库和命令，V1 才改 `auth.json`；
 //! Console 部分独立实现：不存 secret、不刷新、切换走官方命令、额度走 Console 接口。
-//! 两类账号按 [`console::is_console_account`] 区分，`activate` / `query_quota` 据此路由。
+//! API key 只允许手动切换；官方账号才进入自动切换候选池。
 
 pub mod auth;
 pub mod console;
@@ -18,11 +18,11 @@ use subswap_core::{
     Account, AccountId, AccountRegistry, ClientTarget, CredentialStore, Provider, Quota,
 };
 use subswap_provider_common::{
-    BlobMetadata, FileBlobProvider, FileBlobRuntime, IsolatedProvider, IsolationSpec,
-    RefreshOutcome,
+    BlobMetadata, FileBlobProvider, FileBlobRuntime, IsolationSpec, RefreshOutcome,
 };
 
 pub const PROVIDER_ID: &str = "opencode";
+pub const API_KEY_PROVIDER_ID: &str = "opencode-api-key";
 
 /// OpenCode Go runtime：差异点只在路径、局部合并、API key 与额度查询。
 #[derive(Clone, Copy)]
@@ -31,10 +31,10 @@ pub struct OpencodeRuntime;
 #[async_trait]
 impl FileBlobRuntime for OpencodeRuntime {
     fn id(&self) -> &'static str {
-        PROVIDER_ID
+        API_KEY_PROVIDER_ID
     }
     fn display_name(&self) -> &'static str {
-        "OpenCode Go"
+        "OpenCode API Key"
     }
     fn home(&self) -> PathBuf {
         paths::opencode_home()
@@ -43,7 +43,9 @@ impl FileBlobRuntime for OpencodeRuntime {
         paths::auth_json_path(home)
     }
     fn parse_metadata(&self, blob: &str) -> BlobMetadata {
-        auth::parse_metadata(blob)
+        let mut metadata = auth::parse_metadata(blob);
+        metadata.extra.insert("manual_only".into(), true.into());
+        metadata
     }
     fn isolation(&self) -> IsolationSpec {
         IsolationSpec {
@@ -74,10 +76,195 @@ impl FileBlobRuntime for OpencodeRuntime {
     }
 }
 
-/// OpenCode Provider：Go 文件引擎 + Console 官方账号。
+/// OpenCode 官方 Console 账号；Go 引擎单独注册为 API Key Provider。
 pub struct OpencodeProvider {
     go: Arc<FileBlobProvider<OpencodeRuntime>>,
     registry: Arc<AccountRegistry>,
+}
+
+/// Go API key 独立账号池。V2 从官方数据库同步并经官方命令切换；V1 使用 auth.json。
+pub struct OpencodeApiKeyProvider {
+    engine: Arc<FileBlobProvider<OpencodeRuntime>>,
+    registry: Arc<AccountRegistry>,
+}
+
+impl OpencodeApiKeyProvider {
+    pub fn new(
+        engine: Arc<FileBlobProvider<OpencodeRuntime>>,
+        registry: Arc<AccountRegistry>,
+    ) -> Self {
+        Self { engine, registry }
+    }
+
+    pub fn live_account_id(&self) -> Result<AccountId> {
+        match console::read_v2_go_keys(&self.engine.home())? {
+            Some(keys) => keys
+                .into_iter()
+                .find(|k| k.active)
+                .map(|k| go_id_for_key(&k.key))
+                .ok_or_else(|| {
+                    Error::Provider("no active OpenCode Go API key in the official client".into())
+                }),
+            None => self.engine.live_account_id(),
+        }
+    }
+
+    pub fn import_active(&self, label_hint: Option<String>) -> Result<Account> {
+        self.sync_active_metadata(label_hint)
+    }
+
+    pub fn sync_active_metadata(&self, label_hint: Option<String>) -> Result<Account> {
+        self.sync_accounts(label_hint)?
+            .into_iter()
+            .find(|a| a.active)
+            .ok_or_else(|| {
+                Error::Provider("no active OpenCode Go API key in the official client".into())
+            })
+    }
+
+    /// 导入全部 V2 Key；即使当前没有选中 Key，也让它们可见并可查余量。
+    pub fn sync_accounts(&self, label_hint: Option<String>) -> Result<Vec<Account>> {
+        match console::read_v2_go_keys(&self.engine.home())? {
+            Some(keys) => {
+                let mut active = None;
+                let mut accounts = Vec::new();
+                for key in keys {
+                    let account = self.engine.import_raw(
+                        blob_from_key(&key.key),
+                        if key.active { label_hint.clone() } else { None },
+                        Some(key.active),
+                    )?;
+                    if key.active && active.is_none() {
+                        active = Some(account.clone());
+                    }
+                    accounts.push(account);
+                }
+                if let Some(account) = &active {
+                    self.registry.set_active(API_KEY_PROVIDER_ID, &account.id)?;
+                } else {
+                    self.clear_active_keys()?;
+                }
+                Ok(accounts)
+            }
+            None => match self.engine.live_account_id() {
+                Ok(_) => self
+                    .engine
+                    .sync_active_metadata(label_hint)
+                    .map(|a| vec![a]),
+                Err(_) => {
+                    self.clear_active_keys()?;
+                    Ok(Vec::new())
+                }
+            },
+        }
+    }
+
+    fn clear_active_keys(&self) -> Result<()> {
+        let mut accounts = self.registry.load()?;
+        let mut changed = false;
+        for account in &mut accounts {
+            if account.provider == API_KEY_PROVIDER_ID && account.active {
+                account.active = false;
+                changed = true;
+            }
+        }
+        if changed {
+            self.registry.save(&accounts)?;
+        }
+        Ok(())
+    }
+
+    pub fn import_raw(
+        &self,
+        raw: String,
+        label_hint: Option<String>,
+        active: Option<bool>,
+    ) -> Result<Account> {
+        self.engine.import_raw(raw, label_hint, active)
+    }
+}
+
+fn go_id_for_key(key: &str) -> AccountId {
+    AccountId(auth::fingerprint(key))
+}
+
+#[async_trait]
+impl Provider for OpencodeApiKeyProvider {
+    fn id(&self) -> &'static str {
+        API_KEY_PROVIDER_ID
+    }
+    fn display_name(&self) -> &'static str {
+        "OpenCode API Key"
+    }
+    fn client_targets(&self) -> Vec<ClientTarget> {
+        let mut targets = self.engine.client_targets();
+        targets.push(ClientTarget {
+            id: format!("{API_KEY_PROVIDER_ID}_database"),
+            display_name: "OpenCode Go credentials".into(),
+            probe_path: console::console_db_path(&self.engine.home()),
+        });
+        targets
+    }
+    async fn list_accounts(&self) -> Result<Vec<Account>> {
+        self.registry.list_by_provider(API_KEY_PROVIDER_ID)
+    }
+    async fn activate(&self, id: &AccountId) -> Result<()> {
+        let home = self.engine.home();
+        let keys = tokio::task::spawn_blocking(move || console::read_v2_go_keys(&home))
+            .await
+            .map_err(|e| {
+                Error::Provider(format!("OpenCode Go credential read join failed: {e}"))
+            })??;
+        let Some(keys) = keys else {
+            return self.engine.activate(id).await;
+        };
+        let previous = keys
+            .iter()
+            .find(|k| k.active)
+            .map(|k| k.credential_id.clone());
+        let credential = keys.into_iter().find(|k| go_id_for_key(&k.key) == *id)
+            .ok_or_else(|| Error::Provider(format!(
+                "OpenCode API key {id} is not connected in V2; run `opencode auth login opencode-go` first"
+            )))?;
+        let home = self.engine.home();
+        let credential_id = credential.credential_id;
+        let expected = id.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = (|| {
+                console::switch_to("opencode-go", &credential_id, 2, &home)?;
+                let selected = console::read_v2_go_keys(&home)?
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|k| k.active)
+                    .map(|k| go_id_for_key(&k.key));
+                if selected.as_ref() != Some(&expected) {
+                    return Err(Error::Provider(format!(
+                        "OpenCode did not select API key {expected}"
+                    )));
+                }
+                Ok(())
+            })();
+            if result.is_err() {
+                if let Some(old) = previous.filter(|old| *old != credential_id) {
+                    console::switch_to("opencode-go", &old, 2, &home)?;
+                }
+            }
+            result
+        })
+        .await
+        .map_err(|e| Error::Provider(format!("OpenCode Go switch join failed: {e}")))??;
+        let registry = self.registry.clone();
+        let id = id.clone();
+        tokio::task::spawn_blocking(move || registry.set_active(API_KEY_PROVIDER_ID, &id))
+            .await
+            .map_err(|e| {
+                Error::Provider(format!("OpenCode Go registry update join failed: {e}"))
+            })??;
+        Ok(())
+    }
+    async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>> {
+        self.engine.query_quota(id).await
+    }
 }
 
 impl OpencodeProvider {
@@ -94,32 +281,9 @@ impl OpencodeProvider {
             })
     }
 
-    // -- Go 透传（既有行为保持不变） --
-
-    /// daemon 文件 reconcile 用内部 Go 引擎句柄。
+    /// 单独注册到 Provider 列表的 Go API Key 引擎。
     pub fn go_engine(&self) -> Arc<FileBlobProvider<OpencodeRuntime>> {
         self.go.clone()
-    }
-
-    pub fn live_account_id(&self) -> Result<AccountId> {
-        self.go.live_account_id()
-    }
-
-    pub fn import_active(&self, label_hint: Option<String>) -> Result<Account> {
-        self.go.import_active(label_hint)
-    }
-
-    pub fn sync_active_metadata(&self, label_hint: Option<String>) -> Result<Account> {
-        self.go.sync_active_metadata(label_hint)
-    }
-
-    pub fn import_raw(
-        &self,
-        raw: String,
-        label_hint: Option<String>,
-        active: Option<bool>,
-    ) -> Result<Account> {
-        self.go.import_raw(raw, label_hint, active)
     }
 
     // -- Console 官方账号 --
@@ -127,32 +291,52 @@ impl OpencodeProvider {
     /// 当前官方 Console 登录对应的 subswap 账号 id。未登录 → Err。
     pub fn live_console_id(&self) -> Result<AccountId> {
         let live = console::read_console_live(&self.go_home())?;
-        live.map(|l| console::account_id_for(&l.org_id))
-            .ok_or_else(|| {
-                Error::Provider("no OpenCode Console login; run `subswap login opencode`".into())
-            })
+        live.map(|l| console::account_id_for(&l)).ok_or_else(|| {
+            Error::Provider("no OpenCode Console login; run `subswap login opencode`".into())
+        })
     }
 
     /// 导入当前官方 Console 登录（只写元数据，不存 secret），并标 active。
     pub fn import_console_active(&self, label_hint: Option<String>) -> Result<Account> {
-        let live = console::read_console_live(&self.go_home())?.ok_or_else(|| {
+        self.sync_console_accounts(label_hint)?.ok_or_else(|| {
             Error::Provider(
                 "no OpenCode Console login found; run `opencode auth login opencode` (V2) \
                  or `opencode console login` (V1) first"
                     .into(),
             )
-        })?;
-        let id = console::account_id_for(&live.org_id);
-        let existing = self.registry.find(PROVIDER_ID, &id)?;
-        let mut account = console::account_from_live(&live, existing.as_ref());
-        if let Some(hint) = label_hint {
-            if !hint.trim().is_empty() {
-                account.label = hint;
+        })
+    }
+
+    /// 同步官方已保存的全部 Console 凭证。停用账号也进入账号池，额度查询使用各自凭证。
+    pub fn sync_console_accounts(&self, label_hint: Option<String>) -> Result<Option<Account>> {
+        let lives = console::read_console_accounts(&self.go_home())?;
+        let mut active = None;
+        for live in lives {
+            let id = console::account_id_for(&live);
+            let legacy_id = AccountId(format!("console-{}", live.org_id));
+            let existing = self
+                .registry
+                .find(PROVIDER_ID, &id)?
+                .or(self.registry.find(PROVIDER_ID, &legacy_id)?);
+            let mut account = console::account_from_live(&live, existing.as_ref());
+            account.active = live.active;
+            if live.active {
+                if let Some(hint) = label_hint.as_ref().filter(|s| !s.trim().is_empty()) {
+                    account.label = hint.clone();
+                }
+            }
+            self.registry.upsert(account.clone())?;
+            if legacy_id != id && self.registry.find(PROVIDER_ID, &legacy_id)?.is_some() {
+                self.registry.remove(PROVIDER_ID, &legacy_id)?;
+            }
+            if live.active && active.is_none() {
+                active = Some(account);
             }
         }
-        self.registry.upsert(account.clone())?;
-        self.registry.set_active(PROVIDER_ID, &id)?;
-        Ok(account)
+        if let Some(account) = &active {
+            self.registry.set_active(PROVIDER_ID, &account.id)?;
+        }
+        Ok(active)
     }
 
     /// 只对齐当前 Console 登录的元数据 active 标记（默认入口用）。
@@ -163,44 +347,65 @@ impl OpencodeProvider {
     /// 经官方命令切到指定 Console 账号。阻塞子进程，调用方已在 async 上下文时
     /// 由本函数内部转入 `spawn_blocking`。
     pub async fn activate_console(&self, account: &Account) -> Result<()> {
-        let label = account
+        let credential_id = account
             .extra
-            .get("credential_label")
+            .get("credential_id")
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| {
                 Error::Provider(format!(
-                    "console account {} has no credential label; re-import it",
+                    "console account {} has no credential id; re-import it",
                     account.id
                 ))
             })?
             .to_string();
         let home = self.go_home();
+        let expected = account.id.clone();
         tokio::task::spawn_blocking(move || {
+            let previous = console::read_console_live(&home)?.map(|live| live.credential_id);
             let major = console::detect_major_version()?;
-            console::switch_to(&label, major, &home)
+            let result = (|| {
+                console::switch_to(PROVIDER_ID, &credential_id, major, &home)?;
+                let selected =
+                    console::read_console_live(&home)?.map(|live| console::account_id_for(&live));
+                if selected.as_ref() != Some(&expected) {
+                    return Err(Error::Provider(format!(
+                        "OpenCode did not select Console account {expected}"
+                    )));
+                }
+                Ok(())
+            })();
+            if result.is_err() {
+                if let Some(old) = previous.filter(|old| *old != credential_id) {
+                    console::switch_to(PROVIDER_ID, &old, major, &home)?;
+                }
+            }
+            result
         })
         .await
         .map_err(|e| Error::Provider(format!("console switch join failed: {e}")))??;
-        self.registry.set_active(PROVIDER_ID, &account.id)?;
+        let registry = self.registry.clone();
+        let id = account.id.clone();
+        tokio::task::spawn_blocking(move || registry.set_active(PROVIDER_ID, &id))
+            .await
+            .map_err(|e| Error::Provider(format!("Console registry update join failed: {e}")))??;
         Ok(())
     }
 
     async fn query_console_quota(&self, account: &Account) -> Result<Vec<Quota>> {
         let home = self.go_home();
-        let live = tokio::task::spawn_blocking(move || console::read_console_live(&home))
+        let lives = tokio::task::spawn_blocking(move || console::read_console_accounts(&home))
             .await
             .map_err(|e| Error::Provider(format!("console credential read join failed: {e}")))??;
-        let live = live
-            .ok_or_else(|| Error::QuotaFetch("no OpenCode Console login; needs re-login".into()))?;
-        let expected = console::account_id_for(&live.org_id);
-        if expected != account.id {
-            return Err(Error::QuotaFetch(format!(
-                "console login moved to {} (expected {}); needs re-login",
-                expected, account.id
-            )));
-        }
+        let live = lives
+            .into_iter()
+            .find(|live| console::account_id_for(live) == account.id)
+            .ok_or_else(|| {
+                Error::QuotaFetch(
+                    "OpenCode Console credential is no longer available; needs re-login".into(),
+                )
+            })?;
         console::fetch_console_quota(&live, account).await
     }
 }
@@ -211,76 +416,25 @@ impl Provider for OpencodeProvider {
         PROVIDER_ID
     }
     fn display_name(&self) -> &'static str {
-        "OpenCode Go"
+        "OpenCode"
     }
     fn client_targets(&self) -> Vec<ClientTarget> {
-        let mut targets = vec![ClientTarget {
-            id: format!("{PROVIDER_ID}_live"),
-            display_name: "OpenCode Go credentials".into(),
-            probe_path: paths::auth_json_path(&self.go_home()),
-        }];
-        targets.push(ClientTarget {
+        vec![ClientTarget {
             id: format!("{PROVIDER_ID}_console"),
             display_name: "OpenCode Console login".into(),
             probe_path: console::console_db_path(&self.go_home()),
-        });
-        targets
+        }]
     }
     async fn list_accounts(&self) -> Result<Vec<Account>> {
         self.registry.list_by_provider(PROVIDER_ID)
     }
     async fn activate(&self, id: &AccountId) -> Result<()> {
         let account = self.require_account(id)?;
-        if console::is_console_account(&account) {
-            return self.activate_console(&account).await;
-        }
-        self.go.activate(id).await
+        self.activate_console(&account).await
     }
     async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>> {
         let account = self.require_account(id)?;
-        if console::is_console_account(&account) {
-            return self.query_console_quota(&account).await;
-        }
-        self.go.query_quota(id).await
-    }
-}
-
-impl IsolatedProvider for OpencodeProvider {
-    fn provider_id(&self) -> &'static str {
-        PROVIDER_ID
-    }
-    fn isolation_env_var(&self) -> &'static str {
-        self.go.isolation().env_var
-    }
-    fn native_cli(&self) -> &'static str {
-        self.go.isolation().native_cli
-    }
-    fn materialize(&self, id: &AccountId, env_dir: &Path) -> Result<()> {
-        let account = self.require_account(id)?;
-        if console::is_console_account(&account) {
-            return Err(Error::Provider(
-                "isolated runs are not supported for OpenCode Console accounts \
-                 (credentials live in the official client database)"
-                    .into(),
-            ));
-        }
-        self.go.materialize(id, env_dir)
-    }
-    fn absorb(&self, id: &AccountId, env_dir: &Path) -> Result<()> {
-        let account = self.require_account(id)?;
-        if console::is_console_account(&account) {
-            return Err(Error::Provider(
-                "isolated runs are not supported for OpenCode Console accounts".into(),
-            ));
-        }
-        self.go.absorb(id, env_dir)
-    }
-    fn isolation_extra_env(&self, id: &AccountId) -> Vec<(String, String)> {
-        self.require_account(id)
-            .ok()
-            .filter(|a| !console::is_console_account(a))
-            .map(|_| self.go.isolation_extra_env(id))
-            .unwrap_or_default()
+        self.query_console_quota(&account).await
     }
 }
 
@@ -296,7 +450,97 @@ pub fn new(store: Arc<dyn CredentialStore>, registry: Arc<AccountRegistry>) -> O
     }
 }
 
+/// 把旧版混在 `opencode` 下的 Go key 移到独立账号池，保留账号和凭证。
+/// 先复制 secret，再原子保存 registry；重复运行不会产生重复账号。
+pub fn migrate_legacy_api_keys(
+    store: &dyn CredentialStore,
+    registry: &AccountRegistry,
+) -> Result<()> {
+    let mut accounts = registry.load()?;
+    let legacy: Vec<Account> = accounts
+        .iter()
+        .filter(|a| a.provider == PROVIDER_ID && !console::is_console_account(a))
+        .cloned()
+        .collect();
+    if legacy.is_empty() {
+        return Ok(());
+    }
+    for old in &legacy {
+        let already_migrated = accounts
+            .iter()
+            .any(|a| a.provider == API_KEY_PROVIDER_ID && a.id == old.id);
+        if !already_migrated {
+            if let Some(blob) = store.get(PROVIDER_ID, &old.id.0, "blob")? {
+                store.set(API_KEY_PROVIDER_ID, &old.id.0, "blob", &blob)?;
+            }
+            let mut moved = old.clone();
+            moved.provider = API_KEY_PROVIDER_ID.into();
+            moved.extra.insert("manual_only".into(), true.into());
+            accounts.push(moved);
+        }
+    }
+    for account in &mut accounts {
+        if account.provider == API_KEY_PROVIDER_ID {
+            account.extra.insert("manual_only".into(), true.into());
+        }
+    }
+    accounts.retain(|a| !(a.provider == PROVIDER_ID && !console::is_console_account(a)));
+    registry.save(&accounts)?;
+    for old in legacy {
+        store.delete(PROVIDER_ID, &old.id.0, "blob")?;
+    }
+    Ok(())
+}
+
 /// 由粘贴的 API key 生成可导入的 blob。
 pub fn blob_from_key(key: &str) -> String {
     auth::blob_from_key(key.trim())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use subswap_core::FileStore;
+
+    #[test]
+    fn migrates_go_keys_without_moving_console_accounts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = AccountRegistry::new(tmp.path().join("registry.toml"));
+        let store = FileStore::new(tmp.path().join("credentials.json"));
+        let go = Account {
+            provider: PROVIDER_ID.into(),
+            id: AccountId("go_1".into()),
+            label: "sk-…test".into(),
+            active: true,
+            created_at: Utc::now(),
+            last_used_at: None,
+            priority: 100,
+            extra: serde_json::Map::new(),
+        };
+        let mut console = go.clone();
+        console.id = AccountId("console-user-wrk".into());
+        console.extra.insert("kind".into(), "console".into());
+        registry.save(&[go, console.clone()]).unwrap();
+        store
+            .set(PROVIDER_ID, "go_1", "blob", &blob_from_key("sk-test-key"))
+            .unwrap();
+
+        migrate_legacy_api_keys(&store, &registry).unwrap();
+        migrate_legacy_api_keys(&store, &registry).unwrap();
+
+        let accounts = registry.load().unwrap();
+        assert_eq!(accounts.len(), 2);
+        assert!(registry.find(PROVIDER_ID, &console.id).unwrap().is_some());
+        let moved = registry
+            .find(API_KEY_PROVIDER_ID, &AccountId("go_1".into()))
+            .unwrap()
+            .unwrap();
+        assert!(moved.manual_only());
+        assert!(store
+            .get(API_KEY_PROVIDER_ID, "go_1", "blob")
+            .unwrap()
+            .is_some());
+        assert!(store.get(PROVIDER_ID, "go_1", "blob").unwrap().is_none());
+    }
 }

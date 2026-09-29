@@ -61,4 +61,4 @@ refresh 已 `reused` / 吊销：对该号重新登录再导入。切号来回救
 - [2026-07-09](2026-07-09-codex-quota-401-despite-working-cli.md)
 - [2026-06-08](2026-06-08-codex-refresh-token-already-used.md)
 
-<!-- 2026-09-07 初稿；2026-09-10 社区对照；同日落地直连 OAuth -->
+<!-- 该文档整理/压缩于 2026-09-29 -->

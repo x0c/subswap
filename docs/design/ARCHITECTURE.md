@@ -60,7 +60,7 @@
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Codex / Kimi / OpenCode Go / Command Code → `providers/common`（原子写、快照回滚、capture-on-leave、parked-only 刷新、隔离导出/吸收）；各自只实现 `FileBlobRuntime` 差异点。OpenCode 另覆盖 `extract_blob` / `compose_live`（`auth.json` 多供应商共存，只改 `opencode-go` 项）。Command Code 覆盖 `extract_blob` / `compose_live`（归一多种 live 形态，激活写 `apiKey`）。Claude（Keychain + 自定义 API、无本地凭证文件）与 Cursor（SQLite + GUI 生命周期）独立实现 `Provider`，不接共享引擎。
+Codex / Kimi / OpenCode API Key / Command Code 使用 `providers/common` 的文件型凭证能力；OpenCode API Key 在 V2 上另由官方客户端数据库和切号命令决定当前 Key，V1 才通过 `auth.json` 的 `opencode-go` 项切换。OpenCode Console 官方账号单独实现 `Provider`，只从官方数据库读取凭证、通过官方命令切换；它与 API Key 是两个独立 Provider。Claude（Keychain + 自定义 API）与 Cursor（SQLite + GUI 生命周期）也独立实现。
 
 ## 2. 设计模式
 
@@ -78,7 +78,7 @@ Codex / Kimi / OpenCode Go / Command Code → `providers/common`（原子写、�
 
 ```
 ① sync_local_active
-   └─ claude/codex/kimi/cursor/opencode/commandcode 同步当前本地账号
+   └─ claude/codex/kimi/cursor/opencode/opencode-api-key/commandcode 同步当前本地账号
       （读各原生客户端登录状态，upsert registry；失败静默跳过）
 
 ② build_loading_snapshots
@@ -114,7 +114,8 @@ claude: subswap login claude → claude auth login --claudeai → claude.import_
 codex:  subswap login codex  → codex login                 → codex.import_active()
 kimi:     subswap login kimi     → （用户自己先跑 kimi 登录）     → kimi.import_active()
 cursor:   subswap login cursor   → （用户自己先在 Cursor 登录）   → cursor.import_active()
-opencode: subswap login opencode → （TUI 已 connect，或 `-- sk-…`）→ import_active / import_raw
+opencode: subswap login opencode → 官方 Console 登录已存在则导入，否则委托官方登录
+opencode-api-key: subswap login opencode-api-key → 导入官方已连接的 Go Key，或显式导入 Key
                                       └─ registry.set_active(provider, imported_id)
 ```
 
@@ -122,7 +123,7 @@ opencode: subswap login opencode → （TUI 已 connect，或 `-- sk-…`）→ 
 - 不复刻私有 OAuth；优先委托厂商官方 CLI。
 - 同账号重 login 按 `(provider, id)` 覆盖凭证，不新增重复。
 - 完成后以官方 CLI 当前激活账号为准，导入并标 active。
-- Kimi / Cursor / OpenCode：无驱动登录子命令 → 只 import（用户先自行登录；OpenCode 亦可 `login opencode -- sk-...` 写 API key）。切换 OpenCode 只改 `opencode-go` 项，不得覆盖同文件其它供应商。
+- Kimi / Cursor 只导入原生登录；OpenCode Console 登录委托官方 V2/V1 命令。OpenCode API Key 单列且仅手动选择；V2 由官方 `auth switch opencode-go` 切换已连接的 Key，V1 修改 `auth.json` 的 `opencode-go` 项并保留同文件其他供应商。
 
 ### 3.3 `subswap swap [<id|N>]`
 
@@ -235,7 +236,8 @@ Linux keyutils 按**内核 session keyring** 隔离。`subswapd` 经 `fork + set
 - Codex：`~/.codex/accounts/registry.json` + `~/.codex/sessions/`
 - Claude：`~/.claude/`
 - Kimi：`~/.kimi-code/credentials/kimi-code.json`（`KIMI_CODE_HOME` 可覆盖）
-- OpenCode Go：`~/.local/share/opencode/auth.json` 的 `opencode-go` 项（`SUBSWAP_OPENCODE_HOME` 可覆盖）
+- OpenCode Console：`~/.local/share/opencode/opencode.db` 的官方凭证（`SUBSWAP_OPENCODE_HOME` 可覆盖）；subswap 不复制 OAuth secret
+- OpenCode API Key：V2 以同一数据库的 `opencode-go` 凭证为准；V1 使用 `auth.json` 的 `opencode-go` 项
 - Command Code：`~/.commandcode/auth.json`（`SUBSWAP_COMMANDCODE_HOME` 可覆盖）
 - Cursor：各平台 `Cursor/User/globalStorage/state.vscdb`（详见 Provider 知识库）
 

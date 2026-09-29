@@ -122,7 +122,7 @@ async fn fetch_quota_at(
             "opencode go usage HTTP {status}: {body}"
         )));
     }
-    Ok(parse_usage(&body, crate::PROVIDER_ID, &account.id))
+    Ok(parse_usage(&body, &account.provider, &account.id))
 }
 
 #[cfg(test)]

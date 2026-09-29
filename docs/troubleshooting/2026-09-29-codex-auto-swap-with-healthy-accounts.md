@@ -27,3 +27,5 @@ A post-install v1.9.3 default-entry check reproduced the same order: B quota rea
 - Treat `auto: swapped` as evidence that the global credential changed, not as evidence that the previous account was depleted. Compare the per-account cache `cached_at` values with the `auto_swap` audit event before attributing the trigger. Do not use rapid usage requests to reproduce it.
 - The present macOS default also leaves `subswapd` stopped unless `SUBSWAP_AUTO_DAEMON=1` is set. That explains why a swap may appear only when the user runs `subswap`; it does not explain **why** a healthy account was selected. See [CLI behavior](../CLI.md) and [auto-swap design](../design/AUTO_SWAP_DESIGN.md).
 - **Unfixed:** the implementation still treats an active `Loading` state as a reason to leave it. A future correction needs to preserve prompt escape from confirmed exhaustion while ensuring a healthy active account is not replaced merely because another query returned first. Verify the default entry and daemon paths separately. The exact waiting/failure policy remains a design decision.
+
+<!-- 该文档整理/压缩于 2026-09-29 -->

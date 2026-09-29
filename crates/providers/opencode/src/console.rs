@@ -1,6 +1,6 @@
 //! OpenCode Console 官方登录账号（V2 `opencode auth login opencode` / V1 `opencode console login`）。
 //!
-//! 与 Go API key（`auth.json` 的 `opencode-go` 项）是两套凭证，分开处理：
+//! 与 Go API key（V2 官方数据库的 `opencode-go` 凭证；V1 `auth.json`）分开处理：
 //! - Console 账号只存元数据进 registry，secret 永远只读 live `opencode.db`，subswap 绝不刷新
 //!   （刷新由官方客户端负责，避免一次性 refresh token 争抢）。
 //! - 切换走官方 `opencode auth switch`；额度走 Console `/api/go/status`（Go 的
@@ -21,7 +21,6 @@ use crate::PROVIDER_ID;
 /// registry `extra["kind"]` 中 Console 账号的标记值。Go 账号无此键。
 pub const KIND_CONSOLE: &str = "console";
 
-const CONSOLE_BASE_DEFAULT: &str = "https://opencode.ai";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// 是否为 Console 账号（否则按 Go API key 账号处理）。
@@ -39,6 +38,8 @@ pub fn console_db_path(home: &Path) -> PathBuf {
 pub struct ConsoleLive {
     pub credential_id: String,
     pub credential_label: String,
+    pub account_id: String,
+    pub active: bool,
     pub email: String,
     pub org_id: String,
     pub org_name: String,
@@ -46,10 +47,15 @@ pub struct ConsoleLive {
     pub access_token: String,
 }
 
-/// 从 live 数据库读当前 Console 登录（`credential` 表 `integration_id='opencode'` 且 `active=1`）。
-/// DB 文件缺失 → `Ok(None)`（视为未登录，而非报错，方便测试隔离与未登录机器）。
-/// 行存在但缺 access/org 等关键字段 → `Err`（数据损坏，明确报出来）。
-pub fn read_console_live(home: &Path) -> Result<Option<ConsoleLive>> {
+/// V2 官方数据库中的 Go API key。密钥只留在内存中，不进 registry 或日志。
+pub struct GoKeyLive {
+    pub credential_id: String,
+    pub key: String,
+    pub active: bool,
+}
+
+/// `None` 表示没有 V2 凭证表（V1/旧版），`Some` 表示 V2 是权威凭证源。
+pub fn read_v2_go_keys(home: &Path) -> Result<Option<Vec<GoKeyLive>>> {
     let db = console_db_path(home);
     if !db.exists() {
         return Ok(None);
@@ -59,20 +65,141 @@ pub fn read_console_live(home: &Path) -> Result<Option<ConsoleLive>> {
             .map_err(|e| {
                 Error::Provider(format!("open OpenCode database {}: {e}", db.display()))
             })?;
+    let has_v2: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='credential')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| Error::Provider(format!("inspect OpenCode database: {e}")))?;
+    if !has_v2 {
+        return Ok(None);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT id, value, COALESCE(active, 0) FROM credential WHERE integration_id = 'opencode-go' ORDER BY COALESCE(active, 0) DESC, id",
+    ).map_err(|e| Error::Provider(format!("query OpenCode Go credentials: {e}")))?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, bool>(2)?,
+            ))
+        })
+        .map_err(|e| Error::Provider(format!("read OpenCode Go credentials: {e}")))?;
+    rows.map(|row| {
+        let (credential_id, value, active) =
+            row.map_err(|e| Error::Provider(format!("read OpenCode Go credential: {e}")))?;
+        let v: serde_json::Value = serde_json::from_str(&value)
+            .map_err(|e| Error::Provider(format!("parse OpenCode Go credential: {e}")))?;
+        let key = v
+            .get("key")
+            .and_then(|k| k.as_str())
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .ok_or_else(|| Error::Provider("OpenCode Go credential has no API key".into()))?
+            .to_string();
+        Ok(GoKeyLive {
+            credential_id,
+            key,
+            active,
+        })
+    })
+    .collect::<Result<Vec<_>>>()
+    .map(Some)
+}
+
+/// 读取官方客户端里的所有 Console 凭证，供停用账号查额度和自动切换。
+/// V1 的 `account` 表没有可离线列举的 workspace，只导入当前选中的 workspace。
+pub fn read_console_accounts(home: &Path) -> Result<Vec<ConsoleLive>> {
+    let db = console_db_path(home);
+    if !db.exists() {
+        return Ok(Vec::new());
+    }
+    let conn =
+        rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| {
+                Error::Provider(format!("open OpenCode database {}: {e}", db.display()))
+            })?;
+    let has_v2: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='credential')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| Error::Provider(format!("inspect OpenCode database: {e}")))?;
+    if !has_v2 {
+        return read_v1_account(&conn);
+    }
     let mut stmt = conn
         .prepare(
-            "SELECT id, label, value FROM credential \
-             WHERE integration_id = 'opencode' \
-             ORDER BY COALESCE(active, 0) DESC LIMIT 1",
+            "SELECT id, label, value, COALESCE(active, 0) FROM credential \
+         WHERE integration_id = 'opencode' ORDER BY COALESCE(active, 0) DESC, id",
         )
-        .map_err(|e| Error::Provider(format!("query OpenCode Console credential: {e}")))?;
-    let row: Option<(String, String, String)> = stmt
-        .query_row([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(|e| Error::Provider(format!("query OpenCode Console credentials: {e}")))?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, bool>(3)?,
+            ))
+        })
+        .map_err(|e| Error::Provider(format!("read OpenCode Console credentials: {e}")))?;
+    rows.map(|row| {
+        let (credential_id, credential_label, value, active) =
+            row.map_err(|e| Error::Provider(format!("read OpenCode Console credential: {e}")))?;
+        parse_v2_credential(credential_id, credential_label, value, active)
+    })
+    .collect()
+}
+
+/// 官方客户端当前选中的 Console 凭证。
+pub fn read_console_live(home: &Path) -> Result<Option<ConsoleLive>> {
+    Ok(read_console_accounts(home)?.into_iter().find(|a| a.active))
+}
+
+fn read_v1_account(conn: &rusqlite::Connection) -> Result<Vec<ConsoleLive>> {
+    let has_v1: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_state')",
+        [], |row| row.get(0),
+    ).map_err(|e| Error::Provider(format!("inspect OpenCode V1 account database: {e}")))?;
+    if !has_v1 {
+        return Ok(Vec::new());
+    }
+    let row: Option<(String, String, String, String, String)> = conn
+        .query_row(
+            "SELECT a.id, a.email, a.url, a.access_token, s.active_org_id \
+         FROM account_state s JOIN account a ON a.id = s.active_account_id \
+         WHERE s.id = 1 AND s.active_org_id IS NOT NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
         .optional()
-        .map_err(|e| Error::Provider(format!("read OpenCode Console credential: {e}")))?;
-    let Some((credential_id, credential_label, value)) = row else {
-        return Ok(None);
+        .map_err(|e| Error::Provider(format!("read OpenCode V1 account: {e}")))?;
+    let Some((account_id, email, server, access_token, org_id)) = row else {
+        return Ok(Vec::new());
     };
+    Ok(vec![ConsoleLive {
+        credential_id: account_id.clone(),
+        credential_label: email.clone(),
+        account_id,
+        active: true,
+        email,
+        org_id,
+        org_name: String::new(),
+        server,
+        access_token,
+    }])
+}
+
+fn parse_v2_credential(
+    credential_id: String,
+    credential_label: String,
+    value: String,
+    active: bool,
+) -> Result<ConsoleLive> {
     let v: serde_json::Value = serde_json::from_str(&value)
         .map_err(|e| Error::Provider(format!("parse OpenCode Console credential: {e}")))?;
     let access_token = v
@@ -93,28 +220,33 @@ pub fn read_console_live(home: &Path) -> Result<Option<ConsoleLive>> {
     let org_id = field(&["orgID", "org_id", "workspaceID", "workspace_id"]).ok_or_else(|| {
         Error::Provider("OpenCode Console credential has no organization id".into())
     })?;
+    let account_id = field(&["accountID", "account_id", "userID", "user_id"])
+        .unwrap_or_else(|| credential_id.clone());
     let email = field(&["email"]).unwrap_or_default();
     let org_name = field(&["orgName", "org_name"]).unwrap_or_default();
-    let server = field(&["server"]).unwrap_or_else(|| CONSOLE_BASE_DEFAULT.into());
-    Ok(Some(ConsoleLive {
+    let server = field(&["server", "enterpriseUrl", "enterprise_url"])
+        .ok_or_else(|| Error::Provider("OpenCode Console credential has no server URL".into()))?;
+    Ok(ConsoleLive {
         credential_id,
         credential_label,
+        account_id,
+        active,
         email,
         org_id,
         org_name,
         server,
         access_token,
-    }))
+    })
 }
 
-/// Console 账号主键：`console-` + orgID。额度按 workspace 归属，同一 org 重登保持同一账号。
-pub fn account_id_for(org_id: &str) -> AccountId {
-    AccountId(format!("console-{org_id}"))
+/// Console 账号主键同时包含官方账号与 workspace，防止同一 workspace 的不同用户串号。
+pub fn account_id_for(live: &ConsoleLive) -> AccountId {
+    AccountId(format!("console-{}-{}", live.account_id, live.org_id))
 }
 
 /// 由 live 元数据构造 registry 账号（不写 secret；调用方 upsert + set_active）。
 pub fn account_from_live(live: &ConsoleLive, existing: Option<&Account>) -> Account {
-    let id = account_id_for(&live.org_id);
+    let id = account_id_for(live);
     let label = if !live.email.trim().is_empty() {
         live.email.clone()
     } else if !live.org_name.trim().is_empty() {
@@ -125,6 +257,10 @@ pub fn account_from_live(live: &ConsoleLive, existing: Option<&Account>) -> Acco
     let mut extra = serde_json::Map::new();
     extra.insert("kind".into(), serde_json::Value::from(KIND_CONSOLE));
     extra.insert("email".into(), serde_json::Value::from(live.email.clone()));
+    extra.insert(
+        "account_id".into(),
+        serde_json::Value::from(live.account_id.clone()),
+    );
     extra.insert(
         "org_id".into(),
         serde_json::Value::from(live.org_id.clone()),
@@ -195,9 +331,9 @@ pub fn login_args(major: u64) -> Vec<String> {
     }
 }
 
-/// 官方切号到指定 Console 凭证（V2 `opencode auth switch opencode <label>`，非交互）。
+/// 官方切号到指定集成的凭证（V2 `opencode auth switch <integration> <credential>`，非交互）。
 /// V1 无可验证的等价命令：明确报错，提示用户先在官方客户端切好再同步。
-pub fn switch_to(label: &str, major: u64, home: &Path) -> Result<()> {
+pub fn switch_to(integration: &str, credential_id: &str, major: u64, home: &Path) -> Result<()> {
     if major < 2 {
         return Err(Error::Provider(
             "switching OpenCode Console accounts on V1 is not automated; \
@@ -206,7 +342,7 @@ pub fn switch_to(label: &str, major: u64, home: &Path) -> Result<()> {
         ));
     }
     let mut cmd = Command::new("opencode");
-    cmd.args(["auth", "switch", "opencode", label]);
+    cmd.args(["auth", "switch", integration, credential_id]);
     apply_home_env(&mut cmd, home);
     let out = cmd
         .output()
@@ -214,7 +350,7 @@ pub fn switch_to(label: &str, major: u64, home: &Path) -> Result<()> {
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(Error::Provider(format!(
-            "`opencode auth switch opencode {label}` failed: {}",
+            "`opencode auth switch {integration} {credential_id}` failed: {}",
             stderr.trim()
         )));
     }
@@ -237,11 +373,31 @@ fn apply_home_env(cmd: &mut Command, home: &Path) {
     }
 }
 
-fn console_base() -> String {
+fn console_base(live: &ConsoleLive) -> String {
     std::env::var("SUBSWAP_OPENCODE_CONSOLE_BASE")
-        .unwrap_or_else(|_| CONSOLE_BASE_DEFAULT.into())
+        .unwrap_or_else(|_| live.server.clone())
         .trim_end_matches('/')
         .to_string()
+}
+
+fn go_status_url(base: &str) -> Result<reqwest::Url> {
+    let mut url = reqwest::Url::parse(base)
+        .map_err(|e| Error::QuotaFetch(format!("invalid OpenCode Console server URL: {e}")))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(Error::QuotaFetch(
+            "OpenCode Console server must use HTTP(S)".into(),
+        ));
+    }
+    let root = url.path().trim_end_matches('/');
+    let path = if root.ends_with("/console") {
+        format!("{root}/api/go/status")
+    } else {
+        format!("{root}/console/api/go/status")
+    };
+    url.set_path(&path);
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
 }
 
 fn micro_cents(v: Option<&serde_json::Value>) -> Option<f64> {
@@ -316,7 +472,7 @@ pub fn parse_go_status(body: &str, account: &Account) -> Vec<Quota> {
 
 /// 用 Console token 查该 workspace 的 Go 余量（Bearer + `x-org-id`）。
 pub async fn fetch_console_quota(live: &ConsoleLive, account: &Account) -> Result<Vec<Quota>> {
-    fetch_console_quota_at(live, account, &console_base()).await
+    fetch_console_quota_at(live, account, &console_base(live)).await
 }
 
 async fn fetch_console_quota_at(
@@ -324,16 +480,14 @@ async fn fetch_console_quota_at(
     account: &Account,
     console_base: &str,
 ) -> Result<Vec<Quota>> {
-    let url = format!(
-        "{}/console/api/go/status",
-        console_base.trim_end_matches('/')
-    );
+    let url = go_status_url(console_base)?;
     let client = reqwest::Client::builder()
         .timeout(HTTP_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| Error::QuotaFetch(format!("opencode console status client failed: {e}")))?;
     let resp = client
-        .get(&url)
+        .get(url)
         .header("Authorization", format!("Bearer {}", live.access_token))
         .header("x-org-id", &live.org_id)
         .header("Accept", "application/json")
@@ -435,6 +589,31 @@ mod tests {
     }
 
     #[test]
+    fn console_quota_url_stays_on_credential_server() {
+        let url = go_status_url("https://enterprise.example.test/console").unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://enterprise.example.test/console/api/go/status"
+        );
+        let url = go_status_url("https://opencode.ai").unwrap();
+        assert_eq!(url.as_str(), "https://opencode.ai/console/api/go/status");
+    }
+
+    #[test]
+    fn console_credential_without_server_is_rejected() {
+        let value =
+            serde_json::json!({"access": "tok", "metadata": {"accountID": "user", "orgID": "wrk"}})
+                .to_string();
+        assert!(
+            parse_v2_credential("cred".into(), "Account".into(), value, true)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("no server URL")
+        );
+    }
+
+    #[test]
     fn version_parsing() {
         assert_eq!(parse_major_version("opencode v2.0.16\n"), Some(2));
         assert_eq!(parse_major_version("opencode 1.18.30"), Some(1));
@@ -452,14 +631,16 @@ mod tests {
         let live = ConsoleLive {
             credential_id: "cred_x".into(),
             credential_label: "Default".into(),
+            account_id: "user_x".into(),
+            active: true,
             email: "a@b.c".into(),
             org_id: "wrk_1".into(),
             org_name: "Default".into(),
-            server: CONSOLE_BASE_DEFAULT.into(),
+            server: "https://opencode.ai".into(),
             access_token: "tok".into(),
         };
         let acc = account_from_live(&live, None);
-        assert_eq!(acc.id.0, "console-wrk_1");
+        assert_eq!(acc.id.0, "console-user_x-wrk_1");
         assert!(is_console_account(&acc));
         assert!(!is_console_account(&sample_account()));
     }
@@ -468,5 +649,37 @@ mod tests {
     fn missing_db_is_not_logged_in() {
         let home = std::env::temp_dir().join("subswap-opencode-no-such-home-xyz");
         assert!(read_console_live(&home).unwrap().is_none());
+    }
+
+    #[test]
+    fn v2_keeps_two_users_in_one_workspace_separate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = rusqlite::Connection::open(console_db_path(tmp.path())).unwrap();
+        db.execute_batch("CREATE TABLE credential (id TEXT, integration_id TEXT, label TEXT, value TEXT, active INTEGER);").unwrap();
+        for (id, user, active) in [("cred_a", "user_a", 1), ("cred_b", "user_b", 0)] {
+            let value = serde_json::json!({"access": format!("tok_{user}"), "metadata": {"accountID": user, "orgID": "wrk_shared", "email": format!("{user}@example.com"), "server": "https://opencode.ai/console"}}).to_string();
+            db.execute(
+                "INSERT INTO credential VALUES (?1, 'opencode', ?2, ?3, ?4)",
+                rusqlite::params![id, user, value, active],
+            )
+            .unwrap();
+        }
+        let accounts = read_console_accounts(tmp.path()).unwrap();
+        assert_eq!(accounts.len(), 2);
+        assert_ne!(account_id_for(&accounts[0]), account_id_for(&accounts[1]));
+        assert_eq!(
+            read_console_live(tmp.path()).unwrap().unwrap().account_id,
+            "user_a"
+        );
+    }
+
+    #[test]
+    fn v1_reads_selected_account_and_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = rusqlite::Connection::open(console_db_path(tmp.path())).unwrap();
+        db.execute_batch("CREATE TABLE account (id TEXT, email TEXT, url TEXT, access_token TEXT); CREATE TABLE account_state (id INTEGER, active_account_id TEXT, active_org_id TEXT); INSERT INTO account VALUES ('user_1', 'v1@example.com', 'https://opencode.ai/console', 'tok'); INSERT INTO account_state VALUES (1, 'user_1', 'wrk_1');").unwrap();
+        let live = read_console_live(tmp.path()).unwrap().unwrap();
+        assert_eq!(account_id_for(&live).0, "console-user_1-wrk_1");
+        assert_eq!(live.email, "v1@example.com");
     }
 }

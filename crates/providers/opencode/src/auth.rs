@@ -1,4 +1,4 @@
-//! OpenCode `auth.json` 里只管理 `opencode-go` 这一项；其它供应商条目保持不动。
+//! OpenCode V1 与隔离目录的 `auth.json` 只管理 `opencode-go` 项；其它供应商条目保持不动。
 
 use sha2::{Digest, Sha256};
 use subswap_provider_common::BlobMetadata;

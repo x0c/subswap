@@ -385,30 +385,34 @@ API-key 型 `auth.json` 示例：
 
 ## OpenCode Console official sign-in and Go monitoring
 
-Requirement (2026-09-29): `subswap login opencode` must recognize an account already signed in through the official OpenCode CLI and, when sign-in is needed, delegate to `opencode auth login opencode` on V2 or `opencode console login` on V1. After sign-in, the user selects an OpenCode Go model with `/models`; subswap monitors the Go allowance for that same Console account and workspace. An explicit Go API key remains a separate supported login path. Never attribute a Go key's usage to an unrelated Console OAuth account, and show unavailable usage as unknown rather than zero.
+Requirement (2026-09-29, corrected after live review): `opencode` represents only official Console login accounts. Go API keys appear under a separate `OpenCode API Key` provider and login entry; they remain available for manual import, selection, and quota monitoring, but never participate in automatic switching. Automatic OpenCode switching considers only official Console accounts and must not choose a Go key as a target. `subswap login opencode` recognizes an account already signed in through the official CLI and, when sign-in is needed, delegates to `opencode auth login opencode` on V2 or `opencode console login` on V1. After sign-in, the user selects an OpenCode Go model with `/models`; subswap monitors that Console account and workspace. Never attribute a Go key's usage to an unrelated Console OAuth account, and show unavailable usage as unknown rather than zero.
 
-Confirmed on the local V2.0.16 client: OpenCode Console (`opencode`) and OpenCode Go (`opencode-go`) are separate credentials. V2 stores credentials in its SQLite database and exposes account switching through `opencode auth switch`; the legacy `auth.json` still contains a Go key. The existing subswap provider reads only the Go slot. The Console OAuth token receives HTTP 401 from `/zen/go/v1/usage`; the Go key receives HTTP 200. The same OAuth token receives HTTP 200 from Console `/api/go/status` and `/api/billing/status` with its organization header. These Console routes are currently undocumented and require tolerant parsing and explicit error states.
+V2 API-key activation must switch the corresponding `opencode-go` credential through the official client database/command; changing only legacy `auth.json` does not select a V2 credential. V1 keeps the file-based path. A key not yet connected in V2 must be connected with the official client before subswap can select it; do not report a successful switch after changing only the legacy file. OpenCode V2 isolation is unsupported until a private database can be initialized and the selected Key verified there; reject `run`/`shell`/`env` for V2 rather than silently launching with the wrong credential.
+
+Console quota requests must use the server URL attached to that official credential (the test-only base override is separate). Never send an enterprise or self-hosted Console token to the public default host merely because the client omitted host routing.
+
+Confirmed on the local V2.0.16 client: OpenCode Console (`opencode`) and OpenCode Go (`opencode-go`) are separate credentials. V2 stores credentials in its SQLite database and exposes account switching through `opencode auth switch`; the legacy `auth.json` may still contain a Go key, but changing that file alone does not select a V2 credential. The Console OAuth token receives HTTP 401 from `/zen/go/v1/usage`; the Go key receives HTTP 200. The same OAuth token receives HTTP 200 from Console `/api/go/status` and `/api/billing/status` with its organization header. These Console routes are currently undocumented and require tolerant parsing and explicit error states.
 
 ### 设计（2026-09-29 落地）
 
-`OpencodeProvider` 不再是 `FileBlobProvider` 别名，而是自定义 `Provider`：内部持有一个 Go 文件引擎（原有行为全部保留），Console 账号独立实现。按 `Account.extra["kind"] == "console"` 区分两类账号并路由 `activate` / `query_quota`；`swap` 经 registry trait 统一分发，无需改命令层。
+`opencode` 是 Console 官方账号 Provider，`opencode-api-key` 是 Go Key Provider。两者在 registry、额度缓存和自动换号策略中完全分开；旧版混存的 Key 在启动时迁移到后者，保留账号 ID 与凭证，设置 `manual_only`。Console 账号只保存元数据，V2 Go Key 从官方数据库同步并由官方命令选中；V1 Go Key 使用文件引擎。若官方当前没有激活 Key，迁移前留下的 Key active 标记也必须清掉，不能把 registry 旧状态显示成官方当前凭证。
 
-| 项 | Go 账号（`kind` 缺省） | Console 账号（`kind = "console"`） |
+| 项 | Go Key（`opencode-api-key`） | Console 账号（`opencode`） |
 |---|---|---|
-| 身份 | `go-` + key 指纹；label `sk-…末4` | `console-` + orgID；label 邮箱或 org 名 |
+| 身份 | `go-` + key 指纹；label `sk-…末4` | `console-` + accountID + orgID；label 邮箱或 org 名，同一 workspace 不同用户不能合并 |
 | 凭证存放 | CredentialStore 存 `opencode-go` blob（现有） | **不存 secret**；额度每次从 live `opencode.db` 只读 token（官方客户端负责刷新，subswap 绝不刷 Console active/parked） |
-| 发现 | live `auth.json` 的 `opencode-go` 项 | live `opencode.db` 的 `credential` 表（`integration_id='opencode'`，`active=1` 为当前）；DB 缺失 → 视作无 Console 登录 |
-| 切换 | 文件引擎原子覆盖 `auth.json` 的 `opencode-go` 项 | 调官方命令：V2 `opencode auth switch opencode <label>`（已验证切已 active 账号可非交互成功）；V1 预留 `opencode console` 路径（本机无 V1，best-effort，文档注明未实测） |
-| 额度 | `GET {zen/go/v1}/usage`（Bearer Go key，现有） | `GET https://opencode.ai/console/api/go/status`（Bearer Console token + `x-org-id: <orgID>`）；`access.meters.fiveHour/week/month` 的 `usedMicroCents/limitMicroCents`（字符串微分）→ 已用% = `100*used/limit`，映射 5h/7d/mo；缺失窗口直接跳过（未知≠0）；401/403 → `needs re-login`；429 → 瞬态失败（走统一失败退避，绝不当死 key） |
-| 登录 | `subswap login opencode -- <key>`（现有） | `subswap login opencode` 无参：Console 已登录则直接导入 active；否则跑官方登录（V2 `opencode auth login opencode` / V1 `opencode console login`，按 `opencode --version` 主版本分发）再导入 |
-| 隔离运行 | 支持（现有 `XDG_DATA_HOME` + `OPENCODE_AUTH_CONTENT`） | **不支持** `run/shell/env`（凭证在 SQLite + 官方服务，无 env 覆盖机制；同 Cursor 边界），明确报错 |
+| 发现 | V2 `opencode.db` 的 `opencode-go` 凭证；V1 `auth.json` 的 `opencode-go` 项 | V2 `opencode.db` 的全部 `opencode` 凭证（`active=1` 为当前）；V1 `account` + `account_state` 仅可识别当前账号 |
+| 切换 | V2 `opencode auth switch opencode-go <credential-id>`，只接受官方已连接的 Key；V1 原子覆盖 `auth.json` 的 `opencode-go` 项 | V2 `opencode auth switch opencode <credential-id>`；V1 无非交互切号命令，先在官方客户端选账号再同步 |
+| 额度 | `GET {zen/go/v1}/usage`（Bearer Go key，现有） | `GET <该账号凭证的 server>/api/go/status`（Bearer Console token + `x-org-id: <orgID>`，不跨站重定向）；`access.meters.fiveHour/week/month` 的 `usedMicroCents/limitMicroCents`（字符串微分）→ 已用% = `100*used/limit`，映射 5h/7d/mo；缺失窗口直接跳过（未知≠0）；401/403 → `needs re-login`；429 → 瞬态失败（走统一失败退避，绝不当死 key） |
+| 登录 | `subswap login opencode-api-key` 导入已连接 Key，或 `-- <key>` 导入；V2 选中前须已在官方客户端连接该 Key | `subswap login opencode`：已登录则导入，未登录则委托官方登录（V2 `opencode auth login opencode` / V1 `opencode console login`） |
+| 隔离运行 | 仅 V1 支持（`XDG_DATA_HOME` + `OPENCODE_AUTH_CONTENT`）；V2 拒绝 | **不支持** `run/shell/env`（凭证在 SQLite + 官方服务，无 env 覆盖机制；同 Cursor 边界），明确报错 |
 
 - 同一订阅的两面：实测同一 workspace 下 Go key 的 `/zen/go/v1/usage` 百分比与 Console token 的 `/go/status` meters 换算一致（如月 50%），互为印证；但两者 token 不通用，查询路径必须按账号种类走对端点。
 - SQLite 只读：`file:<db>?mode=ro` 经 rusqlite；测试隔离走既有 `SUBSWAP_OPENCODE_HOME`（fixture 目录无 `opencode.db` 即无 Console 账号，Go 单测不受影响）。
 - 阻塞规则：DB 读与官方子进程调用一律 `spawn_blocking`；`opencode` 二进制缺失 → 明确报错不静默跳过。
-- 默认入口：Go 同步块之后加 Console 同步块（`live_console_id` → `sync_console_active_metadata` → 标 active）；daemon 仍用 `go_engine()` 做文件 reconcile，Console 无需 capture（不存 secret）。
+- 默认入口和 daemon 各自同步 Console 与 Key；V2 Console 停用账号也可从官方数据库查询其账号余量。Console 无需 capture（不存 secret）；Go Key 无 refresh，所有 Key 固定 `manual_only`。
 
-## OpenCode Go
+## OpenCode API Key
 
 共享引擎第三个文件型 provider：`crates/providers/opencode/`。
 官方 `~/.local/share/opencode/auth.json` 是多供应商 map；subswap **只抽出/覆盖 `opencode-go`**，其余原样保留。引擎 hook：`extract_blob` / `compose_live`（默认整文件覆盖；Codex/Kimi 不覆盖）。
@@ -420,8 +424,8 @@ Go 订阅 = API key（`{"type":"api","key":"sk-..."}`），无 refresh，不刷�
 | 项 | 值 |
 |---|---|
 | 工作目录 | `SUBSWAP_OPENCODE_HOME` > `XDG_DATA_HOME/opencode` > `~/.local/share/opencode`（Windows `%LOCALAPPDATA%/opencode`）。官方 xdg-basedir，**macOS 也是 `~/.local/share`，不是 Application Support** |
-| 当前激活凭证 | `<home>/auth.json` |
-| live 键 | `opencode-go` |
+| 当前激活凭证 | V2 `<home>/opencode.db` 的 `opencode-go` 凭证；V1 `<home>/auth.json` |
+| live 键 | V1 `opencode-go`；V2 `integration_id='opencode-go'` |
 
 ### 主键与展示名
 
@@ -441,7 +445,7 @@ Go 订阅 = API key（`{"type":"api","key":"sk-..."}`），无 refresh，不刷�
 - 窗口：`rolling` → 5h，`weekly` → 7d，`monthly` → 月
 - `status: "rate-limited"` → 该窗口 100% 已用
 - `401` / `403` = key 无效或无有效 Go 订阅（需重新导入）；**不得**把 `429` 当 key 作废
-- 自动换号：`rolling` 为小时级，过默认阈值切走；weekly/monthly 仅明确耗尽时触发/阻断。daemon 与默认入口已注册，策略按 provider 独立决策
+- 自动换号：禁用。`rolling` / weekly / monthly 只用于显示余量；Key 不成为候选，也不会被自动切走
 - 测试：`SUBSWAP_OPENCODE_GO_BASE` → mock
 
 ### 隔离运行
@@ -449,12 +453,12 @@ Go 订阅 = API key（`{"type":"api","key":"sk-..."}`），无 refresh，不刷�
 官方无 `OPENCODE_HOME`。隔离：
 
 1. `XDG_DATA_HOME` → 私有目录，合成 `auth.json` 写到 `<env>/opencode/auth.json`
-2. `OPENCODE_AUTH_CONTENT` = 同一份 JSON；官方有此变量时完全忽略磁盘 `auth.json`
+2. V1 设置 `OPENCODE_AUTH_CONTENT` = 同一份 JSON；V2 不认此变量，也不会把私有 `auth.json` 自动选为当前 Key，所以入口明确拒绝
 
 ### 登录方式
 
-- `subswap login opencode`：从 live `auth.json` 的 `opencode-go` 导入（用户先在 TUI `/connect` 粘贴）
-- `subswap login opencode -- sk-...`：直接导入并合并写回 live
+- `subswap login opencode-api-key`：V2 从官方数据库导入已连接的 Go Key；V1 从 live `auth.json` 导入
+- `subswap login opencode-api-key -- sk-...`：显式导入；V2 需先在官方客户端连接该 Key 才能选中，V1 合并写回 live
 - `--email` / `--sso` / `--device-auth` 不支持
 
 ### 开源圈「号池」≠ subswap 切号
@@ -481,9 +485,9 @@ Go 订阅 = API key（`{"type":"api","key":"sk-..."}`），无 refresh，不刷�
 
 官方 OAuth 多账号轮换**不覆盖 Go 纯 API key**。
 
-**subswap 边界**：已落地 A（查用量、过阈值改 `opencode-go`）——下次启动/轮询换号，**挡不住当前请求已撞限流**。B 需进进程（插件）或挡接口（代理）。部分版本另存 `account.json`；只写 `auth.json` 可能看起来没生效——改切换前先核客户端读哪份。旧文档「Go 无用量接口」已过时（有 `GET …/zen/go/v1/usage`）。
+**subswap 边界**：Go Key 只查余量并允许手动选择，自动换号仅属于官方 Console 账号。subswap 不拦截或重发 OpenCode 当前请求；请求途中换 Key 需插件或代理。V2 的当前 Key 来自官方数据库，不能靠覆盖 `auth.json` 假装切换成功。旧文档「Go 无用量接口」已过时（有 `GET …/zen/go/v1/usage`）。
 
-**切号后旧 OpenCode 会话可能固定 400**：`subswap swap` 换 `opencode-go` = 换了上游眼中的 caller/key，旧会话 transcript 里持久化的 `reasoning.encrypted_content`（caller-bound）再 replay 会被拒（`encrypted_content was not issued to this caller`），重试必现。切号后开新会话（`/new`）或先 `/clear`；不要把该 400 当额度耗尽继续切号。详见 [troubleshooting/2026-09-29](troubleshooting/2026-09-29-opencode-reasoning-encrypted-content-caller.md)。
+**切号后旧 OpenCode 会话可能固定 400**：手动换 Go Key 会改变上游眼中的 caller/key，旧会话 transcript 里持久化的 `reasoning.encrypted_content`（caller-bound）再 replay 会被拒（`encrypted_content was not issued to this caller`），重试必现。切号后开新会话（`/new`）或先 `/clear`；不要把该 400 当额度耗尽继续切号。详见 [troubleshooting/2026-09-29](troubleshooting/2026-09-29-opencode-reasoning-encrypted-content-caller.md)。
 
 ---
 
@@ -638,7 +642,7 @@ active 查询 401 **绝不刷新**：只重读 live。Cursor 已自行轮换 →
 
 ## 文件型 OAuth 切换共享引擎（`crates/providers/common`）
 
-Codex / Kimi / OpenCode Go：凭证 = 本地 JSON + 原子覆盖。公共机制在 `subswap-provider-common`，避免每加同构 provider 重写 flock/snapshot/capture-on-leave。
+Codex / Kimi / OpenCode API Key：凭证以 JSON blob 进入公共 `subswap-provider-common`；OpenCode V2 的当前 Key 以官方数据库为准，V1 才按文件原子覆盖切换。
 
 **Claude 不在引擎上**：Keychain + 自定义 API 账号形状不同，保留 `crates/providers/claude` 独立实现。
 

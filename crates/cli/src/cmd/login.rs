@@ -103,36 +103,22 @@ pub async fn run(
             }
             return finish(ctx, json).await;
         }
-        "opencode" | "opencode-go" => {
+        "opencode" => {
             if email.is_some() || sso || device_auth {
                 bail!("--email/--sso/--device-auth are not supported for opencode login");
             }
-            let account = if let Some(key) = extra_args
-                .first()
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-            {
-                let blob = subswap_provider_opencode::blob_from_key(key);
-                let account = ctx
-                    .opencode
-                    .import_raw(blob, None, Some(true))
-                    .context("import OpenCode Go API key")?;
-                ctx.opencode
-                    .activate(&account.id)
-                    .await
-                    .context("write OpenCode Go key into auth.json")?;
-                account
-            } else if ctx.opencode.live_console_id().is_ok() {
-                // 官方 Console 已登录：直接导入当前账号（只存元数据，不碰 secret）。
-                ctx.opencode
-                    .import_console_active(None)
-                    .context("import OpenCode Console login")?
-            } else if ctx.opencode.live_account_id().is_ok() {
-                // 只有 Go key：沿用旧导入路径。
-                ctx.opencode.import_active(None).context(
-                    "import OpenCode Go login; connect OpenCode Go in the TUI or pass the API key after `--`",
-                )?
-            } else {
+            if !extra_args.is_empty() {
+                bail!("API keys use `subswap login opencode-api-key -- <key>`");
+            }
+            let home = ctx.opencode.go_engine().home();
+            let signed_in = tokio::task::spawn_blocking(move || {
+                subswap_provider_opencode::console::read_console_live(&home)
+                    .map(|live| live.is_some())
+            })
+            .await
+            .context("read OpenCode Console login task failed")?
+            .context("read OpenCode Console login")?;
+            if !signed_in {
                 // 未登录：调官方命令走原生登录流程，再导入 Console 账号。
                 let major = tokio::task::spawn_blocking(
                     subswap_provider_opencode::console::detect_major_version,
@@ -142,13 +128,12 @@ pub async fn run(
                 .context("detect OpenCode version")?;
                 let args = subswap_provider_opencode::console::login_args(major);
                 run_native_login("opencode", args).await?;
-                ctx.opencode
-                    .import_console_active(None)
-                    .context("import OpenCode Console login after native sign-in")?
-            };
-            ctx.registry
-                .set_active("opencode", &account.id)
-                .context("mark OpenCode login active")?;
+            }
+            let console = ctx.opencode.clone();
+            let account = tokio::task::spawn_blocking(move || console.import_console_active(None))
+                .await
+                .context("import OpenCode Console task failed")?
+                .context("import OpenCode Console login")?;
             ctx.audit.append(AuditEvent::ok(
                 "login",
                 "opencode",
@@ -157,6 +142,60 @@ pub async fn run(
             println!("login → opencode/{}", account_ref(&account.id.0));
             if let Err(e) = subswap_core::record_manual_swap("opencode") {
                 tracing::warn!(err = %e, provider = "opencode", "record manual hold failed");
+            }
+            return finish(ctx, json).await;
+        }
+        "opencode-api-key" | "opencode-go" => {
+            if email.is_some() || sso || device_auth {
+                bail!("login options are not supported for opencode-api-key");
+            }
+            if extra_args.len() > 1 {
+                bail!("expected one OpenCode API key after `--`");
+            }
+            let account = if let Some(key) = extra_args
+                .first()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                let blob = subswap_provider_opencode::blob_from_key(key);
+                let key_provider = ctx.opencode_api_key.clone();
+                let account = tokio::task::spawn_blocking(move || {
+                    key_provider.import_raw(blob, None, Some(false))
+                })
+                .await
+                .context("import OpenCode API key task failed")?
+                .context("import OpenCode API key")?;
+                ctx.opencode_api_key
+                    .activate(&account.id)
+                    .await
+                    .context("select OpenCode API key")?;
+                Some(account)
+            } else {
+                let key_provider = ctx.opencode_api_key.clone();
+                let accounts =
+                    tokio::task::spawn_blocking(move || key_provider.sync_accounts(None))
+                        .await
+                        .context("import OpenCode API keys task failed")?
+                        .context("import OpenCode API keys from the official client")?;
+                if accounts.is_empty() {
+                    bail!("no OpenCode API key found; run `opencode auth login opencode-go` or pass a key after `--`");
+                }
+                accounts.into_iter().find(|a| a.active)
+            };
+            if let Some(account) = account {
+                ctx.audit.append(AuditEvent::ok(
+                    "login",
+                    "opencode-api-key",
+                    Some(account.id.0.as_str()),
+                ));
+                println!("login → opencode-api-key/{}", account_ref(&account.id.0));
+                if let Err(e) = subswap_core::record_manual_swap("opencode-api-key") {
+                    tracing::warn!(err = %e, provider = "opencode-api-key", "record manual hold failed");
+                }
+            } else {
+                ctx.audit
+                    .append(AuditEvent::ok("login", "opencode-api-key", None));
+                println!("imported OpenCode API keys (none active)");
             }
             return finish(ctx, json).await;
         }
@@ -219,7 +258,7 @@ pub async fn run(
             return finish(ctx, json).await;
         }
         other => {
-            bail!("unknown provider: {other} (expected claude, codex, kimi, cursor, opencode or commandcode)")
+            bail!("unknown provider: {other} (expected claude, codex, kimi, cursor, opencode, opencode-api-key or commandcode)")
         }
     }
 }

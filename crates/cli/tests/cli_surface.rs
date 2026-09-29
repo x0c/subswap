@@ -669,12 +669,12 @@ fn login_opencode_imports_go_key_and_preserves_other_providers() {
 
     let stdout = assert_success(
         isolated_subswap(&tmp)
-            .args(["login", "opencode"])
+            .args(["login", "opencode-api-key"])
             .output()
             .unwrap(),
     );
     assert!(
-        stdout.contains("login → opencode/go-"),
+        stdout.contains("login → opencode-api-key/go-"),
         "expected imported OpenCode Go account, got: {stdout}"
     );
 
@@ -684,8 +684,8 @@ fn login_opencode_imports_go_key_and_preserves_other_providers() {
     assert_eq!(live["opencode-go"]["key"], "sk-test-key-1234");
 }
 
-/// 官方 Console 登录优先于 Go key：fixture `opencode.db` 里有一个 active Console
-/// 凭证时，`login opencode` 应导入 Console 账号（`console-<org>`），且不把 token
+/// 官方 Console 与 Go key 独立：fixture `opencode.db` 里有一个 active Console
+/// 凭证时，`login opencode` 应导入 Console 账号，且不把 token
 /// 写进 subswap credential store。
 #[test]
 fn login_opencode_prefers_console_login_without_storing_secret() {
@@ -734,7 +734,7 @@ fn login_opencode_prefers_console_login_without_storing_secret() {
             .unwrap(),
     );
     assert!(
-        stdout.contains("login → opencode/console-wrk_test123"),
+        stdout.contains("login → opencode/console-user_test-wrk_test123"),
         "expected imported Console account, got: {stdout}"
     );
 
@@ -743,7 +743,7 @@ fn login_opencode_prefers_console_login_without_storing_secret() {
         .or_else(|_| fs::read_to_string(app_config_dir(&tmp).join("registry.toml")))
         .unwrap_or_default();
     assert!(
-        registry.contains("console-wrk_test123"),
+        registry.contains("console-user_test-wrk_test123"),
         "registry should track the Console account: {registry}"
     );
     // … 但 secret 绝不落 subswap store。
@@ -764,6 +764,57 @@ fn login_opencode_prefers_console_login_without_storing_secret() {
         }
     }
     assert!(!store_leaked, "Console token must not be stored by subswap");
+}
+
+#[test]
+fn v2_inactive_go_key_stays_visible_without_becoming_active() {
+    let tmp = tempfile::tempdir().unwrap();
+    let former_active_id = login_opencode_key(&tmp, "sk-test-inactive");
+    let home = tmp.path().join("opencode");
+    fs::create_dir_all(&home).unwrap();
+    let db = rusqlite::Connection::open(home.join("opencode.db")).unwrap();
+    db.execute_batch("CREATE TABLE credential (id TEXT, integration_id TEXT, value TEXT, active INTEGER); INSERT INTO credential VALUES ('go_cred', 'opencode-go', '{\"type\":\"key\",\"key\":\"sk-test-inactive\"}', 0);").unwrap();
+    drop(db);
+    let mut bodies = HashMap::new();
+    bodies.insert(
+        "sk-test-inactive".into(),
+        (200, OPENCODE_HEALTHY_USAGE.into()),
+    );
+    let server = KeyedUsageServer::start(bodies);
+    write(
+        &app_config_dir(&tmp).join("config.toml"),
+        "[quota]\nmin_refresh_interval_ms = 0\nfetch_retries = 0\n",
+    );
+
+    let json = assert_success(
+        isolated_subswap(&tmp)
+            .args(["--json"])
+            .env("SUBSWAP_OPENCODE_GO_BASE", server.base_url())
+            .output()
+            .unwrap(),
+    );
+    let rows: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let key = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["provider"] == "opencode-api-key" && row["id"] == former_active_id)
+        .unwrap();
+    assert_eq!(key["active"], false);
+    assert_eq!(key["fetch_state"], "ready", "{key:?}");
+    assert!(key["quotas"].as_array().is_some_and(|q| !q.is_empty()));
+
+    let out = assert_success(
+        isolated_subswap(&tmp)
+            .args(["login", "opencode-api-key", "--json"])
+            .env("SUBSWAP_OPENCODE_GO_BASE", server.base_url())
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        out.contains("none active"),
+        "inactive key should import without fake activation: {out}"
+    );
 }
 
 fn walk_files(dir: &Path) -> Vec<std::path::PathBuf> {
@@ -798,38 +849,38 @@ fn run_opencode_unknown_account_reports_not_found() {
 }
 
 #[test]
-fn run_opencode_materializes_isolated_auth_via_generic_dispatch() {
+fn v2_opencode_key_isolation_fails_closed() {
     let tmp = tempfile::tempdir().unwrap();
     let id = login_opencode_key(&tmp, "sk-test-key-1234");
+    let db = rusqlite::Connection::open(tmp.path().join("opencode/opencode.db")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE credential (id TEXT, integration_id TEXT, value TEXT, active INTEGER);",
+    )
+    .unwrap();
+    drop(db);
 
-    let env_out = assert_success(isolated_subswap(&tmp).args(["env", &id]).output().unwrap());
+    let env_out = isolated_subswap(&tmp).args(["env", &id]).output().unwrap();
+    assert!(!env_out.status.success());
     assert!(
-        env_out.contains("XDG_DATA_HOME="),
-        "env should export XDG_DATA_HOME: {env_out}"
+        String::from_utf8_lossy(&env_out.stderr)
+            .contains("OpenCode V2 API key isolation is unavailable"),
+        "{}",
+        String::from_utf8_lossy(&env_out.stderr)
     );
-    assert!(
-        env_out.contains("OPENCODE_AUTH_CONTENT="),
-        "env should export OPENCODE_AUTH_CONTENT: {env_out}"
-    );
-    assert!(
-        env_out.contains("opencode-go"),
-        "OPENCODE_AUTH_CONTENT should contain the Go slot: {env_out}"
-    );
+    assert!(env_out.stdout.is_empty());
 
     let output = isolated_subswap(&tmp)
-        .args(["run", "opencode", &id, "--", "--version"])
+        .args(["run", "opencode-api-key", &id, "--", "--version"])
         .output()
         .unwrap();
-    let run_stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
     assert!(
-        run_stdout.contains("isolated XDG_DATA_HOME="),
-        "materialize/env_vars should have resolved XDG_DATA_HOME via IsolatedProvider; stdout: {run_stdout}, stderr: {stderr}"
+        String::from_utf8_lossy(&output.stderr)
+            .contains("OpenCode V2 API key isolation is unavailable"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        !stderr.contains("isolation not supported for provider opencode"),
-        "opencode must be dispatched through ctx.isolated: {stderr}"
-    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("run →"));
 }
 
 const OPENCODE_EXHAUSTED_KEY: &str = "sk-test-exhausted-0000";
@@ -842,18 +893,18 @@ fn login_opencode_key(tmp: &tempfile::TempDir, key: &str) -> String {
     write_fast_quota_timeout(tmp);
     let stdout = assert_success(
         isolated_subswap(tmp)
-            .args(["login", "opencode", "--", key])
+            .args(["login", "opencode-api-key", "--", key])
             .output()
             .unwrap(),
     );
     first_action_line(&stdout)
-        .strip_prefix("login → opencode/")
+        .strip_prefix("login → opencode-api-key/")
         .unwrap_or_else(|| panic!("unexpected login output: {stdout}"))
         .to_string()
 }
 
 #[test]
-fn default_entry_auto_swaps_exhausted_opencode_go_and_keeps_neighbor_providers() {
+fn default_entry_never_auto_swaps_opencode_api_keys() {
     let tmp = tempfile::tempdir().unwrap();
     let auth = tmp.path().join("opencode").join("auth.json");
     write(&auth, r#"{"openai":{"type":"api","key":"sk-keep-other"}}"#);
@@ -864,7 +915,7 @@ fn default_entry_auto_swaps_exhausted_opencode_go_and_keeps_neighbor_providers()
 
     assert_success(
         isolated_subswap(&tmp)
-            .args(["swap", &format!("opencode/{exhausted_id}")])
+            .args(["swap", &format!("opencode-api-key/{exhausted_id}")])
             .output()
             .unwrap(),
     );
@@ -892,14 +943,14 @@ fn default_entry_auto_swaps_exhausted_opencode_go_and_keeps_neighbor_providers()
             .unwrap(),
     );
     assert!(
-        stdout.contains("auto: swapped to sk-…9999"),
-        "exhausted 5h window must auto-swap to the healthy Go key: {stdout}"
+        !stdout.contains("auto: swapped to sk-…9999"),
+        "Go keys must stay manual-only even when the active key is exhausted: {stdout}"
     );
 
     let live: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&auth).unwrap()).unwrap();
     assert_eq!(live["openai"]["key"], "sk-keep-other");
-    assert_eq!(live["opencode-go"]["key"], OPENCODE_HEALTHY_KEY);
+    assert_eq!(live["opencode-go"]["key"], OPENCODE_EXHAUSTED_KEY);
 }
 
 #[test]
@@ -911,7 +962,7 @@ fn default_entry_does_not_auto_swap_opencode_to_401_key() {
     let _dead_id = login_opencode_key(&tmp, OPENCODE_DEAD_KEY);
     assert_success(
         isolated_subswap(&tmp)
-            .args(["swap", &format!("opencode/{exhausted_id}")])
+            .args(["swap", &format!("opencode-api-key/{exhausted_id}")])
             .output()
             .unwrap(),
     );
@@ -946,6 +997,165 @@ fn default_entry_does_not_auto_swap_opencode_to_401_key() {
     let live: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&auth).unwrap()).unwrap();
     assert_eq!(live["opencode-go"]["key"], OPENCODE_EXHAUSTED_KEY);
+}
+
+#[cfg(unix)]
+#[test]
+fn default_entry_auto_swaps_only_console_accounts() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("opencode");
+    fs::create_dir_all(&home).unwrap();
+    let db_path = home.join("opencode.db");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch("CREATE TABLE credential (id TEXT PRIMARY KEY, integration_id TEXT, label TEXT, value TEXT, active INTEGER);").unwrap();
+    for (id, integration, value, active) in [
+        (
+            "console_a",
+            "opencode",
+            serde_json::json!({"access":"tok_console_a","metadata":{"accountID":"user_a","orgID":"wrk_shared","email":"a@example.com","server":"https://opencode.ai/console"}}),
+            1,
+        ),
+        (
+            "console_b",
+            "opencode",
+            serde_json::json!({"access":"tok_console_b","metadata":{"accountID":"user_b","orgID":"wrk_shared","email":"b@example.com","server":"https://opencode.ai/console"}}),
+            0,
+        ),
+        (
+            "go_key",
+            "opencode-go",
+            serde_json::json!({"type":"api","key":"sk-test-go-key"}),
+            1,
+        ),
+        (
+            "go_key_b",
+            "opencode-go",
+            serde_json::json!({"type":"api","key":"sk-test-go-key-b"}),
+            0,
+        ),
+    ] {
+        conn.execute(
+            "INSERT INTO credential VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![id, integration, id, value.to_string(), active],
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    let bin = tmp.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("opencode");
+    fs::write(&fake, r#"#!/usr/bin/env python3
+import os, sqlite3, sys
+args = sys.argv[1:]
+if args == ['--version']:
+    print('opencode v2.0.16')
+    sys.exit(0)
+if len(args) == 4 and args[:2] == ['auth', 'switch']:
+    db = os.path.join(os.environ['XDG_DATA_HOME'], 'opencode', 'opencode.db')
+    with sqlite3.connect(db) as conn:
+        conn.execute('UPDATE credential SET active = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE integration_id = ?', (args[3], args[2]))
+    sys.exit(0)
+sys.exit(2)
+"#).unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let exhausted =
+        r#"{"access":{"meters":{"fiveHour":{"usedMicroCents":"100","limitMicroCents":"100"}}}}"#;
+    let healthy =
+        r#"{"access":{"meters":{"fiveHour":{"usedMicroCents":"3","limitMicroCents":"100"}}}}"#;
+    let mut bodies = HashMap::new();
+    bodies.insert("tok_console_a".to_string(), (200, exhausted.to_string()));
+    bodies.insert("tok_console_b".to_string(), (200, healthy.to_string()));
+    bodies.insert(
+        "sk-test-go-key".to_string(),
+        (200, OPENCODE_HEALTHY_USAGE.to_string()),
+    );
+    bodies.insert(
+        "sk-test-go-key-b".to_string(),
+        (200, OPENCODE_HEALTHY_USAGE.to_string()),
+    );
+    let server = KeyedUsageServer::start(bodies);
+    write(&app_config_dir(&tmp).join("config.toml"), "[quota]\nmin_refresh_interval_ms = 0\nfetch_retries = 0\n[auto_swap]\nmanual_hold_ms = 0\n");
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let stdout = assert_success(
+        isolated_subswap(&tmp)
+            .env("PATH", &path)
+            .env("SUBSWAP_OPENCODE_CONSOLE_BASE", server.base_url())
+            .env("SUBSWAP_OPENCODE_GO_BASE", server.base_url())
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        stdout.contains("auto: swapped to b@example.com"),
+        "expected Console-only auto swap: {stdout}"
+    );
+    assert!(
+        stdout.contains("opencode-api-key"),
+        "Go key should have a separate section: {stdout}"
+    );
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let selected_console: String = conn
+        .query_row(
+            "SELECT id FROM credential WHERE integration_id = 'opencode' AND active = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let selected_go: String = conn
+        .query_row(
+            "SELECT id FROM credential WHERE integration_id = 'opencode-go' AND active = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(selected_console, "console_b");
+    assert_eq!(selected_go, "go_key");
+
+    let json_text = assert_success(
+        isolated_subswap(&tmp)
+            .args(["--json"])
+            .env("PATH", &path)
+            .env("SUBSWAP_OPENCODE_CONSOLE_BASE", server.base_url())
+            .env("SUBSWAP_OPENCODE_GO_BASE", server.base_url())
+            .output()
+            .unwrap(),
+    );
+    let rows: serde_json::Value = serde_json::from_str(&json_text).unwrap();
+    let key_b = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| {
+            row["provider"] == "opencode-api-key"
+                && row["label"].as_str().unwrap_or_default().ends_with("ey-b")
+        })
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_success(
+        isolated_subswap(&tmp)
+            .args(["swap", &format!("opencode-api-key/{key_b}"), "--json"])
+            .env("PATH", path)
+            .env("SUBSWAP_OPENCODE_CONSOLE_BASE", server.base_url())
+            .env("SUBSWAP_OPENCODE_GO_BASE", server.base_url())
+            .output()
+            .unwrap(),
+    );
+    let selected_go: String = conn
+        .query_row(
+            "SELECT id FROM credential WHERE integration_id = 'opencode-go' AND active = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        selected_go, "go_key_b",
+        "V2 manual selection must change the official credential"
+    );
 }
 
 #[test]
@@ -1154,9 +1364,19 @@ impl Drop for KeyedUsageServer {
 
 fn serve_go_usage(mut stream: TcpStream, bodies: &HashMap<String, (u16, String)>) {
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
-    let mut buffer = [0_u8; 8192];
-    let count = stream.read(&mut buffer).unwrap_or(0);
-    let request = String::from_utf8_lossy(&buffer[..count]);
+    let mut request_bytes = Vec::new();
+    let mut buffer = [0_u8; 2048];
+    while request_bytes.len() < 8192 {
+        let count = stream.read(&mut buffer).unwrap_or(0);
+        if count == 0 {
+            break;
+        }
+        request_bytes.extend_from_slice(&buffer[..count]);
+        if request_bytes.windows(4).any(|part| part == b"\r\n\r\n") {
+            break;
+        }
+    }
+    let request = String::from_utf8_lossy(&request_bytes);
     let key = bearer_key(&request).unwrap_or_default();
     let (code, body) = bodies
         .get(&key)

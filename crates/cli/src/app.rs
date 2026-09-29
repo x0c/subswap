@@ -14,7 +14,7 @@ use subswap_provider_commandcode::CommandcodeProvider;
 use subswap_provider_common::IsolatedProvider;
 use subswap_provider_cursor::CursorProvider;
 use subswap_provider_kimi::KimiProvider;
-use subswap_provider_opencode::OpencodeProvider;
+use subswap_provider_opencode::{OpencodeApiKeyProvider, OpencodeProvider};
 
 pub struct AppContext {
     pub store: Arc<dyn CredentialStore>,
@@ -24,6 +24,7 @@ pub struct AppContext {
     pub kimi: Arc<KimiProvider>,
     pub cursor: Arc<CursorProvider>,
     pub opencode: Arc<OpencodeProvider>,
+    pub opencode_api_key: Arc<OpencodeApiKeyProvider>,
     pub commandcode: Arc<CommandcodeProvider>,
     pub providers: ProviderRegistry,
     /// 隔离运行（`run`/`shell`/`env`）查表：provider id → 通用隔离抽象。
@@ -42,6 +43,7 @@ impl AppContext {
             KeyringStore::new(),
         ));
         let registry = Arc::new(AccountRegistry::from_default_paths()?);
+        subswap_provider_opencode::migrate_legacy_api_keys(store.as_ref(), &registry)?;
 
         let claude = Arc::new(ClaudeProvider::new(store.clone(), registry.clone()));
         let codex = Arc::new(subswap_provider_codex::new(store.clone(), registry.clone()));
@@ -49,6 +51,10 @@ impl AppContext {
         let cursor = Arc::new(CursorProvider::new(store.clone(), registry.clone())?);
         let opencode = Arc::new(subswap_provider_opencode::new(
             store.clone(),
+            registry.clone(),
+        ));
+        let opencode_api_key = Arc::new(OpencodeApiKeyProvider::new(
+            opencode.go_engine(),
             registry.clone(),
         ));
         let commandcode = Arc::new(subswap_provider_commandcode::new(
@@ -62,12 +68,13 @@ impl AppContext {
         providers.register(kimi.clone());
         providers.register(cursor.clone());
         providers.register(opencode.clone());
+        providers.register(opencode_api_key.clone());
         providers.register(commandcode.clone());
 
         let mut isolated: HashMap<&'static str, Arc<dyn IsolatedProvider>> = HashMap::new();
         isolated.insert("codex", codex.clone());
         isolated.insert("kimi", kimi.clone());
-        isolated.insert("opencode", opencode.clone());
+        isolated.insert("opencode-api-key", opencode.go_engine());
         isolated.insert("commandcode", commandcode.clone());
 
         let audit = AuditLog::from_default_paths()?;
@@ -80,6 +87,7 @@ impl AppContext {
             kimi,
             cursor,
             opencode,
+            opencode_api_key,
             commandcode,
             providers,
             isolated,

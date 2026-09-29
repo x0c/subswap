@@ -235,26 +235,7 @@ async fn sync_local_active(ctx: &AppContext) -> Vec<AutoLine> {
             Err(e) => notices.push(signed_in_but_untracked("cursor", &id, e)),
         }
     }
-    if let Ok(id) = ctx.opencode.live_account_id() {
-        match ctx.opencode.sync_active_metadata(None) {
-            Ok(account) => {
-                if ctx.registry.set_active("opencode", &account.id).is_ok() {
-                    clear_settled_marker(ctx, "opencode", &account.id);
-                }
-            }
-            Err(e) => notices.push(signed_in_but_untracked("opencode", &id, e)),
-        }
-    }
-    if let Ok(id) = ctx.opencode.live_console_id() {
-        match ctx.opencode.sync_console_active_metadata(None) {
-            Ok(account) => {
-                if ctx.registry.set_active("opencode", &account.id).is_ok() {
-                    clear_settled_marker(ctx, "opencode", &account.id);
-                }
-            }
-            Err(e) => notices.push(signed_in_but_untracked("opencode", &id, e)),
-        }
-    }
+    notices.extend(sync_opencode_accounts(ctx).await);
     if let Ok(id) = ctx.commandcode.live_account_id() {
         match ctx.commandcode.sync_active_metadata(None) {
             Ok(account) => {
@@ -273,7 +254,15 @@ async fn sync_local_active(ctx: &AppContext) -> Vec<AutoLine> {
 /// 被 settle-grace 误当成 subswap 刚做的切换而保护起来。
 /// （manual-hold 只认 subswap 自己的 swap/login 写入，不受 last_used_at 影响。）
 fn clear_settled_marker(ctx: &AppContext, provider: &str, id: &subswap_core::AccountId) {
-    let Ok(mut all) = ctx.registry.load() else {
+    clear_settled_marker_in_registry(&ctx.registry, provider, id);
+}
+
+fn clear_settled_marker_in_registry(
+    registry: &subswap_core::AccountRegistry,
+    provider: &str,
+    id: &subswap_core::AccountId,
+) {
+    let Ok(mut all) = registry.load() else {
         return;
     };
     let mut touched = false;
@@ -284,9 +273,60 @@ fn clear_settled_marker(ctx: &AppContext, provider: &str, id: &subswap_core::Acc
         }
     }
     if touched {
-        if let Err(e) = ctx.registry.save(&all) {
+        if let Err(e) = registry.save(&all) {
             tracing::debug!(err=%e, provider=%provider, "clear settled marker failed");
         }
+    }
+}
+
+async fn sync_opencode_accounts(ctx: &AppContext) -> Vec<AutoLine> {
+    let key = ctx.opencode_api_key.clone();
+    let console = ctx.opencode.clone();
+    let registry = ctx.registry.clone();
+    match tokio::task::spawn_blocking(move || {
+        let mut notices = Vec::new();
+        let key_live = key.live_account_id().ok();
+        match key.sync_accounts(None) {
+            Ok(accounts) => {
+                if let Some(account) = accounts.into_iter().find(|a| a.active) {
+                    if registry.set_active("opencode-api-key", &account.id).is_ok() {
+                        clear_settled_marker_in_registry(
+                            &registry,
+                            "opencode-api-key",
+                            &account.id,
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                if let Some(id) = key_live {
+                    notices.push(signed_in_but_untracked("opencode-api-key", &id, e));
+                }
+            }
+        }
+        if let Ok(id) = console.live_console_id() {
+            match console.sync_console_active_metadata(None) {
+                Ok(account) => {
+                    if registry.set_active("opencode", &account.id).is_ok() {
+                        clear_settled_marker_in_registry(&registry, "opencode", &account.id);
+                    }
+                }
+                Err(e) => notices.push(signed_in_but_untracked("opencode", &id, e)),
+            }
+        }
+        notices
+    })
+    .await
+    {
+        Ok(notices) => notices,
+        Err(e) => vec![AutoLine {
+            provider: "opencode".into(),
+            text: format!(
+                "OpenCode login sync failed: {}",
+                compact_error(&e.to_string())
+            ),
+            kind: AutoLineKind::Error,
+        }],
     }
 }
 
@@ -332,26 +372,7 @@ async fn sync_local_active_metadata(ctx: &AppContext) -> Vec<AutoLine> {
             Err(e) => notices.push(signed_in_but_untracked("cursor", &id, e)),
         }
     }
-    if let Ok(id) = ctx.opencode.live_account_id() {
-        match ctx.opencode.sync_active_metadata(None) {
-            Ok(account) => {
-                if ctx.registry.set_active("opencode", &account.id).is_ok() {
-                    clear_settled_marker(ctx, "opencode", &account.id);
-                }
-            }
-            Err(e) => notices.push(signed_in_but_untracked("opencode", &id, e)),
-        }
-    }
-    if let Ok(id) = ctx.opencode.live_console_id() {
-        match ctx.opencode.sync_console_active_metadata(None) {
-            Ok(account) => {
-                if ctx.registry.set_active("opencode", &account.id).is_ok() {
-                    clear_settled_marker(ctx, "opencode", &account.id);
-                }
-            }
-            Err(e) => notices.push(signed_in_but_untracked("opencode", &id, e)),
-        }
-    }
+    notices.extend(sync_opencode_accounts(ctx).await);
     if let Ok(id) = ctx.commandcode.live_account_id() {
         match ctx.commandcode.sync_active_metadata(None) {
             Ok(account) => {

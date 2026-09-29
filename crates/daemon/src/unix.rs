@@ -33,7 +33,7 @@ use subswap_provider_codex::CodexProvider;
 use subswap_provider_commandcode::CommandcodeProvider;
 use subswap_provider_cursor::CursorProvider;
 use subswap_provider_kimi::KimiProvider;
-use subswap_provider_opencode::OpencodeProvider;
+use subswap_provider_opencode::{OpencodeApiKeyProvider, OpencodeProvider};
 use tokio::signal::unix::{signal, SignalKind};
 
 use state::DaemonState;
@@ -69,6 +69,7 @@ pub async fn run() -> Result<()> {
         KeyringStore::new(),
     ));
     let registry = Arc::new(AccountRegistry::from_default_paths()?);
+    subswap_provider_opencode::migrate_legacy_api_keys(store.as_ref(), &registry)?;
     let audit = AuditLog::from_default_paths()?;
 
     let claude = Arc::new(ClaudeProvider::new(store.clone(), registry.clone()));
@@ -77,6 +78,10 @@ pub async fn run() -> Result<()> {
     let cursor = Arc::new(CursorProvider::new(store.clone(), registry.clone())?);
     let opencode = Arc::new(subswap_provider_opencode::new(
         store.clone(),
+        registry.clone(),
+    ));
+    let opencode_api_key = Arc::new(OpencodeApiKeyProvider::new(
+        opencode.go_engine(),
         registry.clone(),
     ));
     let commandcode = Arc::new(subswap_provider_commandcode::new(
@@ -89,6 +94,7 @@ pub async fn run() -> Result<()> {
     providers.register(kimi.clone());
     providers.register(cursor.clone());
     providers.register(opencode.clone());
+    providers.register(opencode_api_key.clone());
     providers.register(commandcode.clone());
 
     let mut state = DaemonState::new();
@@ -118,6 +124,7 @@ pub async fn run() -> Result<()> {
             &kimi,
             &cursor,
             &opencode,
+            &opencode_api_key,
             &commandcode,
             &audit,
             &mut state,
@@ -165,6 +172,7 @@ async fn run_cycle(
     kimi: &Arc<KimiProvider>,
     cursor: &Arc<CursorProvider>,
     opencode: &Arc<OpencodeProvider>,
+    opencode_api_key: &Arc<OpencodeApiKeyProvider>,
     commandcode: &Arc<CommandcodeProvider>,
     audit: &AuditLog,
     state: &mut DaemonState,
@@ -182,7 +190,29 @@ async fn run_cycle(
     // current-thread runtime 上会直接 panic,此处沿用同一取舍)。
     reconcile_file_blob_provider(codex, "codex").await;
     reconcile_file_blob_provider(kimi, "kimi").await;
-    reconcile_file_blob_provider(&opencode.go_engine(), "opencode").await;
+    let api_key = opencode_api_key.clone();
+    match tokio::task::spawn_blocking(move || api_key.sync_accounts(None)).await {
+        Ok(Err(e)) => tracing::debug!(err = %e, "OpenCode API key sync skipped"),
+        Err(e) => tracing::debug!(err = %e, "OpenCode API key sync task failed"),
+        Ok(Ok(_)) => {}
+    }
+    let console = opencode.clone();
+    let console_sync_ready = match tokio::task::spawn_blocking(move || {
+        console.sync_console_accounts(None)
+    })
+    .await
+    {
+        Ok(Ok(Some(_))) => true,
+        Ok(Ok(None)) => false,
+        Ok(Err(e)) => {
+            tracing::warn!(err = %e, "skip OpenCode auto swap because Console login did not sync");
+            false
+        }
+        Err(e) => {
+            tracing::warn!(err = %e, "skip OpenCode auto swap because Console sync task failed");
+            false
+        }
+    };
     reconcile_file_blob_provider(commandcode, "commandcode").await;
     // Cursor 只有一份 live 凭证。此处必须在读额度前先将外部新登录账号入池；失败时
     // 本轮禁止覆盖 Cursor，避免旧账号池把用户刚完成的原生登录写回去。
@@ -204,6 +234,9 @@ async fn run_cycle(
         }
 
         if snap.provider == "cursor" && !cursor_sync_ready {
+            continue;
+        }
+        if snap.provider == "opencode" && !console_sync_ready {
             continue;
         }
 

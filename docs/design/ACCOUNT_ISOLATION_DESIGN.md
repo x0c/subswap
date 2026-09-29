@@ -1,6 +1,6 @@
 # 账号环境隔离设计（subswap run / shell）
 
-> 状态：**已实现并验证**——Codex / Claude / Kimi / OpenCode Go 隔离、`run`/`shell`/`env`、同账号并发会话、daemon 保活避让均已落地。Kimi / OpenCode 走共享引擎通用隔离，不必再为每个文件型 provider 改 `run.rs` 分发。
+> 状态：Codex / Claude / Kimi / Command Code 与 OpenCode V1 API Key 的隔离已实现。OpenCode V2 不读取旧的 `OPENCODE_AUTH_CONTENT`，只把 Key 放进私有 `auth.json` 不能证明官方客户端选中了它；`run`/`shell`/`env` 必须明确拒绝 V2 API Key 隔离，直到有安全且可验证的私有数据库激活流程。
 >
 > 代码锚点：
 > - `crates/core/src/checkout.rs`：序列号并发子目录 + `is_checked_out`（v0.3.25 起移除独占 flock）。
@@ -23,7 +23,7 @@
 |---|---|---|
 | Codex（全平台） | `CODEX_HOME=<私有目录>`，auth.json 落该目录，Codex CLI 自刷新 | ✅ |
 | Kimi（全平台） | `KIMI_CODE_HOME=<私有目录>`，凭证落该目录 | ✅ |
-| OpenCode Go（全平台） | `XDG_DATA_HOME=<私有目录>` 写 `opencode/auth.json`，并设 `OPENCODE_AUTH_CONTENT`（官方在此变量存在时忽略磁盘文件） | ✅ |
+| OpenCode API Key（全平台） | V1：`XDG_DATA_HOME=<私有目录>` 写 `opencode/auth.json`，并设置 `OPENCODE_AUTH_CONTENT`；V2：拒绝隔离，避免启动后误用其他凭证。官方 Console 账号也不支持此入口 | ✅ V1 Key；V2 Key、Console 否 |
 | Claude / Linux | `CLAUDE_CONFIG_DIR=<私有目录>` + 写 `.credentials.json`；非账号内容链接回全局 `~/.claude` | ✅ |
 | Claude / macOS OAuth | `CLAUDE_CONFIG_DIR` → 钥匙串 item 按目录哈希命名空间隔离；非账号内容链接回全局 `~/.claude` | ✅ |
 

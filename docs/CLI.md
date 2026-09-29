@@ -6,10 +6,11 @@
 | `subswap add-api` | 交互式登记 Claude Code 兼容 API；DeepSeek / Kimi 预设只需输入名称与隐藏 API Key；保存后不自动激活 |
 | `subswap login <claude\|codex>` | 调用官方 CLI 登录流程，完成后导入/覆盖当前登录账号并标记为 active |
 | `subswap login <kimi\|cursor\|commandcode>` | **不驱动登录**：用户先在对应客户端登录（Command Code 也可把 API key 写在 `--` 后面），本命令只导入当前状态并标记为 active |
-| `subswap login opencode` | 官方 Console 已登录则直接导入；只有 Go key 则导入 Go；都没登录则调官方命令（V2 `opencode auth login opencode` / V1 `opencode console login`）走原生登录后再导入。`-- <key>` 仍是显式 Go key 导入路径 |
+| `subswap login opencode` | 导入已登录的官方 Console 账号；未登录时调官方命令（V2 `opencode auth login opencode` / V1 `opencode console login`）登录后导入。不会把 Go API key 当成官方账号 |
+| `subswap login opencode-api-key` | 单独导入 Go API key（可用 `-- <key>`）；仅手动切换和监控余量，不参与自动换号。别名 `opencode-go` |
 | `subswap swap [<id\|N>]` | 手动切换；`<id>` 用 id/label/`<provider>/<id>`，`<N>` 用默认入口列出的全局序号。无参只打印编号清单（不查 quota） |
 | `subswap rm <id\|N>` | 删除账号（registry + keyring），引用形式同 `swap`。显式删过的号打开列表不会自动加回；没删过的当前登录仍会自动收入。要重新纳入已删的号，用对应 provider 的 `login` |
-| `subswap run <provider> <id> [-- args]` | 账号隔离启动：把该账号凭证投影到私有目录，设隔离环境变量后启动原生 CLI（codex/claude/kimi/opencode/commandcode），**不动全局活账号**；退出时吸收轮换后的凭证。Cursor 不支持此模式 |
+| `subswap run <provider> <id> [-- args]` | 账号隔离启动：把该账号凭证投影到私有目录，设隔离环境变量后启动原生 CLI（codex/claude/kimi/commandcode/OpenCode V1 API Key），**不动全局活账号**；退出时吸收轮换后的凭证。Cursor、OpenCode 官方账号与 V2 API Key 不支持此模式 |
 | `subswap shell <id>` | 起一个导出好隔离环境变量的子 shell，交互里连跑多条命令；provider 从账号推断；退出时吸收凭证 |
 | `subswap env <id>` | 打印 `export` 行供 `eval`。**注意**：eval 模式不持锁、退出后不吸收凭证，仅供临时短用 |
 | `subswap doctor` | 环境自检 |
@@ -25,7 +26,7 @@ After a successful manual Codex swap, the CLI prints `Restart running Codex CLI 
 ### 账号环境隔离（`run` / `shell` / `env`）
 
 与 `swap`（全局原地切换）并存：不同终端可并行用不同账号，不改全局活账号。
-机制：Codex → `CODEX_HOME`；Kimi → `KIMI_CODE_HOME`；OpenCode → `XDG_DATA_HOME` + `OPENCODE_AUTH_CONTENT`
+机制：Codex → `CODEX_HOME`；Kimi → `KIMI_CODE_HOME`；OpenCode V1 API Key → `XDG_DATA_HOME` + `OPENCODE_AUTH_CONTENT`
 （后两者走 `crates/providers/common` 的 `IsolatedProvider`，注册在 `AppContext.isolated`）；Claude → `CLAUDE_CONFIG_DIR`
 （macOS 另设 `CLAUDE_SECURESTORAGE_CONFIG_DIR` 隔离钥匙串 item 命名空间，专用分支，不在该表内）。
 完整设计见 [docs/design/ACCOUNT_ISOLATION_DESIGN.md](design/ACCOUNT_ISOLATION_DESIGN.md)。
@@ -38,7 +39,7 @@ Claude 隔离只隔离账号身份，不隔离工作环境：`projects` / `sessi
 ```bash
 subswap run codex 6 -- --version        # 用 6 号账号在隔离环境跑 codex
 subswap run kimi alice-uid              # 隔离启动 kimi（KIMI_CODE_HOME 指到私有目录）
-subswap run opencode go-abcd1234        # 隔离启动 opencode（XDG_DATA_HOME + OPENCODE_AUTH_CONTENT）
+subswap run opencode-api-key go-abcd1234 # 仅 V1 可隔离启动 Go Key
 subswap run claude alice@x.com          # 隔离启动 claude（按 id 引用）
 subswap shell 3                          # 进子 shell，环境已隔离到 3 号账号
 eval "$(subswap env codex/bob@x.com)"   # 临时把当前 shell 指向某 codex 账号
@@ -62,9 +63,13 @@ eval "$(subswap env codex/bob@x.com)"   # 临时把当前 shell 指向某 codex 
 
 辅助二进制 `subswapd`：默认入口自动 detach 拉起，负责周期 quota 轮询 / 自动切换 / Claude token 后台保活。Unix-only；Windows 只提供前台 CLI；macOS 默认不自动拉起（避免 Keychain 额外授权弹窗）。启用 macOS 自动拉起：`SUBSWAP_AUTO_DAEMON=1`。单实例靠 `<state>/subswapd.pid` 文件锁。关掉：`pkill subswapd`；禁止自动拉起：`SUBSWAP_NO_DAEMON=1`。**在 macOS 未启用自动拉起时，Codex/其它 provider 的后台自动切号不会跑**——只有主动执行无参 `subswap` 才会采样并自动切；切完仍须重启已打开的 Codex 才生效（上一节）。
 
-## OpenCode Go
+## OpenCode
 
-`subswap login opencode` 优先识别官方 Console 登录（`opencode.db`，只记元数据不存 secret；未登录时调官方命令走原生登录：V2 `opencode auth login opencode` / V1 `opencode console login`）。无 Console 登录时回退 Go 订阅导入：先在 OpenCode TUI `/connect` 粘贴 Go key，或把 key 写在 `--` 后面直接导入。Go 切换只改 `auth.json` 里的 `opencode-go` 项，同文件其它供应商（如 openai / anthropic）原样保留；Console 切换调官方 `opencode auth switch`。两类额度分开查：Go 走 `/zen/go/v1/usage`，Console 走 `/console/api/go/status`（Bearer + `x-org-id`）。5 小时滚动窗口走自动换号阈值；周 / 月窗口只在明确耗尽时触发。隔离运行（Go 号：`XDG_DATA_HOME` + `OPENCODE_AUTH_CONTENT`）不支持 Console 账号。
+`opencode` 只显示官方 Console 登录。`subswap login opencode` 导入当前登录及官方客户端已保存的其他账号；没有登录时交给 V2 `opencode auth login opencode` 或 V1 `opencode console login`。Console 账号只在本地记录非敏感元数据，额度走 `/console/api/go/status`，V2 切换走官方 `opencode auth switch opencode <credential-id>`。同一 workspace 的不同用户保留为不同账号。自动换号只在这些官方账号之间进行；停用账号可查余量，凭证过期时显示未知，不伪装成 0%。V1 只能发现当前账号且没有非交互切号命令。
+
+`opencode-api-key` 单独显示 Go API key；`subswap login opencode-api-key` 可导入官方已保存的 Key，或用 `-- <key>` 显式导入。Key 的余量走 `/zen/go/v1/usage`，所有 Key 都只允许手动选择，不参与自动换号。V2 只通过官方 `opencode auth switch opencode-go <credential-id>` 切换已连接的 Key；尚未在官方客户端连接的 Key 会明确报错，先运行 `opencode auth login opencode-go`。V1 仍只改 `auth.json` 的 `opencode-go` 项并保留其他供应商。旧版本混在 `opencode` 下的 Key 在升级时自动迁入独立列表，凭证和账号 ID 保留。
+
+隔离运行只支持 V1 Key（`XDG_DATA_HOME` + `OPENCODE_AUTH_CONTENT`）。V2 Key 与 Console 账号均不支持；V2 会明确报错，避免以错误凭证启动。
 
 ## Command Code
 

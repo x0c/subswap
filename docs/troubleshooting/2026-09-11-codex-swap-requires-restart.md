@@ -49,3 +49,5 @@ Manual and default-entry automatic swaps now print a restart reminder when they 
 - [AUTO_SWAP_DESIGN.md](../design/AUTO_SWAP_DESIGN.md) §1.1 窗口策略；§5.5 Codex 无需 daemon 保活
 - [CLI.md](../CLI.md) `subswapd` / `SUBSWAP_AUTO_DAEMON`
 - [2026-07-09](2026-07-09-codex-quota-401-despite-working-cli.md)（内存态与磁盘态另一方向的错位）
+
+<!-- 该文档整理/压缩于 2026-09-29 -->

@@ -9,7 +9,7 @@
 | M4 | `subswapd` daemon：周期轮询 + 自动切换 + Claude token 后台保活 + CLI 自动拉起 | ✅ 已完成 |
 | M5 | 账号隔离运行、quota 缓存、自动换号开关与手动切换宽限期 | ✅ 已完成 |
 | M6 | Kimi / Cursor Provider、Codex 官方额度通道、三平台 CLI/Provider 支持 | ✅ 已完成 |
-| M7 | OpenCode Go Provider：只切换 `auth.json` 的 `opencode-go` 项、5h/周/月额度、自动换号与隔离运行 | ✅ 已完成 |
+| M7 | OpenCode 官方账号与 API Key 分列、各自监控 Go 额度；仅官方账号自动换号，Key 仅手动选择；V2 官方数据库切换与 V1 文件兼容 | ✅ 已完成 |
 
 ## Open improvements
 

@@ -68,7 +68,7 @@ subswap --help
 - **工作、个人和客户账号互不混淆** — 切换 Claude Code、ChatGPT、Codex、Cursor，不必反复登出再登录。
 - **一眼看到可用额度** — Claude、Codex、Kimi、Cursor、OpenCode 与 Command Code 的额度窗口在同一列表。
 - **网络不好也能手动切** — 手动 `swap` 不等待网络或额度接口；自动换号可选。
-- **安全时才并行** — Claude、Codex、Kimi、OpenCode、Command Code 可在隔离环境跑，不改全局当前账号。
+- **安全时才并行** — Claude、Codex、Kimi、Command Code 与 OpenCode V1 API Key 可在隔离环境跑，不改全局当前账号。
 - **Cursor 桌面端** — 支持导入、切换与额度；不支持隔离的 `run` / `shell` / `env`。
 
 ## 第一次怎么用
@@ -88,6 +88,7 @@ subswap swap 2         # 换成列表里的编号
 subswap login kimi
 subswap login cursor
 subswap login opencode
+subswap login opencode-api-key
 subswap login commandcode
 subswap login claude
 subswap login codex
@@ -111,7 +112,8 @@ eval "$(subswap env codex/bob@example.com)"
 | Codex CLI / ChatGPT | 是 | 是 | 是 | 额度查询走官方 app-server 通道。 |
 | Kimi Code | 是 | 是 | 是 | 先在原生客户端登录，再导入。 |
 | Cursor 桌面端 | 是 | 是 | 否 | 切换会协调桌面应用重启和 SQLite 状态。 |
-| OpenCode Go | 是 | 是 | 是 | 只修改 `opencode-go` 项，其它项保持不变。 |
+| OpenCode 官方账号 | 是 | 是 | 否 | 官方登录；自动换号只在官方账号之间进行。 |
+| OpenCode API Key | 是 | 否，仅手动 | 仅 V1 | 独立显示 Key 与余量；V2 经官方客户端选 Key。 |
 | Command Code | 是 | 是 | 是 | 切换 `~/.commandcode/auth.json`；额度走 `/alpha/billing/credits`。 |
 
 CLI 已在 macOS、Linux、Windows CI 中测试。后台 daemon 仅支持 Unix：Linux 自动启动，macOS 需显式开启，Windows 仅使用前台 CLI。
@@ -161,7 +163,7 @@ CLI 已在 macOS、Linux、Windows CI 中测试。后台 daemon 仅支持 Unix�
 
 ### 是不是只支持 Claude 或 Codex？
 
-不是。目前支持 Claude Code、Codex / ChatGPT、Kimi Code、Cursor、OpenCode Go 和 Command Code。
+不是。目前支持 Claude Code、Codex / ChatGPT、Kimi Code、Cursor、OpenCode 官方账号与 API Key，以及 Command Code。
 
 ## 贡献与安全
 

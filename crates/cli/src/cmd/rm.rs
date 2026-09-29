@@ -11,7 +11,7 @@ use crate::cmd::resolve_account;
 
 pub async fn run(ctx: &AppContext, id_input: &str, json: bool) -> Result<()> {
     let acc = resolve_account(ctx, id_input)?;
-    if acc.active && acc.manual_only() {
+    if acc.provider == "claude" && acc.active && acc.manual_only() {
         bail!(
             "cannot remove active manual-only account {}/{}; swap away first",
             acc.provider,
@@ -24,7 +24,8 @@ pub async fn run(ctx: &AppContext, id_input: &str, json: bool) -> Result<()> {
         "codex" => ctx.codex.live_account_id().ok(),
         "kimi" => ctx.kimi.live_account_id().ok(),
         "cursor" => ctx.cursor.live_account_id().await.ok(),
-        "opencode" => ctx.opencode.live_account_id().ok(),
+        "opencode" => ctx.opencode.live_console_id().ok(),
+        "opencode-api-key" => ctx.opencode_api_key.live_account_id().ok(),
         "commandcode" => ctx.commandcode.live_account_id().ok(),
         _ => None,
     }
@@ -35,7 +36,7 @@ pub async fn run(ctx: &AppContext, id_input: &str, json: bool) -> Result<()> {
     let fields: &[&str] = match acc.provider.as_str() {
         "claude" => &["credentials_json", "api_key"],
         "codex" => &["auth_json"],
-        "cursor" | "kimi" | "opencode" | "commandcode" => &["blob"],
+        "cursor" | "kimi" | "opencode-api-key" | "commandcode" => &["blob"],
         _ => &[],
     };
     for f in fields {

@@ -10,6 +10,7 @@
 ### 1.1 阈值触发
 
 - 默认阈值：由 `crates/core/src/defaults.rs::AUTO_SWAP_THRESHOLD` 定义，运行时可由 `config.toml` 覆盖。
+- OpenCode 仅官方 Console 账号（`opencode`）参与自动换号；`opencode-api-key` 是独立的仅手动账号池，Key 不能成为自动候选，处于当前 Key 时也不会自动切走。
 - 适用窗口：只看小时级（当前可可靠识别 `FiveHour`）。Claude 7d、Codex 月度、OpenCode weekly/monthly 等长窗口即使接近阈值也不触发。OpenCode `rolling`（约 5 小时）映射为 `FiveHour`，走阈值触发。
 - 硬阻断：对 **Claude / Codex 等叠加上限**，任一参与自动切换的窗口 `Exhausted` 即触发/阻断。
   **Cursor 例外**：`1st`、**Credits**、**API** 是并行可用池——任一池仍有余量即可承接；
