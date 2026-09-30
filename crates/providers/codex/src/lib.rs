@@ -12,6 +12,7 @@ mod oauth;
 mod openai_usage;
 mod paths;
 mod quota;
+mod reset_credits;
 mod runtime;
 
 use std::sync::Arc;

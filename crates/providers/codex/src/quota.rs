@@ -104,6 +104,7 @@ pub async fn fetch_codex_quota(access_token: &str, account: &Account) -> Result<
                 },
             }
         })
+        .chain(reset_credit_quota(access_token, &chatgpt_account_id, account, &raw_resp).await)
         .collect())
 }
 
@@ -120,6 +121,62 @@ fn fresh_cached_legacy_usage(account: &Account) -> Option<serde_json::Value> {
     let cached_at_ms = epoch_to_millis(cached_at);
     let age_ms = Utc::now().timestamp_millis().saturating_sub(cached_at_ms);
     (age_ms <= settings::current().codex.usage_cache_max_age_ms).then_some(usage)
+}
+
+/// 重置道具窗口（`QuotaWindow::ResetCredits`）：只读展示，不参与自动切换。
+/// `available == 0` → `None`（整列隐藏）；明细失败只降级为「有数量、无过期」，绝不让整份 quota 查询失败。
+async fn reset_credit_quota(
+    access_token: &str,
+    chatgpt_account_id: &str,
+    account: &Account,
+    raw_resp: &serde_json::Value,
+) -> Option<Quota> {
+    let count = openai_usage::reset_credits_count(raw_resp);
+    if count.available == 0 {
+        return None;
+    }
+    let (available, reset_at, note) =
+        match crate::reset_credits::fetch_reset_credits(access_token, chatgpt_account_id).await {
+            Ok(credits) => {
+                let reset_at = credits.iter().filter_map(|c| c.expires_at).min();
+                let available = credits.len() as u64;
+                let titles: Vec<&str> = credits.iter().map(|c| c.title.as_str()).collect();
+                let mut titles = titles;
+                titles.sort_unstable();
+                titles.dedup();
+                let note = if titles.is_empty() {
+                    format!("{available} available")
+                } else {
+                    format!("{available} available: {}", titles.join("; "))
+                };
+                (available, reset_at, note)
+            }
+            Err(error) => {
+                tracing::debug!(
+                    account = %account.id,
+                    error = %error,
+                    "Codex 重置明细查询失败，仅展示数量"
+                );
+                (
+                    count.available,
+                    None,
+                    format!("{} available (details unavailable)", count.available),
+                )
+            }
+        };
+    if available == 0 {
+        return None;
+    }
+    Some(Quota {
+        provider: PROVIDER_ID.into(),
+        account_id: account.id.clone(),
+        window: QuotaWindow::ResetCredits,
+        used: available,
+        limit: 0,
+        reset_at,
+        status: QuotaStatus::Ok,
+        note: Some(note),
+    })
 }
 
 fn quota_window_for_usage_window(minutes: Option<u64>, seconds: Option<u64>) -> QuotaWindow {

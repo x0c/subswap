@@ -39,6 +39,40 @@ pub struct WhamUsage {
     pub limit_window_seconds: Option<u64>,
 }
 
+/// `wham/usage` 的重置道具计数（`rate_limit_reset_credits`，snake_case）。
+/// app-server 经 `rate_limits_to_usage` 转写后同样落到该键；原始 camelCase 也兼容直读。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ResetCreditCount {
+    /// 可用数（`available_count` / `availableCount`）。
+    pub available: u64,
+    /// 当前套餐可用数（`applicable_available_count`，缺失时与 available 相同）。
+    pub applicable: u64,
+}
+
+/// 从原始响应（wham 或 app-server 转写后）抽取重置道具计数。
+/// 顶层 `rate_limit_reset_credits`（snake）优先，`rateLimitResetCredits`（camel）兼容。
+/// 任一不可解析 → 0，不报错（无 reset 是常态）。
+pub fn reset_credits_count(raw: &serde_json::Value) -> ResetCreditCount {
+    let snake = raw.get("rate_limit_reset_credits");
+    let camel = raw.get("rateLimitResetCredits");
+    let node = snake.or(camel);
+    let available = node
+        .and_then(|v| {
+            v.get("available_count")
+                .or_else(|| v.get("availableCount"))
+        })
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let applicable = node
+        .and_then(|v| v.get("applicable_available_count"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(available);
+    ResetCreditCount {
+        available,
+        applicable,
+    }
+}
+
 /// 拉取原始响应（任意 JSON），失败返回 [`Error::QuotaFetch`]。
 pub async fn fetch_usage_raw(
     access_token: &str,
@@ -335,5 +369,49 @@ mod tests {
         assert_eq!(windows[0].limit_window_seconds, Some(18_000));
         assert_eq!(windows[1].used_percent, Some(18.0));
         assert_eq!(windows[1].limit_window_seconds, Some(604_800));
+    }
+
+    #[test]
+    fn reset_credits_count_reads_snake_case_wham_shape() {
+        // 实测 wham/usage（2026-09-30，plus 停用号有 1 张 reset）。
+        let v = serde_json::json!({
+            "rate_limit_reset_credits": {
+                "available_count": 1,
+                "applicable_available_count": 1
+            }
+        });
+        assert_eq!(
+            reset_credits_count(&v),
+            ResetCreditCount {
+                available: 1,
+                applicable: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn reset_credits_count_reads_camel_case_app_server_shape() {
+        let v = serde_json::json!({
+            "rateLimitResetCredits": { "availableCount": 2 }
+        });
+        assert_eq!(
+            reset_credits_count(&v),
+            ResetCreditCount {
+                available: 2,
+                applicable: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn reset_credits_count_defaults_to_zero() {
+        let v = serde_json::json!({ "plan_type": "plus" });
+        assert_eq!(
+            reset_credits_count(&v),
+            ResetCreditCount {
+                available: 0,
+                applicable: 0,
+            }
+        );
     }
 }

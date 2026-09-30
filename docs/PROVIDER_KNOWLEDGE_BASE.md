@@ -208,6 +208,29 @@ The app-server response is usable only when its `accountId` matches the registry
 - 全不可解析 → `Quota { status: Unknown }` 而非 `Err`
 - 实时成功但字段不可识别且有新鲜 `last_usage` → 本地缓存兜底；有效期见 `defaults::CODEX_USAGE_CACHE_MAX_AGE_MS`
 
+### Rate limit reset credits（只读展示，不参与自动切换）
+
+Codex 会定期赠送限额重置道具（banked reset，可把 5h+7d 一次清零，有 30 天左右过期时间）。
+subswap 只读展示数量与最早过期，不代为消耗。
+
+| 用途 | 方法 | URL |
+|---|---|---|
+| 重置明细 | GET | `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits` |
+
+- 请求头与 usage 相同：`Authorization: Bearer <access_token>` + `ChatGPT-Account-Id` + 浏览器风格 `User-Agent`。
+- 计数零请求：`wham/usage` 的 `rate_limit_reset_credits.{available_count, applicable_available_count}`
+  （app-server `account/rateLimits/read` 为 camelCase `rateLimitResetCredits.availableCount`，只有计数）。
+  `available_count == 0` 或缺失 → 不发明细请求、不显示 reset 列。
+- 明细（仅 `available_count > 0` 时发）：`credits[]` 每项取 `id / status / reset_type / granted_at / expires_at / title`；
+  只认 `status == "available"` 的，`reset_at` 取最早 `expires_at`。
+- 映射：`available > 0` 时多一个 `QuotaWindow::ResetCredits` 窗口（`used` = 可用数，`limit` = 0，
+  `reset_at` = 最早过期，`note` = 标题与过期摘要）；`0` 时整列隐藏（多数账号无 reset，避免噪音）。
+  默认入口标签 `RS`（如 `RS [1 reset exp in 29d]`）；`subswap --json` 的 quotas 数组带同字段。
+- 频率与失败：随正常 quota 采样走同一份 90s 缓存节流（daemon 与 CLI 共用 `quota_cache.json`）；
+  明细失败只降级为「有数量、无过期」，不影响 5h/7d；429 走统一失败退避、不重试。
+- 自动切换：reset 窗口不参与判定（`quota_gates_auto_swap` 排除，`limit == 0` 也不计入可用/耗尽统计）——
+  耗尽号即使有 reset 仍视为耗尽、可被自动切走。subswap 绝不调用任何 consume/redeem 接口。
+
 ### 本地激活文件
 
 | 路径 | 用途 |

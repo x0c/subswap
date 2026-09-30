@@ -390,8 +390,26 @@ pub fn format_quota_compact(q: &Quota, color: bool) -> String {
         QuotaWindow::Api => "API",
         // Cursor 套餐 Credits；`$` 短标签，余量按分→美元展示。
         QuotaWindow::Credits => "$",
+        // Codex 重置道具；`RS` 短标签，展示可用张数（`used`）而非百分比。
+        QuotaWindow::ResetCredits => "RS",
         QuotaWindow::Custom => "--",
     };
+    // 重置道具：`used` 存可用张数（`limit` 固定 0，不参与百分比语义）。
+    // 时间是道具过期（不是额度重置），用 `exp` 与 5h/7d 的 `reset` 区分。
+    if matches!(q.window, QuotaWindow::ResetCredits) {
+        let count_plain = if q.used == 1 { "1 reset" } else { &format!("{} resets", q.used) };
+        let exp_plain = q
+            .reset_at
+            .map(format_reset_at)
+            .unwrap_or_else(|| "--".into());
+        let w_styled = style(color, "2", &format!("{w_label:<2}"));
+        let bracket_l = style(color, "2", "[");
+        let bracket_r = style(color, "2", "]");
+        let count = style(color, status_sgr(q.status), count_plain);
+        let exp_padded = format!("exp {exp_plain:<6}");
+        let exp = style(color, "2", &exp_padded);
+        return format!("{w_styled} {bracket_l}{count} {exp}{bracket_r}");
+    }
     // 百分比窗口：数据层 `Quota.used` 仍是已用百分比，仅在展示层翻转成余量。
     // Credits：`used`/`limit` 存分，展示美元余量。
     let usage_plain = if matches!(q.window, QuotaWindow::Credits) {
@@ -445,9 +463,10 @@ fn window_display_order(window: QuotaWindow) -> u8 {
         QuotaWindow::Month => 2,
         QuotaWindow::FirstPartyModels => 3,
         QuotaWindow::Api => 4,
-        // Credits 追加在 1st / API 之后。
+        // Credits 追加在 1st / API 之后；重置道具挂最后（Custom 之前）。
         QuotaWindow::Credits => 5,
-        QuotaWindow::Custom => 6,
+        QuotaWindow::ResetCredits => 6,
+        QuotaWindow::Custom => 7,
     }
 }
 
@@ -723,6 +742,44 @@ mod tests {
         let pos_5h = rendered.find("5h").expect("5h label present");
         let pos_7d = rendered.find("7d").expect("7d label present");
         assert!(pos_5h < pos_7d, "expected 5h before 7d, got: {rendered}");
+    }
+
+    #[test]
+    fn reset_credits_format_shows_count_not_percent() {
+        let single = Quota {
+            provider: "codex".into(),
+            account_id: AccountId("a".into()),
+            window: QuotaWindow::ResetCredits,
+            used: 1,
+            limit: 0,
+            reset_at: Some(Utc::now() + chrono::Duration::days(29)),
+            status: QuotaStatus::Ok,
+            note: Some("1 available: Full reset (Weekly + 5 hr)".into()),
+        };
+        let text = format_quota_compact(&single, false);
+        assert!(text.starts_with("RS [1 reset"), "got {text:?}");
+        assert!(text.contains("exp in 29d"), "got {text:?}");
+        assert!(!text.contains('%'), "reset count must not render as percent: {text:?}");
+
+        let multi = Quota {
+            used: 2,
+            ..single.clone()
+        };
+        let text = format_quota_compact(&multi, false);
+        assert!(text.starts_with("RS [2 resets"), "got {text:?}");
+    }
+
+    #[test]
+    fn reset_credits_render_last_before_custom() {
+        let quotas = vec![
+            quota(QuotaWindow::Custom, 0, 0, QuotaStatus::Unknown),
+            quota(QuotaWindow::ResetCredits, 1, 0, QuotaStatus::Ok),
+            quota(QuotaWindow::FiveHour, 23, 100, QuotaStatus::Ok),
+        ];
+        let rendered = render_quota_parts(&quotas, 0, false);
+        let pos_5h = rendered.find("5h").expect("5h label present");
+        let pos_rs = rendered.find("RS").expect("RS label present");
+        assert!(pos_5h < pos_rs, "expected 5h before RS, got: {rendered}");
     }
 
     #[test]

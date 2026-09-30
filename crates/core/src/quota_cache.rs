@@ -238,7 +238,8 @@ fn window_ttl(window: QuotaWindow) -> Duration {
         QuotaWindow::Month
         | QuotaWindow::FirstPartyModels
         | QuotaWindow::Api
-        | QuotaWindow::Credits => Duration::days(30),
+        | QuotaWindow::Credits
+        | QuotaWindow::ResetCredits => Duration::days(30),
     }
 }
 

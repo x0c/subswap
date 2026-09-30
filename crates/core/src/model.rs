@@ -133,6 +133,9 @@ pub enum QuotaWindow {
     Api,
     /// Cursor 套餐 Credits（美元账本；`used`/`limit` 存分）。
     Credits,
+    /// Codex 限额重置道具（banked reset）：`used` = 可用数，`limit` = 0（不参与百分比与自动切换判定），
+    /// `reset_at` = 最早过期时间。`0` 时不产生该窗口。
+    ResetCredits,
     /// 其他自定义窗口。
     Custom,
 }

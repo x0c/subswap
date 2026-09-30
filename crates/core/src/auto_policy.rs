@@ -307,8 +307,9 @@ fn quota_exceeds_auto_threshold(q: &Quota, threshold: f64) -> bool {
 /// Cursor 的 `1st` / Credits / `API` 全部参与，靠 `cursor_parallel_pools` 做「任一可用即可」；
 /// 不再排除 `API`（否则全员 1st 见底时会退化成只按重置时间挑全空号）。
 /// Claude 5h/7d、Codex 月度仍是叠加上限，全部参与且任一耗尽即切。
-fn quota_gates_auto_swap(_q: &Quota) -> bool {
-    true
+/// Codex 重置道具（`ResetCredits`）只读展示，永不参与判定。
+fn quota_gates_auto_swap(q: &Quota) -> bool {
+    !matches!(q.window, QuotaWindow::ResetCredits)
 }
 
 /// Cursor：带有 `1st` / Credits / `API` 任一产品池时走并行语义（见 `account_needs_swap`）。
@@ -506,6 +507,49 @@ mod tests {
         };
         let d = decide(&snap, &test_config(60_000));
         assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
+    }
+
+    /// Codex 重置道具只读展示：耗尽号即使有 reset 仍视为耗尽（可被切走），
+    /// 仅有 reset、无可用额度窗口的账号不能成为候选。
+    #[test]
+    fn reset_credits_window_never_gates_auto_swap() {
+        fn reset_quota(available: u64) -> Quota {
+            Quota {
+                provider: "codex".into(),
+                account_id: AccountId("x".into()),
+                window: QuotaWindow::ResetCredits,
+                used: available,
+                limit: 0,
+                reset_at: None,
+                status: QuotaStatus::Ok,
+                note: None,
+            }
+        }
+        // 耗尽 + 有 reset → 仍触发切走。
+        let mut exhausted = mk_awq("a", true, 100, QuotaStatus::Exhausted);
+        exhausted.quotas.push(reset_quota(2));
+        let snap = ProviderSnapshot {
+            provider: "codex".into(),
+            accounts: vec![exhausted, mk_awq("b", false, 10, QuotaStatus::Ok)],
+        };
+        match decide(&snap, &test_config(60_000)) {
+            PolicyDecision::Swap { to, .. } => assert_eq!(to.0, "b"),
+            other => panic!("exhausted active with resets must still swap, got {other:?}"),
+        }
+        // 仅 reset、无额度窗口 → 不能当候选。
+        let reset_only = AccountWithQuotas {
+            account: mk_account("c", false),
+            quotas: vec![reset_quota(3)],
+            fetch_state: QuotaFetchState::Ready,
+        };
+        let snap = ProviderSnapshot {
+            provider: "codex".into(),
+            accounts: vec![mk_awq("a", true, 100, QuotaStatus::Exhausted), reset_only],
+        };
+        assert!(
+            matches!(decide(&snap, &test_config(60_000)), PolicyDecision::Degraded { .. }),
+            "reset-only account must not be a swap candidate"
+        );
     }
 
     #[test]

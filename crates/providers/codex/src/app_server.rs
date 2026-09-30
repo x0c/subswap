@@ -399,6 +399,13 @@ impl std::error::Error for RpcFailure {}
 struct RateLimitsResponse {
     account_id: Option<String>,
     rate_limits: RateLimitSnapshot,
+    rate_limit_reset_credits: Option<RateLimitResetCredits>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RateLimitResetCredits {
+    available_count: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -430,6 +437,16 @@ fn rate_limits_to_usage(result: Value, expected_account_id: &str) -> Result<Valu
     }
     if let Some(secondary) = response.rate_limits.secondary {
         usage.insert("secondary".into(), window_to_usage(secondary));
+    }
+    // 重置道具只有计数、无明细，转写成 wham 的 snake_case 键供下游统一解析。
+    if let Some(available) = response
+        .rate_limit_reset_credits
+        .and_then(|credits| credits.available_count)
+    {
+        usage.insert(
+            "rate_limit_reset_credits".into(),
+            json!({ "available_count": available }),
+        );
     }
     if usage.is_empty() {
         return Err(anyhow!("Codex rate-limit response contains no windows"));
@@ -476,6 +493,25 @@ mod tests {
         assert_eq!(usage["primary"]["window_minutes"], 300);
         assert_eq!(usage["secondary"]["used_percent"], 31);
         assert_eq!(usage["secondary"]["window_minutes"], 10_080);
+    }
+
+    #[test]
+    fn preserves_reset_credit_count_in_wham_shape() {
+        let usage = rate_limits_to_usage(
+            json!({
+                "accountId": "current-account",
+                "rateLimits": {
+                    "primary": {"usedPercent": 100, "windowDurationMins": 300}
+                },
+                "rateLimitResetCredits": {"availableCount": 1}
+            }),
+            "current-account",
+        )
+        .unwrap();
+        assert_eq!(
+            usage["rate_limit_reset_credits"]["available_count"],
+            1
+        );
     }
 
     #[test]
