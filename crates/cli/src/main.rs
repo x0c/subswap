@@ -167,7 +167,7 @@ enum Cmd {
     },
 
     /// Remove <id|N> from registry and keyring. Use `<provider>/<id>` if ambiguous.
-    /// For opencode providers this also disconnects the official credential.
+    /// If the account is the provider's current native login, it is also signed out there.
     Rm { id: String },
 
     /// Show or change autoswap state. No argument prints current state; 'on'/'off' to change.

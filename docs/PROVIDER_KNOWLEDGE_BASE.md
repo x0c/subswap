@@ -127,6 +127,10 @@ daemon 与 CLI **共用** `quota_cache.json`；`QuotaCache::fresh()` 比 `settin
 2. 只替换 `~/.claude.json` 的 `oauthAccount`（保留 `projects` 等）
 3. `fs2::FileExt::lock_exclusive` 于 `<claude_home>/.subswap.lock`
 
+### 删除（rm 连带原生登出）
+
+删的是当前 live OAuth 账号时：macOS 经 `/usr/bin/security` 删除 `Claude Code-credentials` item（不存在则忽略），删除 `.credentials.json`（不存在则忽略），最后移除全局配置里的 `oauthAccount`（保留其他字段）；三步后复核 live 已无该账号，否则报错且不清本地。自定义 API 账号没有 live 常驻，parked 删除只清本地（active API 本来就删不掉）。
+
 Token 预刷新 **best-effort**：`expiresAt` 在 5 分钟内且 keyring 有 `refreshToken` 时刷；失败仅 warn，不阻塞切换（不变量 #1）。
 
 **Token 保活分工**：非活跃 `access_token` 只在凭证仓库 → **daemon 后台保活**（扫描 `expires_at`，临近过期且有 `refresh_token` 调 Anthropic OAuth + 写回）。不暴露 `subswap refresh`。active 绝不刷（见下「Refresh token 轮换」）。
@@ -327,6 +331,10 @@ API-key 型 `auth.json` 示例：
 2. `fs2::FileExt::lock_exclusive` 于 `<codex_home>/.subswap.lock`
 3. **不**向运行中的 Codex 发 reload / 不代为重启（当前边界）；生效见上节「切换生效边界」
 
+### 删除（rm 连带原生登出）
+
+删的是当前 live 文件所属账号时一并删除 live 文件（持 `.subswap.lock`），否则只清本地。live 文件只装当前登录，没有多凭证库，parked 删除天然不复活。
+
 ### 与其他本地账号工具共存
 
 - 他工具可能维护 `~/.codex/accounts/registry.json` + `accounts/<key>/auth.json`
@@ -403,6 +411,10 @@ API-key 型 `auth.json` 示例：
 ### 登录方式
 
 无官方 CLI 子命令可驱动 OAuth。用户先跑 `kimi` TUI 登录；`subswap login kimi` = `FileBlobProvider::import_active` 导入当前凭证，不发 OAuth。`--email` / `--sso` / `--device-auth` 一律不支持。
+
+### 删除（rm 连带原生登出）
+
+删的是当前 live 文件所属账号时一并删除 live 文件（持 `.subswap.lock`），否则只清本地。
 
 ---
 
@@ -564,6 +576,10 @@ Go 订阅 = API key（`{"type":"api","key":"sk-..."}`），无 refresh，不刷�
 - 别名：`command-code` / `cmd`
 - `--email` / `--sso` / `--device-auth` 不支持
 
+### 删除（rm 连带原生登出）
+
+删的是当前 live 文件所属账号时一并删除 live 文件（持 `.subswap.lock`），否则只清本地。
+
 ---
 
 ## Cursor
@@ -602,7 +618,9 @@ macOS 命令行钥匙串**只能 fork `/usr/bin/security`**，禁止 `keyring` c
 
 ### 登录、导入与切换事务
 
-`subswap login cursor` 不复制 OAuth、不驱动网页：用户先在客户端登录（桌面或 `cursor-agent login`），命令只读本地凭证导入/覆盖并标 active。默认入口同步当前 live（同 Claude/Codex/Kimi）；**无墓碑**——`rm` 后客户端仍登录则下次默认入口收回（墓碑曾致无声消失，已移除；[troubleshooting/2026-08-15](troubleshooting/2026-08-15-cursor-section-silently-missing.md)）。
+`subswap login cursor` 不复制 OAuth、不驱动网页：用户先在客户端登录（桌面或 `cursor-agent login`），命令只读本地凭证导入/覆盖并标 active。默认入口同步当前 live（同 Claude/Codex/Kimi）。
+
+**删除（rm 连带原生登出）**：删的是当前 live 账号时一并从客户端登出——桌面版先请 Cursor 正常退出（超时则报错不清本地），再在 SQLite 事务里清除身份键，**不再拉起**；agent 文件后端清除 `auth.json` 令牌 + `cli-config.json` 的 `authInfo`（保留其他字段），钥匙串后端删除对应 item 再清 `authInfo`。parked 删除只清本地。登出失败则报错退出、不清本地。**无墓碑**（墓碑曾致无声消失，已移除；[troubleshooting/2026-08-15](troubleshooting/2026-08-15-cursor-section-silently-missing.md)）——但 rm 已连 live 一起清，要重新出现需在客户端重新登录后再 `login`。
 
 **新登录优先入池（产品约束，2026-09-06）**：Cursor 只有一份 live 凭证。无论是默认入口还是 daemon 先观察到一个未登记的 live 账号，都必须先将它导入并标为 active，之后才能建立额度快照或执行自动切换。导入失败时该轮必须跳过 Cursor 自动切换，绝不能让旧账号池覆盖这份新凭证；成功导入后即使该账号额度耗尽而被自动切走，它也必须保留在账号池中。此约束防止 `agent login` 成功后新账号尚未显示便被切回旧号。
 
@@ -683,6 +701,7 @@ Codex / Kimi / OpenCode API Key：凭证以 JSON blob 进入公共 `subswap-prov
 | blob fallback | `raw_blob_for_account`：active 优先 live（顺手修 store）→ store → `recover_legacy`；store 失败先试 legacy |
 | 隔离 | `export_blob` / `absorb_blob` → `IsolatedProvider`（`isolated.rs`）；blanket impl 自动获得 |
 | 导入 | `import_active` / `sync_active_metadata`（只对齐 active 标记）/ `import_raw` / `import_raw_with_explicit_metadata` |
+| 删除 | `disconnect_live_file_if_matches`：删的是 live 文件所属账号时持 `.subswap.lock` 删除 live 文件，否则只清本地（`rm` 先调它，失败则不清本地） |
 
 ### Adapter（`FileBlobRuntime`，`runtime.rs`）差异点
 

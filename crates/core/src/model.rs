@@ -206,6 +206,18 @@ impl Quota {
     }
 }
 
+/// `rm` 断开原生凭证的结果。`Err` 表示原生没断掉，调用方必须直接报错退出、
+/// 不清本地记录，避免“删了又回来”的假成功。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfficialDisconnect {
+    /// 原生凭证已断开/登出，后续同步不会导回。
+    Disconnected,
+    /// 原生本来就没有这份凭证（parked，或已在别处登出），直接清本地即可（幂等）。
+    AlreadyGone,
+    /// 原生不支持自动断（如 V1 Console），保持只清本地 + 旧提示。
+    Unsupported,
+}
+
 /// 一次切换可能要触达的本地客户端目标（CLI、IDE 扩展、桌面端等）。
 /// Provider 在 `client_targets()` 中声明，切换时由统一的 FileSyncer 处理。
 #[derive(Debug, Clone, Serialize, Deserialize)]

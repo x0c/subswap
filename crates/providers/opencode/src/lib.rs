@@ -190,9 +190,7 @@ impl OpencodeApiKeyProvider {
         let id = id.clone();
         tokio::task::spawn_blocking(move || disconnect_go_key_official(&home, &id))
             .await
-            .map_err(|e| {
-                Error::Provider(format!("OpenCode Go disconnect join failed: {e}"))
-            })?
+            .map_err(|e| Error::Provider(format!("OpenCode Go disconnect join failed: {e}")))?
     }
 }
 
@@ -246,8 +244,9 @@ fn remove_v1_go_slot(home: &Path, id: &AccountId) -> Result<OfficialDisconnect> 
             )));
         }
     };
-    let is_target = auth::extract_blob(&content)
-        .is_some_and(|blob| auth::parse_metadata(&blob).primary_id.as_deref() == Some(id.0.as_str()));
+    let is_target = auth::extract_blob(&content).is_some_and(|blob| {
+        auth::parse_metadata(&blob).primary_id.as_deref() == Some(id.0.as_str())
+    });
     if !is_target {
         return Ok(OfficialDisconnect::AlreadyGone);
     }
@@ -256,30 +255,24 @@ fn remove_v1_go_slot(home: &Path, id: &AccountId) -> Result<OfficialDisconnect> 
         .create(true)
         .write(true)
         .open(&lock_path)
-        .map_err(|e| {
-            Error::Provider(format!("open OpenCode lock {}: {e}", lock_path.display()))
-        })?;
-    fs2::FileExt::lock_exclusive(&lock_file).map_err(|e| {
-        Error::Provider(format!("lock OpenCode credentials: {e}"))
-    })?;
-    let content = std::fs::read_to_string(&live_path).map_err(|e| {
-        Error::Provider(format!("read OpenCode live {}: {e}", live_path.display()))
-    })?;
+        .map_err(|e| Error::Provider(format!("open OpenCode lock {}: {e}", lock_path.display())))?;
+    fs2::FileExt::lock_exclusive(&lock_file)
+        .map_err(|e| Error::Provider(format!("lock OpenCode credentials: {e}")))?;
+    let content = std::fs::read_to_string(&live_path)
+        .map_err(|e| Error::Provider(format!("read OpenCode live {}: {e}", live_path.display())))?;
     let mut map: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(&content).unwrap_or_default();
-    let still_target = map
-        .get(auth::AUTH_SLOT)
-        .is_some_and(|entry| {
-            auth::parse_metadata(&entry.to_string()).primary_id.as_deref() == Some(id.0.as_str())
-        });
+    let still_target = map.get(auth::AUTH_SLOT).is_some_and(|entry| {
+        auth::parse_metadata(&entry.to_string())
+            .primary_id
+            .as_deref()
+            == Some(id.0.as_str())
+    });
     if !still_target {
         return Ok(OfficialDisconnect::AlreadyGone);
     }
     map.remove(auth::AUTH_SLOT);
-    write_live_atomic(
-        &live_path,
-        &serde_json::Value::Object(map).to_string(),
-    )?;
+    write_live_atomic(&live_path, &serde_json::Value::Object(map).to_string())?;
     Ok(OfficialDisconnect::Disconnected)
 }
 
@@ -291,19 +284,16 @@ fn write_live_atomic(path: &Path, contents: &str) -> Result<()> {
         })?;
     }
     let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-    std::fs::write(&tmp, contents).map_err(|e| {
-        Error::Provider(format!("write OpenCode live {}: {e}", tmp.display()))
-    })?;
+    std::fs::write(&tmp, contents)
+        .map_err(|e| Error::Provider(format!("write OpenCode live {}: {e}", tmp.display())))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
-            Error::Provider(format!("chmod OpenCode live {}: {e}", tmp.display()))
-        })?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| Error::Provider(format!("chmod OpenCode live {}: {e}", tmp.display())))?;
     }
-    std::fs::rename(&tmp, path).map_err(|e| {
-        Error::Provider(format!("replace OpenCode live {}: {e}", path.display()))
-    })?;
+    std::fs::rename(&tmp, path)
+        .map_err(|e| Error::Provider(format!("replace OpenCode live {}: {e}", path.display())))?;
     Ok(())
 }
 
@@ -311,17 +301,8 @@ fn go_id_for_key(key: &str) -> AccountId {
     AccountId(auth::fingerprint(key))
 }
 
-/// `rm` 断开官方凭证的结果。`Err` 表示官方没断掉，调用方必须直接报错退出、
-/// 不清本地记录，避免“删了又回来”的假成功。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OfficialDisconnect {
-    /// 官方凭证已断开，后续同步不会导回。
-    Disconnected,
-    /// 官方本来就没有这份凭证，直接清本地即可（幂等）。
-    AlreadyGone,
-    /// 官方不支持自动断（如 V1 Console），保持只清本地 + 旧提示。
-    Unsupported,
-}
+/// `rm` 断开官方凭证的结果（见 [`subswap_core::OfficialDisconnect`]，此处重导出保持旧引用可用）。
+pub use subswap_core::OfficialDisconnect;
 
 #[async_trait]
 impl Provider for OpencodeApiKeyProvider {
@@ -504,13 +485,15 @@ impl OpencodeProvider {
             match console::detect_major_version() {
                 Ok(major) if major < 2 => Ok(OfficialDisconnect::Unsupported),
                 Ok(_) => {
-                    console::logout_credential(PROVIDER_ID, &credential_id, &home).map_err(|e| {
-                        Error::Provider(format!(
-                            "cannot disconnect official OpenCode Console credential; \
+                    console::logout_credential(PROVIDER_ID, &credential_id, &home).map_err(
+                        |e| {
+                            Error::Provider(format!(
+                                "cannot disconnect official OpenCode Console credential; \
                              run `opencode auth logout opencode {credential_id}` manually, \
                              then re-run rm: {e}"
-                        ))
-                    })?;
+                            ))
+                        },
+                    )?;
                     let still = console::read_console_accounts(&home)?
                         .into_iter()
                         .any(|l| console::account_id_for(&l) == account_id);
@@ -711,10 +694,9 @@ mod tests {
         let out = disconnect_go_key_official(home, &target_id).unwrap();
         assert_eq!(out, OfficialDisconnect::Disconnected);
 
-        let live: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(paths::auth_json_path(home)).unwrap(),
-        )
-        .unwrap();
+        let live: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(paths::auth_json_path(home)).unwrap())
+                .unwrap();
         assert_eq!(live["openai"]["key"], "sk-keep");
         assert!(live.get("opencode-go").is_none());
 

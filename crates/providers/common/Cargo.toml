@@ -9,6 +9,7 @@ license.workspace = true
 subswap-core = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+fs2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }

@@ -22,8 +22,8 @@ use sha2::{Digest, Sha256};
 use subswap_core::error::{Error, Result};
 use subswap_core::swap::{persist_pre_swap_snapshot_in, SnapshotEntry};
 use subswap_core::{
-    Account, AccountId, AccountRegistry, ClientTarget, CredentialStore, Provider, Quota,
-    QuotaStatus, QuotaWindow,
+    Account, AccountId, AccountRegistry, ClientTarget, CredentialStore, OfficialDisconnect,
+    Provider, Quota, QuotaStatus, QuotaWindow,
 };
 
 pub const PROVIDER_ID: &str = "cursor";
@@ -296,6 +296,111 @@ impl CursorProvider {
     fn import_active_blocking(&self, label_hint: Option<String>) -> Result<Account> {
         let blob = self.canonicalize_live_blob(self.source.read_live()?)?;
         self.upsert_blob(blob, label_hint, true)
+    }
+
+    /// `rm` 用：删的是当前 live 账号时从客户端登出。桌面版先请 Cursor 正常退出
+    /// （超时则报错不清本地），再清身份键，不再拉起；agent 清 token + `authInfo`。
+    /// live 不可读或属于别的账号时返回 `AlreadyGone`，调用方直接清本地。
+    pub async fn disconnect_official(&self, id: &AccountId) -> Result<OfficialDisconnect> {
+        let this = self.clone();
+        let id = id.clone();
+        tokio::task::spawn_blocking(move || this.disconnect_official_blocking(&id))
+            .await
+            .map_err(join_error)?
+    }
+
+    fn disconnect_official_blocking(&self, id: &AccountId) -> Result<OfficialDisconnect> {
+        let live = match self.source.read_live() {
+            Ok(live) => self.canonicalize_live_blob(live)?,
+            Err(_) => return Ok(OfficialDisconnect::AlreadyGone),
+        };
+        if !self.live_belongs_to(&live, id)? {
+            return Ok(OfficialDisconnect::AlreadyGone);
+        }
+        match self.source.clone() {
+            CredentialSource::Desktop { state_db } => {
+                self.disconnect_desktop_blocking(id, &state_db)
+            }
+            CredentialSource::Agent {
+                auth_json,
+                cli_config,
+                token_store,
+            } => self.disconnect_agent_blocking(&auth_json, &cli_config, &token_store),
+        }
+    }
+
+    /// live 是否属于待删账号：registry 主人命中，或无主人时客户端自述身份与待删 id 一致。
+    fn live_belongs_to(&self, live: &CursorBlob, id: &AccountId) -> Result<bool> {
+        if let Some(owner) = self.find_owner(live)? {
+            return Ok(owner.id == *id);
+        }
+        Ok(identity_for(live) == id.0)
+    }
+
+    fn disconnect_desktop_blocking(
+        &self,
+        id: &AccountId,
+        state_db: &Path,
+    ) -> Result<OfficialDisconnect> {
+        let _switch_lock = self.acquire_switch_lock()?;
+        if self.process_control.is_running()? {
+            // 与切换同理：必须先等完全退出，否则 Electron 退出时把内存旧凭证刷回。
+            // 与切换不同：登出后不再拉起。
+            self.process_control.stop().map_err(|error| {
+                Error::Provider(format!(
+                    "close Cursor for sign-out failed: {error}; rm aborted"
+                ))
+            })?;
+        }
+        let mut conn =
+            Connection::open(state_db).map_err(sql_error("open Cursor state database"))?;
+        // 退出前后客户端可能已换号，重读确认仍是目标账号。
+        let live = match read_blob_from_connection(&conn) {
+            Ok(live) => self.canonicalize_live_blob(live)?,
+            Err(_) => return Ok(OfficialDisconnect::AlreadyGone),
+        };
+        if !self.live_belongs_to(&live, id)? {
+            return Ok(OfficialDisconnect::AlreadyGone);
+        }
+        let tx = conn
+            .transaction()
+            .map_err(sql_error("begin Cursor sign-out transaction"))?;
+        for key in SWAP_KEYS {
+            tx.execute("DELETE FROM ItemTable WHERE key = ?1", [key])
+                .map(|_| ())
+                .map_err(sql_error("clear Cursor credential"))?;
+        }
+        tx.commit()
+            .map_err(sql_error("commit Cursor sign-out transaction"))?;
+        if read_blob_from_connection(&conn).is_ok() {
+            return Err(Error::Provider(
+                "Cursor is still signed in after sign-out; sign out in Cursor first".into(),
+            ));
+        }
+        Ok(OfficialDisconnect::Disconnected)
+    }
+
+    fn disconnect_agent_blocking(
+        &self,
+        auth_json: &Path,
+        cli_config: &Path,
+        token_store: &AgentTokenStore,
+    ) -> Result<OfficialDisconnect> {
+        match token_store {
+            AgentTokenStore::File => clear_agent_file_tokens(auth_json)?,
+            #[cfg(target_os = "macos")]
+            AgentTokenStore::Keychain { path } => {
+                security_delete_cursor_password(AGENT_ACCESS_SERVICE, path.as_deref())?;
+                security_delete_cursor_password(AGENT_REFRESH_SERVICE, path.as_deref())?;
+            }
+        }
+        clear_agent_auth_info(cli_config)?;
+        if self.source.read_live().is_ok() {
+            return Err(Error::Provider(
+                "Cursor agent is still signed in after sign-out; sign out in Cursor first".into(),
+            ));
+        }
+        Ok(OfficialDisconnect::Disconnected)
     }
 
     /// 令牌 JWT 才是 live 归属；过期的 cli-config 邮箱不得开出幽灵账号，也不得改写真正主人的身份字段。
@@ -1253,6 +1358,41 @@ fn write_agent_live(
         AgentTokenStore::Keychain { path } => write_agent_keychain(path.as_deref(), blob)?,
     }
     write_agent_cli_config(cli_config, blob)
+}
+
+/// agent 文件后端登出：移除令牌字段，保留文件其他字段。文件不存在视为已登出。
+fn clear_agent_file_tokens(auth_json: &Path) -> Result<()> {
+    let Ok(raw) = std::fs::read_to_string(auth_json) else {
+        return Ok(());
+    };
+    let mut root: serde_json::Map<String, Value> = serde_json::from_str(&raw).unwrap_or_default();
+    root.remove("accessToken");
+    root.remove("refreshToken");
+    if let Some(parent) = auth_json.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = open_private_file(auth_json)?;
+    file.set_len(0)?;
+    file.write_all(serde_json::to_string_pretty(&root)?.as_bytes())?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// 清除 cli-config.json 的 `authInfo`（保留其他字段）。文件不存在视为已登出。
+fn clear_agent_auth_info(cli_config: &Path) -> Result<()> {
+    let Ok(raw) = std::fs::read_to_string(cli_config) else {
+        return Ok(());
+    };
+    let mut root: serde_json::Map<String, Value> = serde_json::from_str(&raw).unwrap_or_default();
+    root.remove("authInfo");
+    if let Some(parent) = cli_config.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = open_private_file(cli_config)?;
+    file.set_len(0)?;
+    file.write_all(serde_json::to_string_pretty(&root)?.as_bytes())?;
+    file.sync_all()?;
+    Ok(())
 }
 
 fn restore_bytes(path: &Path, previous: Option<&[u8]>) -> Result<()> {

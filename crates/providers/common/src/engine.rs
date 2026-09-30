@@ -19,7 +19,8 @@ use chrono::Utc;
 use subswap_core::error::{Error, Result};
 use subswap_core::swap::{swap_with_snapshot, SwapTarget};
 use subswap_core::{
-    Account, AccountId, AccountRegistry, ClientTarget, CredentialStore, Provider, Quota,
+    Account, AccountId, AccountRegistry, ClientTarget, CredentialStore, OfficialDisconnect,
+    Provider, Quota,
 };
 
 use crate::json::extract_refresh_token;
@@ -307,6 +308,69 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
             });
         }
         self.store_account(raw, label_hint, Some(true))
+    }
+
+    /// `rm` 用 async 入口：阻塞部分进 `spawn_blocking`。
+    pub async fn disconnect_official(&self, account: &Account) -> Result<OfficialDisconnect> {
+        let provider = FileBlobProvider {
+            runtime: self.runtime.clone(),
+            store: self.store.clone(),
+            registry: self.registry.clone(),
+            home: self.home.clone(),
+        };
+        let account = account.clone();
+        tokio::task::spawn_blocking(move || provider.disconnect_live_file_if_matches(&account))
+            .await
+            .map_err(|e| Error::Provider(format!("disconnect join failed: {e}")))?
+    }
+
+    /// `rm` 用：删的是当前 live 文件所属账号时，持 `.subswap.lock` 删除 live
+    /// 文件（原生登出）；live 是别的账号或根本不存在时返回 `AlreadyGone`，
+    /// 调用方直接清本地即可。删除后复核 live 已无该账号，否则报错。
+    pub fn disconnect_live_file_if_matches(&self, account: &Account) -> Result<OfficialDisconnect> {
+        let live_id = match self.live_account_id() {
+            Ok(id) => id,
+            Err(_) => return Ok(OfficialDisconnect::AlreadyGone),
+        };
+        // `live_account_id` 内部已含去重键回退：命中即 registry owner id。
+        if live_id != account.id {
+            return Ok(OfficialDisconnect::AlreadyGone);
+        }
+        let live_path = self.live_path();
+        let lock_path = self.home.join(".subswap.lock");
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|e| Error::Provider(format!("open lock {}: {e}", lock_path.display())))?;
+        fs2::FileExt::lock_exclusive(&lock_file)
+            .map_err(|e| Error::Provider(format!("lock credentials: {e}")))?;
+        // 锁内重读：并发 activate 可能刚换过号，只删仍属于目标账号的 live。
+        let still_target = self
+            .live_account_id()
+            .map(|id| id == account.id)
+            .unwrap_or(false);
+        if !still_target {
+            return Ok(OfficialDisconnect::AlreadyGone);
+        }
+        match std::fs::remove_file(&live_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(OfficialDisconnect::AlreadyGone);
+            }
+            Err(e) => {
+                return Err(Error::Provider(format!(
+                    "remove live {}: {e}",
+                    live_path.display()
+                )));
+            }
+        }
+        if self.live_account_id().is_ok() {
+            return Err(Error::Provider(format!(
+                "live credentials still present after removal; disconnect in the client first"
+            )));
+        }
+        Ok(OfficialDisconnect::Disconnected)
     }
 
     /// 当前 live 凭证对应的 registry id。`rm` 用它判断删除的号是否仍在客户端登录着，
@@ -1260,5 +1324,50 @@ mod tests {
         assert_eq!(live["keep"], "other");
         assert_eq!(live["slot"]["uid"], "u2");
         assert_eq!(live["slot"]["access_token"], "A2");
+    }
+
+    // --- disconnect_live_file_if_matches：rm 连带原生登出 ---
+
+    #[test]
+    fn disconnect_removes_live_file_of_matching_account() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = provider(tmp.path());
+        fs::create_dir_all(p.home()).unwrap();
+        let account = p
+            .import_raw(
+                r#"{"uid":"u1","access_token":"A1"}"#.into(),
+                None,
+                Some(true),
+            )
+            .unwrap();
+        fs::write(p.test_live_path(), r#"{"uid":"u1","access_token":"A1"}"#).unwrap();
+
+        let out = p.disconnect_live_file_if_matches(&account).unwrap();
+        assert_eq!(out, OfficialDisconnect::Disconnected);
+        assert!(!p.test_live_path().exists());
+        // 幂等：live 已无，再调一次就是 AlreadyGone。
+        assert_eq!(
+            p.disconnect_live_file_if_matches(&account).unwrap(),
+            OfficialDisconnect::AlreadyGone
+        );
+    }
+
+    #[test]
+    fn disconnect_leaves_live_file_of_other_account_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = provider(tmp.path());
+        fs::create_dir_all(p.home()).unwrap();
+        let other = p
+            .import_raw(
+                r#"{"uid":"u2","access_token":"A2"}"#.into(),
+                None,
+                Some(false),
+            )
+            .unwrap();
+        fs::write(p.test_live_path(), r#"{"uid":"u1","access_token":"A1"}"#).unwrap();
+
+        let out = p.disconnect_live_file_if_matches(&other).unwrap();
+        assert_eq!(out, OfficialDisconnect::AlreadyGone);
+        assert!(p.test_live_path().exists());
     }
 }

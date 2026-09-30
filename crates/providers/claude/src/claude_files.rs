@@ -261,6 +261,21 @@ pub fn read_oauth_account(path: &Path) -> Result<Option<OauthAccount>> {
     Ok(Some(acc))
 }
 
+/// `rm` 原生登出用：移除全局配置里的 `oauthAccount`（保留其他字段），并原子写回。
+/// 文件不存在时视为已登出，直接返回 Ok。
+pub fn remove_oauth_account_from_global(path: &Path) -> Result<()> {
+    let mut root = read_global_config(path)?;
+    let Some(obj) = root.as_object_mut() else {
+        return Ok(());
+    };
+    if obj.remove("oauthAccount").is_none() {
+        return Ok(());
+    }
+    let serialized = serde_json::to_string_pretty(&root)?;
+    atomic_write(path, &serialized, false)?;
+    Ok(())
+}
+
 /// 原子写：写到 `<path>.<pid>.tmp` → rename。
 /// `restrict_perm` = true 时设置 0o600（仅 Unix）。
 fn atomic_write(path: &Path, contents: &str, restrict_perm: bool) -> Result<()> {

@@ -21,14 +21,14 @@ use chrono::Utc;
 use subswap_core::error::{Error, Result};
 use subswap_core::swap::{swap_with_snapshot, SwapTarget};
 use subswap_core::{
-    Account, AccountId, AccountRegistry, BillingKind, ClientTarget, CredentialStore, Provider,
-    Quota, QuotaStatus, QuotaWindow,
+    Account, AccountId, AccountRegistry, BillingKind, ClientTarget, CredentialStore,
+    OfficialDisconnect, Provider, Quota, QuotaStatus, QuotaWindow,
 };
 
 use crate::claude_files::{
     capture_managed_env, mark_onboarding_complete, read_api_state, read_credentials,
-    read_oauth_account, read_settings, remove_api_state, restore_oauth_env_in_settings,
-    write_api_env_into_settings, write_api_state, write_credentials,
+    read_oauth_account, read_settings, remove_api_state, remove_oauth_account_from_global,
+    restore_oauth_env_in_settings, write_api_env_into_settings, write_api_state, write_credentials,
     write_oauth_account_into_global, ApiState, CredentialsFile, OauthAccount, MANAGED_API_ENV_KEYS,
 };
 use crate::paths::{
@@ -293,6 +293,17 @@ impl ClaudeProvider {
                     .into(),
             ))?;
         self.upsert_metadata_account(oauth_account, label_hint, Some(true))
+    }
+
+    /// `rm` 用：删的是当前 live OAuth 账号时从原生登出。阻塞 IO 包进
+    /// `spawn_blocking`；失败直接 Err，调用方不清本地。
+    pub async fn disconnect_official(&self, id: &AccountId) -> Result<OfficialDisconnect> {
+        let home = self.claude_home.clone();
+        let registry = self.registry.clone();
+        let id = id.clone();
+        tokio::task::spawn_blocking(move || disconnect_oauth_live(&home, &registry, &id))
+            .await
+            .map_err(|e| Error::Provider(format!("Claude disconnect join failed: {e}")))?
     }
 
     /// 从给定 credentials.json + 可选 oauthAccount 信息导入一个账号。
@@ -622,6 +633,65 @@ impl ClaudeProvider {
         self.registry.upsert(account.clone())?;
         Ok(account)
     }
+}
+
+/// `rm` 原生登出（阻塞版）：删的是当前 live OAuth 账号时清掉原生凭证，
+/// 否则返回 `AlreadyGone` 由调用方直接清本地。
+///
+/// 顺序：先清凭证（钥匙串/file），最后摘 `oauthAccount`。若中途硬失败，
+/// 调用方不清本地，重试 `rm` 可自愈（已清掉的部分都容忍缺失）。
+fn disconnect_oauth_live(
+    claude_home: &Path,
+    registry: &AccountRegistry,
+    id: &AccountId,
+) -> Result<OfficialDisconnect> {
+    // 自定义 API 账号没有 live 常驻：live 永远是 OAuth 或另一个 API，直接不动。
+    if registry
+        .find(PROVIDER_ID, id)?
+        .as_ref()
+        .is_some_and(is_api_account)
+    {
+        return Ok(OfficialDisconnect::AlreadyGone);
+    }
+    // 归属判定：只有 live 仍是被删账号才动原生；别人的登录绝不碰。
+    let live_matches = read_oauth_account(&global_config_path(claude_home))?
+        .is_some_and(|oauth| oauth.email_address == id.0);
+    if !live_matches {
+        return Ok(OfficialDisconnect::AlreadyGone);
+    }
+    let lock_path = claude_home.join(".subswap.lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| Error::Provider(format!("open Claude lock {}: {e}", lock_path.display())))?;
+    fs2::FileExt::lock_exclusive(&lock_file)
+        .map_err(|e| Error::Provider(format!("lock Claude credentials: {e}")))?;
+    // 锁内重读：并发 activate 可能刚换过号。
+    let still_target = read_oauth_account(&global_config_path(claude_home))?
+        .is_some_and(|oauth| oauth.email_address == id.0);
+    if !still_target {
+        return Ok(OfficialDisconnect::AlreadyGone);
+    }
+    #[cfg(target_os = "macos")]
+    security_delete_password()?;
+    match std::fs::remove_file(credentials_path(claude_home)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(Error::Provider(format!(
+                "remove Claude credentials {}: {e}",
+                credentials_path(claude_home).display()
+            )));
+        }
+    }
+    remove_oauth_account_from_global(&global_config_path(claude_home))?;
+    if read_oauth_account(&global_config_path(claude_home))?.is_some() {
+        return Err(Error::Provider(
+            "Claude is still signed in after logout; sign out in Claude Code first".into(),
+        ));
+    }
+    Ok(OfficialDisconnect::Disconnected)
 }
 
 #[async_trait]
@@ -1364,6 +1434,21 @@ fn security_set_password_for(service: &str, value: &str) -> Result<()> {
     Err(Error::Credential(format!(
         "write Claude Code keychain failed: {stderr}"
     )))
+}
+
+/// macOS：`rm` 原生登出用，删除 Claude Code 的 Keychain item。
+/// 不存在则忽略（幂等）；硬失败只记日志，由文件/oauthAccount 步骤继续兜底。
+#[cfg(target_os = "macos")]
+fn security_delete_password() -> Result<()> {
+    let account = keychain_account()?;
+    let _ = run_security_on_keychain(&[
+        "delete-generic-password",
+        "-s",
+        CLAUDE_CODE_KEYCHAIN_SERVICE,
+        "-a",
+        &account,
+    ])?;
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -2378,5 +2463,91 @@ mod tests {
         // 第二次 — 无哨兵文件，直接短路返回 Ok。
         f.provider.reconcile_api_external_login().unwrap();
         assert!(!f.api_state_exists());
+    }
+
+    #[test]
+    fn disconnect_skips_when_live_is_another_account() {
+        use subswap_core::FileStore;
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("claude");
+        std::fs::create_dir_all(&home).unwrap();
+        let provider = ClaudeProvider {
+            store: Arc::new(FileStore::new(tmp.path().join("creds.json"))),
+            registry: Arc::new(AccountRegistry::new(tmp.path().join("registry.toml"))),
+            claude_home: home.clone(),
+            dead_refresh: Arc::new(Mutex::new(HashSet::new())),
+        };
+        let id = AccountId("a@x.com".into());
+        provider
+            .registry
+            .upsert(Account {
+                provider: PROVIDER_ID.into(),
+                id: id.clone(),
+                label: id.0.clone(),
+                active: false,
+                created_at: Utc::now(),
+                last_used_at: None,
+                priority: 100,
+                extra: serde_json::Map::new(),
+            })
+            .unwrap();
+        let global_before = r#"{"oauthAccount":{"emailAddress":"b@x.com"}}"#;
+        let creds_before = r#"{"claudeAiOauth":{"accessToken":"AT","refreshToken":"R"}}"#;
+        std::fs::write(global_config_path(&home), global_before).unwrap();
+        std::fs::write(credentials_path(&home), creds_before).unwrap();
+        let out = disconnect_oauth_live(&home, &provider.registry, &id).unwrap();
+        assert!(matches!(out, OfficialDisconnect::AlreadyGone));
+        assert_eq!(
+            std::fs::read_to_string(global_config_path(&home)).unwrap(),
+            global_before
+        );
+        assert_eq!(
+            std::fs::read_to_string(credentials_path(&home)).unwrap(),
+            creds_before
+        );
+    }
+
+    #[test]
+    fn disconnect_skips_api_account_without_touching_live() {
+        use subswap_core::FileStore;
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("claude");
+        std::fs::create_dir_all(&home).unwrap();
+        let provider = ClaudeProvider {
+            store: Arc::new(FileStore::new(tmp.path().join("creds.json"))),
+            registry: Arc::new(AccountRegistry::new(tmp.path().join("registry.toml"))),
+            claude_home: home.clone(),
+            dead_refresh: Arc::new(Mutex::new(HashSet::new())),
+        };
+        let id = AccountId("my-api".into());
+        let mut extra = serde_json::Map::new();
+        extra.insert(ACCOUNT_KIND_FIELD.into(), API_KIND.into());
+        provider
+            .registry
+            .upsert(Account {
+                provider: PROVIDER_ID.into(),
+                id: id.clone(),
+                label: id.0.clone(),
+                active: false,
+                created_at: Utc::now(),
+                last_used_at: None,
+                priority: 100,
+                extra,
+            })
+            .unwrap();
+        let global_before = r#"{"oauthAccount":{"emailAddress":"c@x.com"}}"#;
+        let creds_before = r#"{"claudeAiOauth":{"accessToken":"AT","refreshToken":"R"}}"#;
+        std::fs::write(global_config_path(&home), global_before).unwrap();
+        std::fs::write(credentials_path(&home), creds_before).unwrap();
+        let out = disconnect_oauth_live(&home, &provider.registry, &id).unwrap();
+        assert!(matches!(out, OfficialDisconnect::AlreadyGone));
+        assert_eq!(
+            std::fs::read_to_string(global_config_path(&home)).unwrap(),
+            global_before
+        );
+        assert_eq!(
+            std::fs::read_to_string(credentials_path(&home)).unwrap(),
+            creds_before
+        );
     }
 }

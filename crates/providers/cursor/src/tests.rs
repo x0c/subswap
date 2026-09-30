@@ -1371,3 +1371,76 @@ async fn agent_activate_writes_target_credentials_back_to_keychain() {
     assert!(provider.require_account(&a.id).unwrap().active);
     assert!(!provider.require_account(&b.id).unwrap().active);
 }
+
+#[tokio::test]
+async fn disconnect_desktop_signs_out_live_account() {
+    let (_temp, provider, db) = setup();
+    let access = jwt("auth0|user_a", "a");
+    write_live(&db, "a@example.com", "auth0|user_a", &access, "refresh-a");
+    let account = provider.import_active(None).await.unwrap();
+    let out = provider.disconnect_official(&account.id).await.unwrap();
+    assert!(matches!(
+        out,
+        subswap_core::OfficialDisconnect::Disconnected
+    ));
+    let conn = Connection::open(&db).unwrap();
+    assert!(read_item(&conn, ACCESS_KEY).unwrap().is_none());
+    assert!(read_item(&conn, EMAIL_KEY).unwrap().is_none());
+    assert!(read_live_blob(&db).is_err());
+    let again = provider.disconnect_official(&account.id).await.unwrap();
+    assert!(matches!(
+        again,
+        subswap_core::OfficialDisconnect::AlreadyGone
+    ));
+}
+
+#[tokio::test]
+async fn disconnect_desktop_leaves_other_account_alone() {
+    let (_temp, provider, db) = setup();
+    let access_a = jwt("auth0|user_a", "a");
+    write_live(&db, "a@example.com", "auth0|user_a", &access_a, "refresh-a");
+    let a = provider.import_active(None).await.unwrap();
+    let access_b = jwt("auth0|user_b", "b");
+    write_live(&db, "b@example.com", "auth0|user_b", &access_b, "refresh-b");
+    let out = provider.disconnect_official(&a.id).await.unwrap();
+    assert!(matches!(out, subswap_core::OfficialDisconnect::AlreadyGone));
+    let conn = Connection::open(&db).unwrap();
+    assert_eq!(
+        read_item(&conn, EMAIL_KEY).unwrap().as_deref(),
+        Some("b@example.com")
+    );
+    assert_eq!(
+        read_item(&conn, ACCESS_KEY).unwrap().as_deref(),
+        Some(access_b.as_str())
+    );
+}
+
+#[tokio::test]
+async fn disconnect_agent_file_clears_tokens() {
+    let temp = tempfile::tempdir().unwrap();
+    let auth_json = temp.path().join("auth.json");
+    let cli_config = temp.path().join("cli-config.json");
+    let access = jwt("auth0|user_x", "x");
+    write_agent_auth(&auth_json, &access, "refresh-x");
+    write_agent_config(&cli_config, "x@example.com", "auth0|user_x");
+    let provider = agent_provider(
+        temp.path(),
+        auth_json.clone(),
+        cli_config.clone(),
+        "http://127.0.0.1:9/usage".into(),
+        "http://127.0.0.1:9/token".into(),
+    );
+    let account = provider.import_active(None).await.unwrap();
+    let out = provider.disconnect_official(&account.id).await.unwrap();
+    assert!(matches!(
+        out,
+        subswap_core::OfficialDisconnect::Disconnected
+    ));
+    let auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&auth_json).unwrap()).unwrap();
+    assert!(auth.get("accessToken").is_none());
+    assert!(auth.get("refreshToken").is_none());
+    let config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cli_config).unwrap()).unwrap();
+    assert!(config.get("authInfo").is_none());
+}

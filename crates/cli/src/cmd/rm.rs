@@ -1,11 +1,11 @@
-//! `subswap rm <id|N>`：从 registry 与 keyring 删除账号。
+//! `subswap rm <id|N>`：从 registry 与 keyring 删除账号，并从原生客户端登出/断开。
 //!
 //! 引用形式与 `subswap swap` 一致：数字编号 / id / label / `provider/id`，详见 [`crate::cmd::resolve_account`]。
-//! `opencode` / `opencode-api-key` 删前先断开官方客户端里的对应凭证，否则下次同步会导回。
+//! 删的是某 provider 当前原生登录账号时先断原生（否则下次同步导回）；原生断失败
+//! 直接报错退出、不清本地。删 parked 账号只清本地。
 
 use anyhow::{bail, Result};
-use subswap_core::AuditEvent;
-use subswap_provider_opencode::OfficialDisconnect;
+use subswap_core::{AuditEvent, OfficialDisconnect};
 
 use crate::app::AppContext;
 use crate::cmd::default::print_status_overview;
@@ -21,9 +21,14 @@ pub async fn run(ctx: &AppContext, id_input: &str, json: bool) -> Result<()> {
         );
     }
 
-    // opencode 系官方库是多凭证权威源：不断官方只清本地，下次同步必然导回。
-    // 官方断失败直接报错退出、不清本地，避免“删了又回来”的假成功。
+    // 原生是各 provider 登录的权威源：删 live 账号不断原生，下次同步必然导回。
+    // 原生断失败直接报错退出、不清本地，避免“删了又回来”的假成功。
     let official = match acc.provider.as_str() {
+        "claude" => Some(ctx.claude.disconnect_official(&acc.id).await?),
+        "codex" => Some(ctx.codex.disconnect_official(&acc).await?),
+        "kimi" => Some(ctx.kimi.disconnect_official(&acc).await?),
+        "cursor" => Some(ctx.cursor.disconnect_official(&acc.id).await?),
+        "commandcode" => Some(ctx.commandcode.disconnect_official(&acc).await?),
         "opencode-api-key" => Some(ctx.opencode_api_key.disconnect_official(&acc.id).await?),
         "opencode" => Some(ctx.opencode.disconnect_official_console(&acc).await?),
         _ => None,
@@ -65,9 +70,14 @@ pub async fn run(ctx: &AppContext, id_input: &str, json: bool) -> Result<()> {
             Some(acc.id.0.as_str()),
         ));
         println!(
-            "also disconnected the official {} credential; it will not be re-imported",
-            acc.provider
+            "also signed out {}/{} in the native client; it will not be re-imported",
+            acc.provider, acc.id,
         );
+        if acc.provider == "cursor" {
+            println!(
+                "note: if Cursor was running, it was quit for the sign-out and was not relaunched"
+            );
+        }
     }
     if still_signed_in {
         println!(

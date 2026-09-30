@@ -505,10 +505,9 @@ priority = 100
 }
 
 #[test]
-fn rm_leaves_no_tombstone_signed_in_account_reappears_on_next_run() {
-    // 2026-08-14 引入的删除墓碑会让「删过、但客户端还登录着」的账号永久消失且零提示——
-    // 这正是用户反馈「Cursor 又不见了」的真正根因。墓碑已整体移除：
-    // 只要客户端仍登录着，下次默认入口必须能把账号收回来；`rm` 也要如实说明这一点。
+fn rm_live_account_signs_out_natively_and_stays_gone() {
+    // `rm` 删的是当前原生登录账号时，一并从原生客户端登出（删 live 文件），
+    // 下次默认入口不再把它收回来。
     let tmp = tempfile::tempdir().unwrap();
     let registry = app_config_dir(&tmp).join("registry.toml");
     let credentials = app_data_dir(&tmp).join("credentials.json");
@@ -548,9 +547,12 @@ priority = 100
     );
     assert!(rm_stdout.contains("removed kimi/kimi-user"), "{rm_stdout}");
     assert!(
-        rm_stdout.contains("still signed in as this account")
-            && rm_stdout.contains("picked up again on the next run"),
-        "rm must say the account will come back, not that it's gone for good: {rm_stdout}"
+        rm_stdout.contains("also signed out"),
+        "rm must say the native client was signed out too: {rm_stdout}"
+    );
+    assert!(
+        !live_cred.exists(),
+        "live credential file must be gone after native sign-out"
     );
 
     let after_rm = fs::read_to_string(&registry).unwrap();
@@ -565,8 +567,238 @@ priority = 100
     );
     let default_stdout = assert_success(isolated_subswap(&tmp).output().unwrap());
     assert!(
-        default_stdout.contains("kimi-user"),
-        "no tombstone should block re-import on the very next run: {default_stdout}"
+        !default_stdout.contains("kimi-user"),
+        "signed-out account must not be re-imported on the next run: {default_stdout}"
+    );
+}
+
+#[test]
+fn rm_commandcode_live_key_removes_live_file() {
+    // 删的是当前原生登录的 Command Code key 时，一并清掉 live 的 auth.json。
+    let tmp = tempfile::tempdir().unwrap();
+    write_fast_quota_timeout(&tmp);
+    let id = login_commandcode_key(&tmp, "cc-test-rm-0001");
+
+    let live = tmp.path().join("commandcode").join("auth.json");
+    assert!(live.exists(), "login must materialize the live auth.json");
+
+    let rm_stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["rm", &format!("commandcode/{id}")])
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        rm_stdout.contains(&format!("removed commandcode/{id}")),
+        "{rm_stdout}"
+    );
+    assert!(
+        rm_stdout.contains("also signed out"),
+        "rm must say the native client was signed out too: {rm_stdout}"
+    );
+    assert!(
+        !live.exists(),
+        "live auth.json must be gone after native sign-out"
+    );
+}
+
+#[test]
+fn rm_codex_live_account_removes_live_file() {
+    // 手工搭 live + registry + credentials fixture（不用 `login codex`，它会驱动原生交互登录）；
+    // 删 live 账号时必须删掉 live 文件，下次默认入口不再收回。
+    let tmp = tempfile::tempdir().unwrap();
+    write_fast_quota_timeout(&tmp);
+    let live_raw =
+        r#"{"account_key":"key-rm","email":"rm-codex@example.com","chatgpt_account_id":"ca-rm"}"#;
+    // 主键规则见 codex_files.rs：account_key > email > alias > chatgpt_account_id，故 id 为 key-rm。
+    let live = tmp.path().join("codex").join("auth.json");
+    write(&live, live_raw);
+    write(
+        &app_config_dir(&tmp).join("registry.toml"),
+        r#"[[accounts]]
+provider = "codex"
+id = "key-rm"
+label = "rm-codex@example.com"
+active = true
+created_at = "2026-07-01T00:00:00Z"
+priority = 100
+"#,
+    );
+    // Codex 的 store_field 是 auth_json，key 格式 "{provider}:{account}:{field}"。
+    write(
+        &app_data_dir(&tmp).join("credentials.json"),
+        &serde_json::json!({ "codex:key-rm:auth_json": live_raw }).to_string(),
+    );
+
+    let rm_stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["rm", "codex/key-rm"])
+            .output()
+            .unwrap(),
+    );
+    assert!(rm_stdout.contains("removed codex/key-rm"), "{rm_stdout}");
+    assert!(
+        rm_stdout.contains("also signed out"),
+        "rm must say the native client was signed out too: {rm_stdout}"
+    );
+    assert!(
+        !live.exists(),
+        "live auth.json must be gone after native sign-out"
+    );
+
+    let default_stdout = assert_success(isolated_subswap(&tmp).output().unwrap());
+    assert!(
+        !default_stdout.contains("key-rm") && !default_stdout.contains("rm-codex@example.com"),
+        "signed-out account must not be re-imported on the next run: {default_stdout}"
+    );
+}
+
+#[test]
+fn rm_claude_live_oauth_signs_out() {
+    // 删的是当前原生登录的 Claude OAuth 账号时，清掉 .credentials.json 并摘掉
+    // .claude.json 里的 oauthAccount（projects 等其他字段保留），下次默认入口不再收回。
+    let tmp = tempfile::tempdir().unwrap();
+    setup_test_keychain(&tmp);
+    write_fast_quota_timeout(&tmp);
+    let claude = tmp.path().join("claude");
+    let creds_raw = r#"{"claudeAiOauth":{"accessToken":"AT","refreshToken":"RT"}}"#;
+    write(&claude.join(".credentials.json"), creds_raw);
+    write(
+        &claude.join(".claude.json"),
+        r#"{"projects":[],"oauthAccount":{"emailAddress":"live-rm@example.com"}}"#,
+    );
+    write(
+        &app_config_dir(&tmp).join("registry.toml"),
+        r#"[[accounts]]
+provider = "claude"
+id = "live-rm@example.com"
+label = "live-rm@example.com"
+active = true
+created_at = "2026-07-01T00:00:00Z"
+priority = 100
+
+[accounts.extra.oauth_account]
+emailAddress = "live-rm@example.com"
+"#,
+    );
+    write(
+        &app_data_dir(&tmp).join("credentials.json"),
+        &serde_json::json!({ "claude:live-rm@example.com:credentials_json": creds_raw })
+            .to_string(),
+    );
+
+    let rm_stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["rm", "live-rm@example.com"])
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        rm_stdout.contains("removed claude/live-rm@example.com"),
+        "{rm_stdout}"
+    );
+    assert!(
+        rm_stdout.contains("also signed out"),
+        "rm must say the native client was signed out too: {rm_stdout}"
+    );
+    assert!(
+        !claude.join(".credentials.json").exists(),
+        ".credentials.json must be gone after native sign-out"
+    );
+    let global: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(claude.join(".claude.json")).unwrap()).unwrap();
+    assert!(
+        global.get("oauthAccount").is_none(),
+        "oauthAccount must be removed from .claude.json: {global}"
+    );
+    assert!(
+        global.get("projects").is_some(),
+        "other .claude.json fields must be preserved: {global}"
+    );
+
+    let default_stdout = assert_success(isolated_subswap(&tmp).output().unwrap());
+    assert!(
+        !default_stdout.contains("live-rm@example.com"),
+        "signed-out account must not be re-imported on the next run: {default_stdout}"
+    );
+
+    teardown_test_keychain(&tmp);
+}
+
+#[test]
+fn rm_cursor_agent_live_clears_tokens() {
+    // agent 文件后端：删 live 账号时清掉 auth.json 的令牌字段与 cli-config.json 的
+    // authInfo，下次默认入口不再收回。isolated_subswap 默认强制走桌面版，
+    // 这里必须去掉该覆盖并指向 agent 文件后端。
+    let tmp = tempfile::tempdir().unwrap();
+    write_fast_quota_timeout(&tmp);
+    let auth_json = tmp.path().join("cursor-agent").join("auth.json");
+    let cli_config = tmp.path().join("cursor-agent").join("cli-config.json");
+    // JWT payload {"sub":"auth0|user_x"}，与 authInfo 的 authId 一致才是同一账号。
+    write(
+        &auth_json,
+        r#"{"accessToken":"eyJhbGciOiJub25lIn0.eyJzdWIiOiJhdXRoMHx1c2VyX3gifQ.sig","refreshToken":"rr"}"#,
+    );
+    write(
+        &cli_config,
+        r#"{"authInfo":{"email":"x@example.com","authId":"auth0|user_x"}}"#,
+    );
+
+    let login_stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["login", "cursor"])
+            .env_remove("SUBSWAP_CURSOR_STATE_DB_PATH")
+            .env("SUBSWAP_CURSOR_AGENT_AUTH_PATH", &auth_json)
+            .env("SUBSWAP_CURSOR_AGENT_CONFIG_PATH", &cli_config)
+            .output()
+            .unwrap(),
+    );
+    let id = first_action_line(&login_stdout)
+        .strip_prefix("login → cursor/")
+        .unwrap_or_else(|| panic!("unexpected cursor login output: {login_stdout}"))
+        .to_string();
+
+    let rm_stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["rm", &format!("cursor/{id}")])
+            .env_remove("SUBSWAP_CURSOR_STATE_DB_PATH")
+            .env("SUBSWAP_CURSOR_AGENT_AUTH_PATH", &auth_json)
+            .env("SUBSWAP_CURSOR_AGENT_CONFIG_PATH", &cli_config)
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        rm_stdout.contains(&format!("removed cursor/{id}")),
+        "{rm_stdout}"
+    );
+    assert!(
+        rm_stdout.contains("also signed out"),
+        "rm must say the native client was signed out too: {rm_stdout}"
+    );
+    let auth_after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&auth_json).unwrap()).unwrap();
+    assert!(
+        auth_after.get("accessToken").is_none(),
+        "agent accessToken must be cleared on sign-out: {auth_after}"
+    );
+    let config_after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&cli_config).unwrap()).unwrap();
+    assert!(
+        config_after.get("authInfo").is_none(),
+        "agent authInfo must be cleared on sign-out: {config_after}"
+    );
+
+    let default_stdout = assert_success(
+        isolated_subswap(&tmp)
+            .env_remove("SUBSWAP_CURSOR_STATE_DB_PATH")
+            .env("SUBSWAP_CURSOR_AGENT_AUTH_PATH", &auth_json)
+            .env("SUBSWAP_CURSOR_AGENT_CONFIG_PATH", &cli_config)
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        !default_stdout.contains(&id),
+        "signed-out account must not be re-imported on the next run: {default_stdout}"
     );
 }
 
@@ -1208,7 +1440,7 @@ sys.exit(2)
         "{rm_stdout}"
     );
     assert!(
-        rm_stdout.contains("also disconnected the official"),
+        rm_stdout.contains("also signed out"),
         "rm must say the official credential is gone too: {rm_stdout}"
     );
 
@@ -1223,12 +1455,7 @@ sys.exit(2)
     assert_eq!(remaining, 0, "official credential must be gone");
 
     // 下一次默认入口不得复活。
-    let stdout = assert_success(
-        isolated_subswap(&tmp)
-            .env("PATH", &path)
-            .output()
-            .unwrap(),
-    );
+    let stdout = assert_success(isolated_subswap(&tmp).env("PATH", &path).output().unwrap());
     assert!(
         !stdout.contains(&id),
         "removed Go key must not be re-imported on the next run: {stdout}"
@@ -1239,10 +1466,7 @@ sys.exit(2)
 fn rm_v1_opencode_api_key_clears_live_slot_and_keeps_neighbors() {
     let tmp = tempfile::tempdir().unwrap();
     let auth = tmp.path().join("opencode").join("auth.json");
-    write(
-        &auth,
-        r#"{"openai":{"type":"api","key":"sk-keep-other"}}"#,
-    );
+    write(&auth, r#"{"openai":{"type":"api","key":"sk-keep-other"}}"#);
     let id = login_opencode_key(&tmp, "sk-test-rm-v1-key");
 
     let rm_stdout = assert_success(

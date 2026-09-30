@@ -26,7 +26,10 @@ pub use auto_policy::{
 };
 pub use error::{Error, Result};
 pub use manual_hold::{hold_remaining_ms, record_manual_swap, record_manual_swap_with_hold};
-pub use model::{Account, AccountId, BillingKind, ClientTarget, Quota, QuotaStatus, QuotaWindow};
+pub use model::{
+    Account, AccountId, BillingKind, ClientTarget, OfficialDisconnect, Quota, QuotaStatus,
+    QuotaWindow,
+};
 pub use provider::Provider;
 pub use quota_cache::{is_authentication_failure, CachedEntry, QuotaCache, ValidEntry};
 pub use quota_query::query_quota_with_retry;
