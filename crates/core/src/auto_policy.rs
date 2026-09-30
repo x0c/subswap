@@ -547,7 +547,10 @@ mod tests {
             accounts: vec![mk_awq("a", true, 100, QuotaStatus::Exhausted), reset_only],
         };
         assert!(
-            matches!(decide(&snap, &test_config(60_000)), PolicyDecision::Degraded { .. }),
+            matches!(
+                decide(&snap, &test_config(60_000)),
+                PolicyDecision::Degraded { .. }
+            ),
             "reset-only account must not be a swap candidate"
         );
     }

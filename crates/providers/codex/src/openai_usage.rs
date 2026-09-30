@@ -57,10 +57,7 @@ pub fn reset_credits_count(raw: &serde_json::Value) -> ResetCreditCount {
     let camel = raw.get("rateLimitResetCredits");
     let node = snake.or(camel);
     let available = node
-        .and_then(|v| {
-            v.get("available_count")
-                .or_else(|| v.get("availableCount"))
-        })
+        .and_then(|v| v.get("available_count").or_else(|| v.get("availableCount")))
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     let applicable = node

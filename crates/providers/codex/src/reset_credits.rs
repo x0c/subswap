@@ -5,8 +5,7 @@
 use chrono::{DateTime, Utc};
 use subswap_core::error::{Error, Result};
 
-const RESET_CREDITS_URL: &str =
-    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
+const RESET_CREDITS_URL: &str = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 // 与 `openai_usage` 同一浏览器风格 UA，避免被识别为非交互客户端。
 const USER_AGENT: &str = concat!(
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 ",

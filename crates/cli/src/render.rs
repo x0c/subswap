@@ -397,7 +397,11 @@ pub fn format_quota_compact(q: &Quota, color: bool) -> String {
     // 重置道具：`used` 存可用张数（`limit` 固定 0，不参与百分比语义）。
     // 时间是道具过期（不是额度重置），用 `exp` 与 5h/7d 的 `reset` 区分。
     if matches!(q.window, QuotaWindow::ResetCredits) {
-        let count_plain = if q.used == 1 { "1 reset" } else { &format!("{} resets", q.used) };
+        let count_plain = if q.used == 1 {
+            "1 reset"
+        } else {
+            &format!("{} resets", q.used)
+        };
         let exp_plain = q
             .reset_at
             .map(format_reset_at)
@@ -759,7 +763,10 @@ mod tests {
         let text = format_quota_compact(&single, false);
         assert!(text.starts_with("RS [1 reset"), "got {text:?}");
         assert!(text.contains("exp in 29d"), "got {text:?}");
-        assert!(!text.contains('%'), "reset count must not render as percent: {text:?}");
+        assert!(
+            !text.contains('%'),
+            "reset count must not render as percent: {text:?}"
+        );
 
         let multi = Quota {
             used: 2,

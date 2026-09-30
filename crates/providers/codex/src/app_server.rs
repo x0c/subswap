@@ -508,10 +508,7 @@ mod tests {
             "current-account",
         )
         .unwrap();
-        assert_eq!(
-            usage["rate_limit_reset_credits"]["available_count"],
-            1
-        );
+        assert_eq!(usage["rate_limit_reset_credits"]["available_count"], 1);
     }
 
     #[test]
