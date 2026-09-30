@@ -11,7 +11,6 @@
 use chrono::{DateTime, Utc};
 
 use crate::model::{Account, AccountId, Quota, QuotaStatus, QuotaWindow};
-use crate::quota_cache::is_authentication_failure;
 use crate::settings;
 
 #[derive(Debug, Clone, Copy)]
@@ -22,8 +21,8 @@ pub struct PolicyConfig {
     pub threshold: f64,
     /// 是否允许把 status=Unknown 的账号作为候选。默认 false（保守）。
     pub allow_unknown: bool,
-    /// 新激活账号沉淀宽限期（毫秒）。active 账号 `last_used_at` 距今小于此值时，
-    /// 不因 quota loading / 拉取失败这类不确定状态把它自动切走（避免顶掉手动选择）。
+    /// 兼容旧配置的沉淀宽限期（毫秒）。不确定额度现已始终禁止自动切走，
+    /// 此字段保留给已有调用方，不再改变决策。
     pub settle_grace_ms: i64,
     /// 手动切换保持期（毫秒）。用户手动 `swap` / `login` 后，该 provider 在此窗口内
     /// 暂停一切自动切换（连确定性额度切换一起挡），避免把显式选择掰回去。
@@ -63,7 +62,7 @@ pub struct AccountWithQuotas {
     pub account: Account,
     pub quotas: Vec<Quota>,
     /// 拉取状态。CLI 渐进刷新时可能把 [`QuotaFetchState::Loading`] 传入决策；
-    /// active 仍在 loading 且已有明确可用候选时，允许先切走。
+    /// 当前账号未完成查询时不切换；候选也必须有已完成的可用额度。
     pub fetch_state: QuotaFetchState,
 }
 
@@ -79,7 +78,7 @@ pub enum QuotaFetchState {
     Failed(String),
     /// 实时查询失败，但存在未过期的缓存数据（由 `QuotaCache` 回填）。
     /// 对应账号的 `AccountWithQuotas.quotas` 存放缓存快照。
-    /// 自动切换可继续参考瞬态失败的缓存；鉴权/缺凭据错误不得成为自动候选。
+    /// 缓存仅用于展示，不能成为自动切换的触发或候选依据。
     Stale {
         cached_at: chrono::DateTime<chrono::Utc>,
         error: String,
@@ -159,53 +158,24 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
         }
     }
 
-    // 1. active 账号自身额度尚未可用时，若有额度明确可用的其他账号则切走。
-    // 没有明确可用候选时才降级，避免从未知切到未知。
-    //
-    // 沉淀宽限：账号刚 active（手动 swap 或自动切换）时，quota 冷启动还没拉回来属
-    // 正常现象。此窗口内不因「loading / 拉取失败」这类**不确定状态**把它切走，
-    // 否则用户手动切到某账号后，仅仅运行一次 `subswap` 或被 daemon 撞上正在 loading，
-    // 就会被立刻顶走。已明确耗尽 / 达到 threshold 的**确定性**切换不受此限（见第 2 步）。
+    // 1. 查询未完成或失败只能说明额度未知，不能说明当前账号不可用。
+    // 候选先返回、缓存过期、额度端点 429 都不能改变当前会话的账号。
     if let Some(a) = active {
-        if recently_activated(&a.account, config.settle_grace_ms)
-            && (a.fetch_state.is_loading() || a.fetch_state.failed().is_some())
-        {
-            return PolicyDecision::NoOp {
-                reason: format!(
-                    "{} just activated; settling before reacting to uncertain quota",
-                    a.account.id
-                ),
-            };
-        }
-        if a.fetch_state.is_loading() {
-            if let Some(best) = best_known_available_candidate(snapshot, &a.account.id, config) {
-                return PolicyDecision::Swap {
-                    from: Some(a.account.id.clone()),
-                    to: best.account.id.clone(),
+        match &a.fetch_state {
+            QuotaFetchState::Loading => {
+                return PolicyDecision::NoOp {
+                    reason: format!("{} quota still loading; keep current account", a.account.id),
+                };
+            }
+            QuotaFetchState::Failed(error) | QuotaFetchState::Stale { error, .. } => {
+                return PolicyDecision::Degraded {
                     reason: format!(
-                        "active account {} quota still loading; pick {} (known available)",
-                        a.account.id, best.account.id
+                        "active account {} quota fetch failed ({}); cannot decide",
+                        a.account.id, error
                     ),
                 };
             }
-        }
-        if let Some(err) = a.fetch_state.failed() {
-            if let Some(best) = best_known_available_candidate(snapshot, &a.account.id, config) {
-                return PolicyDecision::Swap {
-                    from: Some(a.account.id.clone()),
-                    to: best.account.id.clone(),
-                    reason: format!(
-                        "active account {} quota fetch failed ({}); pick {} (known available)",
-                        a.account.id, err, best.account.id
-                    ),
-                };
-            }
-            return PolicyDecision::Degraded {
-                reason: format!(
-                    "active account {} quota fetch failed ({}); cannot decide",
-                    a.account.id, err
-                ),
-            };
+            QuotaFetchState::Ready => {}
         }
     }
 
@@ -252,96 +222,9 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
         };
     }
 
-    // 4. 当前账号已明确耗尽时，quota 查询失败的其他账号仍可作为逃生候选。
-    // 查询失败不代表账号不可用；此时继续留在已耗尽账号一定无法承接流量。
-    if let Some(active) = active {
-        let failed_candidates: Vec<&AccountWithQuotas> = snapshot
-            .accounts
-            .iter()
-            .filter(|a| Some(&a.account.id) != active_id.as_ref())
-            .filter(|a| !a.account.manual_only())
-            .filter(|a| !quota_failure_blocks_candidate(&a.fetch_state))
-            .filter(|a| a.fetch_state.failed().is_some())
-            .collect();
-
-        if let Some(best) = failed_candidates
-            .into_iter()
-            .min_by(|a, b| compare_unknown_candidates(a, b))
-        {
-            return PolicyDecision::Swap {
-                from: active_id,
-                to: best.account.id.clone(),
-                reason: format!(
-                    "{} above {:.0}% threshold; pick {} (quota unavailable fallback)",
-                    active.account.id,
-                    config.threshold * 100.0,
-                    best.account.id
-                ),
-            };
-        }
-    }
-
-    // 5. 没有当前可用号时，允许切到「最早恢复可用」的账号。
-    // 对多窗口账号取所有阻塞窗口 reset_at 的最大值，确保切过去后不会被另一个窗口继续卡住。
-    let reset_candidates: Vec<(&AccountWithQuotas, DateTime<Utc>)> = snapshot
-        .accounts
-        .iter()
-        .filter(|a| !a.account.manual_only())
-        .filter(|a| !quota_failure_blocks_candidate(&a.fetch_state))
-        .filter_map(|a| reset_ready_at(a, config.threshold, config.allow_unknown).map(|t| (a, t)))
-        .collect();
-
-    let Some((best, ready_at)) = reset_candidates
-        .into_iter()
-        .min_by(|(a, a_ready), (b, b_ready)| compare_reset_candidates(a, *a_ready, b, *b_ready))
-    else {
-        return PolicyDecision::Degraded {
-            reason: "no swap candidate (others exhausted / fetch failed / unknown status)".into(),
-        };
-    };
-
-    if Some(&best.account.id) == active_id.as_ref() {
-        return PolicyDecision::NoOp {
-            reason: format!(
-                "{} waiting for soonest reset at {}",
-                best.account.id,
-                ready_at.to_rfc3339()
-            ),
-        };
-    }
-
-    let reason = match active {
-        Some(a) => format!(
-            "{} above {:.0}% threshold; pick {} (soonest reset at {})",
-            a.account.id,
-            config.threshold * 100.0,
-            best.account.id,
-            ready_at.to_rfc3339()
-        ),
-        None => format!(
-            "no active account; activate {} (soonest reset at {})",
-            best.account.id,
-            ready_at.to_rfc3339()
-        ),
-    };
-
-    PolicyDecision::Swap {
-        from: active_id,
-        to: best.account.id.clone(),
-        reason,
-    }
-}
-
-/// 账号是否在沉淀宽限期内刚被激活。`last_used_at` 在 `set_active` 时刷新，
-/// 因此手动 swap 与自动切换都会更新它。`None`（从未记录）视为「非新激活」，
-/// 保持对历史数据与单测的向后兼容。`grace_ms <= 0` 时关闭该保护。
-fn recently_activated(account: &Account, grace_ms: i64) -> bool {
-    if grace_ms <= 0 {
-        return false;
-    }
-    match account.last_used_at {
-        Some(t) => (Utc::now() - t).num_milliseconds() < grace_ms,
-        None => false,
+    // 没有已确认可用的目标就保持原号，不盲切到查询失败或仍耗尽的账号。
+    PolicyDecision::Degraded {
+        reason: "no swap candidate (others exhausted / fetch failed / unknown status)".into(),
     }
 }
 
@@ -358,39 +241,24 @@ fn account_needs_swap(a: &AccountWithQuotas, threshold: f64) -> bool {
         let fivehour_over = quotas
             .iter()
             .any(|q| quota_exceeds_auto_threshold(q, threshold));
-        let any_usable = quotas
+        let all_exhausted = quotas
             .iter()
-            .any(|q| matches!(q.status, QuotaStatus::Ok | QuotaStatus::Warn));
-        return fivehour_over || !any_usable;
+            .all(|q| q.limit > 0 && matches!(q.status, QuotaStatus::Exhausted));
+        return fivehour_over || all_exhausted;
     }
     // 叠加池（Claude 等）：任一耗尽或小时级超阈值即切。
     quotas.iter().any(|q| {
-        matches!(q.status, QuotaStatus::Exhausted) || quota_exceeds_auto_threshold(q, threshold)
+        (q.limit > 0 && matches!(q.status, QuotaStatus::Exhausted))
+            || quota_exceeds_auto_threshold(q, threshold)
     })
-}
-
-fn best_known_available_candidate<'a>(
-    snapshot: &'a ProviderSnapshot,
-    active_id: &AccountId,
-    config: &PolicyConfig,
-) -> Option<&'a AccountWithQuotas> {
-    snapshot
-        .accounts
-        .iter()
-        .filter(|candidate| candidate.account.id != *active_id)
-        .filter(|candidate| is_viable_candidate(candidate, config.threshold, config.allow_unknown))
-        .min_by(|left, right| compare_candidates(left, right))
 }
 
 fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: bool) -> bool {
     if a.account.manual_only() {
         return false;
     }
-    if quota_failure_blocks_candidate(&a.fetch_state) {
+    if !matches!(a.fetch_state, QuotaFetchState::Ready) {
         return false;
-    }
-    if a.fetch_state.failed().is_some() {
-        return allow_unknown;
     }
     if a.quotas.is_empty() {
         return allow_unknown;
@@ -407,7 +275,7 @@ fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: boo
     if cursor_parallel_pools(&a.account.provider, &quotas) {
         let any_usable = quotas
             .iter()
-            .any(|q| matches!(q.status, QuotaStatus::Ok | QuotaStatus::Warn));
+            .any(|q| q.limit > 0 && matches!(q.status, QuotaStatus::Ok | QuotaStatus::Warn));
         return if allow_unknown {
             no_above_threshold
         } else {
@@ -423,75 +291,15 @@ fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: boo
         // Warn 只是展示着色（`quota.warn_pct` 不参与决策）。未知窗口不能当可用证据。
         let any_usable = quotas
             .iter()
-            .any(|q| matches!(q.status, QuotaStatus::Ok | QuotaStatus::Warn));
+            .any(|q| q.limit > 0 && matches!(q.status, QuotaStatus::Ok | QuotaStatus::Warn));
         any_usable && no_above_threshold && no_exhausted
     }
 }
 
-fn quota_failure_blocks_candidate(state: &QuotaFetchState) -> bool {
-    let error = match state {
-        QuotaFetchState::Failed(error) | QuotaFetchState::Stale { error, .. } => error,
-        QuotaFetchState::Loading | QuotaFetchState::Ready => return false,
-    };
-    is_authentication_failure(error)
-}
-
-fn reset_ready_at(
-    a: &AccountWithQuotas,
-    threshold: f64,
-    allow_unknown: bool,
-) -> Option<DateTime<Utc>> {
-    if a.fetch_state.failed().is_some() || a.quotas.is_empty() {
-        return None;
-    }
-
-    let quotas: Vec<&Quota> = auto_swap_quotas(&a.quotas).collect();
-    if quotas.is_empty() {
-        return None;
-    }
-
-    // Cursor 并行池：只要还有可用窗口，就不走「等重置」兜底。
-    if cursor_parallel_pools(&a.account.provider, &quotas) {
-        let any_usable = quotas
-            .iter()
-            .any(|q| matches!(q.status, QuotaStatus::Ok | QuotaStatus::Warn));
-        if any_usable {
-            return None;
-        }
-    }
-
-    let mut ready_at: Option<DateTime<Utc>> = None;
-    let mut has_blocking_window = false;
-    let mut has_known_ok_after_reset = false;
-
-    for q in &quotas {
-        let blocking = quota_blocks_candidate(q, threshold);
-        has_blocking_window |= blocking;
-        has_known_ok_after_reset |=
-            blocking || matches!(q.status, QuotaStatus::Ok | QuotaStatus::Warn);
-
-        if blocking {
-            let reset_at = q.reset_at?;
-            ready_at = Some(ready_at.map_or(reset_at, |current| current.max(reset_at)));
-        }
-    }
-
-    if !has_blocking_window {
-        return None;
-    }
-    if !allow_unknown && !has_known_ok_after_reset {
-        return None;
-    }
-
-    ready_at
-}
-
-fn quota_blocks_candidate(q: &Quota, threshold: f64) -> bool {
-    matches!(q.status, QuotaStatus::Exhausted) || quota_exceeds_auto_threshold(q, threshold)
-}
-
 fn quota_exceeds_auto_threshold(q: &Quota, threshold: f64) -> bool {
-    matches!(q.window, QuotaWindow::FiveHour) && q.is_above(threshold)
+    matches!(q.window, QuotaWindow::FiveHour)
+        && !matches!(q.status, QuotaStatus::Unknown)
+        && q.is_above(threshold)
 }
 
 /// 自动切换参与判定的窗口。
@@ -549,25 +357,6 @@ fn compare_optional_reset(
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (None, None) => std::cmp::Ordering::Equal,
     }
-}
-
-fn compare_reset_candidates(
-    a: &AccountWithQuotas,
-    a_ready: DateTime<Utc>,
-    b: &AccountWithQuotas,
-    b_ready: DateTime<Utc>,
-) -> std::cmp::Ordering {
-    a_ready
-        .cmp(&b_ready)
-        .then(a.account.priority.cmp(&b.account.priority))
-        .then(a.account.id.0.cmp(&b.account.id.0))
-}
-
-fn compare_unknown_candidates(a: &AccountWithQuotas, b: &AccountWithQuotas) -> std::cmp::Ordering {
-    a.account
-        .priority
-        .cmp(&b.account.priority)
-        .then(a.account.id.0.cmp(&b.account.id.0))
 }
 
 /// `SUBSWAP_HOME` 进程锁：auto_policy 与 manual_hold 的触碰环境的测试共用。
@@ -773,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn active_quota_fetch_failure_swaps_to_known_available_candidate() {
+    fn active_quota_fetch_failure_keeps_current_account() {
         let mut a = mk_awq("a", true, 0, QuotaStatus::Unknown);
         a.fetch_state = QuotaFetchState::Failed("timeout".into());
         let snap = ProviderSnapshot {
@@ -781,11 +570,11 @@ mod tests {
             accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
         };
         let d = decide(&snap, &test_config(60_000));
-        assert!(matches!(d, PolicyDecision::Swap { to, .. } if to.0 == "b"));
+        assert!(matches!(d, PolicyDecision::Degraded { .. }));
     }
 
     #[test]
-    fn active_quota_loading_swaps_to_known_available_candidate() {
+    fn active_quota_loading_keeps_current_account() {
         let mut a = mk_awq("a", true, 0, QuotaStatus::Unknown);
         a.quotas.clear();
         a.fetch_state = QuotaFetchState::Loading;
@@ -794,7 +583,7 @@ mod tests {
             accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
         };
         let d = decide(&snap, &test_config(60_000));
-        assert!(matches!(d, PolicyDecision::Swap { to, .. } if to.0 == "b"));
+        assert!(matches!(d, PolicyDecision::NoOp { .. }));
     }
 
     /// 手动保持：保持期内连「已明确耗尽」的确定性切换一起挡（settle grace 只挡不确定状态）。
@@ -861,7 +650,7 @@ mod tests {
         };
         let cfg = test_config(60_000);
         let d = decide(&snap, &cfg);
-        assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
+        assert!(matches!(d, PolicyDecision::Degraded { .. }), "got {d:?}");
     }
 
     /// 宽限期只保护「不确定状态」；账号已明确达到 threshold 时仍按确定性数据切走。
@@ -881,9 +670,9 @@ mod tests {
         );
     }
 
-    /// 宽限期过后，loading / 失败的 active 账号恢复可被切走的逃生行为。
+    /// 不确定额度永远不能触发切换，宽限期结束也不能当作耗尽证据。
     #[test]
-    fn loading_account_swaps_after_grace_window_elapses() {
+    fn loading_account_stays_after_grace_window_elapses() {
         let mut a = mk_awq("a", true, 0, QuotaStatus::Unknown);
         a.quotas.clear();
         a.fetch_state = QuotaFetchState::Loading;
@@ -894,10 +683,7 @@ mod tests {
         };
         let cfg = test_config(60_000);
         let d = decide(&snap, &cfg);
-        assert!(
-            matches!(d, PolicyDecision::Swap { ref to, .. } if to.0 == "b"),
-            "got {d:?}"
-        );
+        assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
     }
 
     #[test]
@@ -974,7 +760,7 @@ mod tests {
     }
 
     #[test]
-    fn exhausted_active_swaps_to_failed_quota_candidate() {
+    fn exhausted_active_does_not_swap_to_failed_quota_candidate() {
         let mut candidate = mk_awq("candidate", false, 0, QuotaStatus::Unknown);
         candidate.quotas.clear();
         candidate.fetch_state = QuotaFetchState::Failed("429 rate limited".into());
@@ -989,7 +775,7 @@ mod tests {
             },
             &test_config(60_000),
         );
-        assert!(matches!(d, PolicyDecision::Swap { to, .. } if to.0 == "candidate"));
+        assert!(matches!(d, PolicyDecision::Degraded { .. }));
     }
 
     #[test]
@@ -1075,7 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn picks_soonest_reset_when_no_candidate_has_headroom() {
+    fn does_not_pick_earlier_reset_when_no_candidate_has_headroom() {
         let now = Utc::now();
         let mut active = mk_awq("a", true, 100, QuotaStatus::Exhausted);
         active.quotas = vec![
@@ -1109,10 +895,7 @@ mod tests {
             accounts: vec![active, later, sooner],
         };
         let d = decide(&snap, &test_config(60_000));
-        match d {
-            PolicyDecision::Swap { to, .. } => assert_eq!(to.0, "b"),
-            other => panic!("expected Swap, got {other:?}"),
-        }
+        assert!(matches!(d, PolicyDecision::Degraded { .. }), "got {d:?}");
     }
 
     #[test]
@@ -1137,7 +920,7 @@ mod tests {
             accounts: vec![active, later],
         };
         let d = decide(&snap, &test_config(60_000));
-        assert!(matches!(d, PolicyDecision::NoOp { .. }), "got {d:?}");
+        assert!(matches!(d, PolicyDecision::Degraded { .. }), "got {d:?}");
     }
 
     fn cursor_account(

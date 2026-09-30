@@ -5,6 +5,12 @@
 **手动 `subswap swap` 命令永远独立于额度查询。** 即使 quota 接口、网络、凭证密钥任一不可用，
 手动切换都必须能跑通。自动切换是「条件具备时锦上添花」，**不能成为切换的唯一通路**。
 
+## Automatic swap safety requirement (2026-09-30)
+
+Across every provider, the default entry and daemon must preserve the current account unless a completed quota query confirms its switching condition and another account is confirmed usable now. A faster candidate response, loading, empty/unknown quotas, quota-query errors (including quota endpoint 429), or stale cached exhaustion never establish that the current account must be replaced. Business-request rate limits are a separate signal; quota-query failures must not masquerade as that signal.
+
+When no confirmed usable target exists, preserve the current selection and degrade to manual action. Do not automatically move to a failed/unknown target or another depleted account merely because it resets sooner. Continue progressive quota collection so a confirmed depleted active account can switch as soon as a usable candidate becomes ready. Healthy accounts remain selected regardless of another account's larger balance or earlier reset. Preserve Cursor's parallel-pool semantics and all manual-only/manual-hold rules.
+
 ## 1. 触发策略（阈值 + 限流双触发）
 
 ### 1.1 阈值触发
@@ -33,43 +39,28 @@
 - `subswap` 无参：调用即采样一次（渐进式重判见 1.4）。
 - `subswapd`（M4）：默认 60 秒一次。
 
-### 1.4 默认入口的渐进式重判（每收到一份额度重判一次，单调升级）
+### 1.4 Progressive decisions
 
-额度边查边回（每账号 `tokio::spawn` + mpsc）。**不能查到第一份就把决策锁死**，否则更优候选仍 loading 时会先切到逃生/兜底候选（§2 第 6~8 条），表现为连跑两次结果不同、甚至停在已耗尽号。
+The default entry queries accounts concurrently and re-evaluates the provider after every quota result (`fill_quotas_progressively` → `try_auto_swap_ready_provider`). While the active result is `Loading`, keep the current account. A `Failed` or `Stale` active result degrades without activation. After a `Ready` active result confirms a threshold breach or exhaustion, switch only when a usable target is also `Ready`; otherwise keep collecting results. A healthy active result always yields `NoOp`.
 
-正确行为（`crates/cli/src/cmd/default.rs::fill_quotas_progressively` →
-`try_auto_swap_ready_provider`）：**每收到一份 quota 对该 provider 重跑 `decide`**，有更优目标就升级。
+`AutoSwapProgress.activated_targets` prevents duplicate activation and `abandoned` prevents switching back within one invocation. With confirmed usable targets, a completed switch naturally yields `NoOp`; there is no intermediate jump through an unknown or depleted account.
 
-单调收敛三点（缺一会抖动）：
-1. `decide` returns `Swap` for confirmed exhaustion/threshold breach and, in the current implementation, also for an active quota still loading or failed when another account is known available. Loading alone does not establish that the active account is unusable; see the known defect below. After selecting an available account, it returns `NoOp`.
-2. `AutoSwapProgress.activated_targets`：本次已切到的目标不重复 `activate`。
-3. `AutoSwapProgress.abandoned`：本次主动离开过的账号不再切回（只升级、不回头）。
+The previous loading fallback caused healthy Codex and OpenCode accounts to alternate solely because a candidate query returned first. This is corrected in v1.11.1; timing and verification are recorded in [the incident](../troubleshooting/2026-09-29-codex-auto-swap-with-healthy-accounts.md).
 
-与 settle-grace（§2 条 8.5）配合：刚激活号只挡 loading/失败等**不确定**状态；**已耗尽是确定状态**，照样升级走。
+## 2. Candidate selection
 
-**Known defect (2026-09-29):** A candidate result can arrive before the current account's quota, causing an immediate swap even when the current account later proves healthy. The default entry does not undo that swap. This is verified in [the Codex incident](../troubleshooting/2026-09-29-codex-auto-swap-with-healthy-accounts.md). A correction is pending; do not describe `Loading` as confirmed depletion.
+Apply these rules in order:
 
-## 2. 候选账号筛选
+1. Stay within the same provider.
+2. Preserve active `manual_only` accounts; exclude inactive `manual_only` accounts from every candidate path.
+3. Respect manual hold: a successful manual `swap` / `login` suspends all automatic switching for `auto_swap.manual_hold_ms` (default 10 minutes), including confirmed exhaustion. The persisted provider hold survives CLI exits and daemon restarts. A value of `0` disables it.
+4. Require a completed, non-stale query for the active account before evaluating its switching condition. Empty quotas, unknown status, and zero limits do not establish exhaustion. Cursor switches only when its parallel pools are all confirmed exhausted (or a separately reported hourly threshold is breached); a pool with unknown status is not confirmed exhausted.
+5. Require a `Ready` candidate with usable quota, no hourly threshold breach, and no blocking exhausted window. Cursor accepts any usable parallel pool. Failed, loading, and stale candidates are excluded, including authentication failures and quota endpoint 429. `PolicyConfig.allow_unknown` remains an explicit internal override for unknown windows in a completed response; the default entry and daemon set it to false. It never permits loading, failed, or stale responses.
+6. Among usable candidates, order by earliest `reset_at` (missing last), then usage ratio, account priority, and account ID. This ordering only selects a target after a valid trigger; it never replaces a healthy active account to gain more balance or an earlier reset.
+7. If no usable candidate exists, preserve the current account and return `Degraded`. Do not select a failed quota account or another depleted account based on future reset time. Re-evaluate after the next result or normal polling interval; do not add requests to force a decision.
+8. The daemon retains its five-minute account cooldown and checks the current active identity immediately before activation. Discard decisions if the active identity changed or became manual-only.
 
-按顺序应用：
-
-1. **同 Provider 内**：不跨 Provider。
-2. **可用性**：优先小时级未达阈值且无 `Exhausted` 窗口的账号；长窗口达阈值但未耗尽仍可作候选。
-3. **冷却期**：刚被切走的账号默认 5 分钟内不再选回。
-4. **优先级排序**（`compare_candidates`）：
-   1. 窗口最快 `reset_at` 升序（缺失视为最晚）；
-   2. `usage_ratio` 升序；
-   3. `Account.priority` 升序；
-   4. `id` 字典序。
-   此排序只影响触发后挑哪个；不改变触发条件（仍是小时级阈值/429/loading/失败兜底）。
-5. **无可用候选时的重置兜底**：其他账号也超阈值 / `Exhausted`，但阻塞窗口都带 `reset_at` → 切到最早恢复者。多窗口取所有阻塞窗口 `reset_at` 最大值；若当前 active 已是最早恢复者则不动。
-6. **查询失败候选兜底**：当前已明确耗尽、无已知可用候选时，允许切到因网络/超时/429 等导致 `query_quota` 失败的账号。**401/403、`needs re-login`、凭据缺失例外：即使有旧 quota 缓存也必须排除。**
-7. **active 查询失败兜底**：存在额度明确可用的其他账号则切走；无明确可用候选才降级；禁止未知→未知盲切。
-8. **active 仍在加载兜底（当前实现，存在上述误切缺陷）**：有明确可用候选则立即切；否则继续等待，不提前定案。
-8.5. **新激活沉淀宽限（settle grace）**：`last_used_at` 距今 < `auto_swap.settle_grace_ms`（默认 60s；手动/自动切换都刷新）时，**不因第 7、8 条 loading/查询失败切走** → `NoOp`。**只挡不确定状态**：已达 threshold / `Exhausted` 仍正常切走。宽限期须覆盖一次冷 quota 查询（含重试）。改默认只动 `crates/core/src/defaults.rs::AUTO_SWAP_SETTLE_GRACE_MS`。**默认入口的 live 对齐不刷新该标记**（`clear_settled_marker`）：原生客户端里的外部切号只是「标记 active」，不产生切换语义，否则外部切号会被宽限误保护。
-8.6. **手动切换保持（manual hold）**：用户经 subswap 手动 `swap` / `login` 某 provider 后，该 provider 在 `auto_swap.manual_hold_ms`（默认 10min）内**暂停一切自动切换** → `NoOp`（`… manually selected; auto swap held for Ns`）。与 8.5 正交：settle 只挡不确定状态且不分手动自动；hold 只认 subswap 手动切换（`<state_dir>/manual_hold/<provider>.json` 落盘，CLI 短命进程与 daemon 重启都认），但**连确定性额度切换一起挡**。`0` 或负数关闭。实现：`crates/core/src/manual_hold.rs` + `decide()` 开头；写入口在 `swap.rs` / `login.rs` 成功分支（best-effort，写失败不挡切换）。
-9. **`manual_only`**：`Account.extra.manual_only == true` → active 立即 `NoOp`（即使 loading/失败也不切走）；inactive 从所有候选路径排除。Claude 自定义 API 用此语义。
-10. **执行前重验 active**：daemon 执行前重读 registry；仅当当前 active 仍等于决策快照且非 `manual_only` 才执行，否则丢弃过期决策。
+`auto_swap.settle_grace_ms` and `PolicyConfig.settle_grace_ms` remain accepted for compatibility. Since v1.11.1, uncertain quotas always preserve the current account, regardless of account age or grace duration. The setting no longer changes the decision; confirmed exhaustion remains eligible for a meaningful switch. Manual hold continues to block even confirmed exhaustion.
 
 ## 2.5 风控与合规边界
 
@@ -77,7 +68,7 @@
 - daemon 默认 60 秒轮询，失败退避；不得把周期调到秒级以下。
 - 不绕过厂商并发、地域、账号共享、速率限制等政策。
 - 新增 Provider 的 usage/refresh 须先写入 `docs/PROVIDER_KNOWLEDGE_BASE.md`（端点、频率、失败退避）。
-- active quota 失败不补打额外请求；有明确可用候选则切走，否则 Degraded + 提示手动 `subswap swap`。
+- Active quota failure does not trigger extra requests or a swap. Preserve the account, report degraded status, and leave manual `subswap swap` available.
 
 ## 3. 降级到手动
 
@@ -85,10 +76,10 @@
 
 | 触发条件 | 现象 | 行为 |
 |---|---|---|
-| 当前账号 `query_quota` 失败且无明确可用候选 | 不知道是否超额 | 不自动切换；记录 warn 日志；CLI 提示 |
+| Active quota query failed or returned stale cache | Current exhaustion is unconfirmed | Preserve the account, even when another account is usable; log degraded status |
 | 所有候选账号 `query_quota` 失败，且 active 未明确耗尽 | 不知道是否需要切换 | 不自动切换；提示 doctor + 手动 swap |
-| 所有候选 `status == Exhausted` 且无 `reset_at` | 不知道何时恢复 | 不切；提示用户等重置时间或加账号 |
-| 候选只剩 `Unknown` | 不确定能否承接 | 默认**不切**；可通过 `--allow-unknown` 强制 |
+| All candidates are exhausted, regardless of reset times | No usable target now | Preserve the current account; wait for a normal refresh or use manual swap |
+| Only unknown candidates remain | Target availability is unconfirmed | No automatic swap; manual swap remains available |
 | 候选为 401/403、`needs re-login` 或凭据缺失 | 已知无法登录 | 无论是否有旧 quota 缓存都排除；提示重新登录或手动选择其他账号 |
 | 切换过程中 `activate` 失败 | 文件写入冲突/keyring 故障 | 回滚快照；提示 doctor；不重试到其他账号 |
 | 5 分钟内连续触发 ≥ 3 次 | 快速抖动 | 暂停自动切换 30 分钟；要求人工介入 |
@@ -96,7 +87,7 @@
 
 **振荡检测为何不能只靠「5min 内 3 次」（2026-06-14）**：`cooldown`(默认 5min) == `FLAP_WINDOW`(5min) 时，冷却把回切卡到刚好 5min 一跳 → 任意 5min 窗口最多 2 次 → 永远够不到 3 → 刹车不触发（实测两废号间跳 60 次）。对策（`crates/daemon/src/state.rs`）：`swap_history` 存**目标账号+时间**，`detect_flap` 加振荡判定——`OSCILLATION_WINDOW`(15min，**必须明显 > cooldown**) 内同目标切回 ≥2 次即判抖动。快速 flap(5min×3) 与振荡(15min×同目标2) 取其一即进 Degraded。
 
-> 刹车只停瞎切，不保证停在最优号。active 是失败号且无可用候选时 Degraded 就地不动——与防抖正交，候选筛选进一步优化未做。
+> The flap brake is independent of candidate safety: ordinary quota uncertainty always preserves the active account, whether or not the brake is engaged.
 
 降级输出建议：
 
@@ -129,7 +120,7 @@
        └─────────┘
 ```
 
-`Degraded` 是显式终态：本次 `subswap` 不再尝试；daemon（M4）暂停该 Provider 自动切换，直到冷却结束或进程重启。连续失败时盲切风险大于收益。
+`Degraded` never authorizes activation. The default entry continues collecting quota and may re-evaluate when a later usable result arrives; the daemon retries on its normal polling schedule. Only the persistent flap/oscillation brake creates a timed provider suspension.
 
 ## 5. 通知
 
@@ -154,18 +145,15 @@ daemon 除自动切换外，负责**非活跃 Claude 账号 token 保活**：
 字段语义与默认以 [CONFIG.md](../CONFIG.md) / `defaults.rs` 为准。结构示意：
 
 ```toml
-[auto]
-enabled = true                  # 总开关
-# threshold = <0.0~1.0>         # 权威：defaults::AUTO_SWAP_THRESHOLD
-cooldown_seconds = 300          # 切换冷却
-# settle_grace_ms = ...         # 新激活沉淀宽限；权威：AUTO_SWAP_SETTLE_GRACE_MS
-# manual_hold_ms = ...          # 手动切换保持；权威：AUTO_SWAP_MANUAL_HOLD_MS（默认 10min）
-poll_interval_seconds = 60      # daemon 轮询周期
-allow_unknown = false           # 是否允许 status=Unknown 候选
-max_flap_per_5min = 3           # 抖动上限，超过进 Degraded
+[auto_swap]
+enabled = true
+# threshold = 0.99             # Default: defaults::AUTO_SWAP_THRESHOLD
+cooldown_ms = 300000
+# settle_grace_ms = 60000      # Legacy compatibility; no decision effect
+manual_hold_ms = 600000
 
-[auto.providers.codex]          # 可按 Provider 覆写
-# threshold = <0.0~1.0>
+[daemon]
+poll_interval_ms = 60000
 ```
 
 ## 7. 测试要点
@@ -173,7 +161,8 @@ max_flap_per_5min = 3           # 抖动上限，超过进 Degraded
 - 单元：`AutoSwapPolicy` 给定 Quota 列表，断言挑选结果。
 - 集成：mock Provider 模拟 quota 失败、429、Exhausted 等，验证降级。
 - 鉴权失败候选：带旧缓存的 401/403、`needs re-login`、凭据缺失不得成自动候选。
-- `manual_only`：active 不自动切走；inactive 不进已知可用 / 查询失败 / reset 兜底。
+- `manual_only`: active remains selected; inactive is excluded from every automatic candidate path.
+- Across all providers: candidate-first completion, timeout/429/401, stale exhaustion, and exhausted targets must never produce a swap; confirmed exhaustion plus a ready usable target must still swap.
 - 端到端：双账号 + mock HTTP，跑 `subswap` 看 keyring 与 client_targets 同步。
 
 <!-- 该文档整理/压缩于 2026-09-05 -->

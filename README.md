@@ -140,7 +140,7 @@ The CLI is tested in CI on macOS, Linux, and Windows. The background daemon is U
 
 1. **Manual switching stays available offline.** Quota data is advisory: network trouble or an expired token does not stop `subswap swap` from attempting the local switch.
 2. **Switches are transactional.** subswap takes a private snapshot before changing native client state and rolls back if a target write fails.
-3. **Automatic switching has guardrails.** Manual-only accounts are never selected automatically; a settle period preserves a just-made manual choice; unknown or failed quota data is handled conservatively.
+3. **Automatic switching requires confirmed need and a usable target.** Healthy accounts stay selected. Loading, failed, or stale quota data never triggers a swap; depleted targets are not selected merely for an earlier reset. Manual selections and manual-only accounts remain protected.
 4. **Native clients keep their own safety boundary.** Codex refreshes through its official app-server, Cursor coordinates its desktop lifecycle, and unsupported refresh states fail safely instead of racing a one-time token.
 
 ## FAQ

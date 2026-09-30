@@ -11,7 +11,7 @@
 ## 已确认的优势（对外应表达）
 
 - 五 Provider 同一核心策略与注册表；文件型 OAuth 复用共享引擎；Claude / Cursor 因钥匙串·API / SQLite·桌面生命周期保留专用实现。
-- AutoSwap 无 IO 纯决策：手动优先、未知额度降级、刚切换宽限、最早恢复、`manual_only` 等边界有测试。
+- AutoSwap requires confirmed need and a usable target; manual priority, uncertain-quota preservation, and `manual_only` boundaries have tests. Earliest reset orders only already-usable candidates.
 - 三平台 CI、原生 Release、Homebrew、Windows 一键安装（SHA-256）已存在。
 
 ## P0 / P1（2026-08-31 已关闭）

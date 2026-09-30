@@ -17,7 +17,11 @@
 
 `add-api` / `login` / `swap <目标>` / `rm` 成功后的 status-after-action 见下节。
 
-### Codex 切换生效（须重启客户端）
+### Automatic swap safety
+
+The default entry and daemon preserve healthy accounts across every provider. Automatic switching requires a confirmed threshold breach or exhaustion and a confirmed usable target. Loading, query errors, quota endpoint 429, stale caches, and an earlier reset on another depleted account never justify replacing the current selection. Manual `swap` remains available independently of quota queries. See [AUTO_SWAP_DESIGN.md](design/AUTO_SWAP_DESIGN.md).
+
+## Codex 切换生效（须重启客户端）
 
 Codex 的手动 `swap` 与自动换号都会改 `~/.codex/auth.json`（及 registry），**默认入口与 `subswapd` 均已覆盖 Codex**。官方 Codex 把登录态缓存在进程内，**已打开的会话不会热读新号**——须重启 Codex CLI，或重载 IDE 窗口后再开对话。立刻用某号且不动全局活号：用 `subswap run codex <账号>`。禁止指望社区 Codex 热补丁。详见 [PROVIDER_KNOWLEDGE_BASE.md](PROVIDER_KNOWLEDGE_BASE.md)「切换生效边界」与 [troubleshooting/2026-09-11](troubleshooting/2026-09-11-codex-swap-requires-restart.md)。
 

@@ -75,9 +75,9 @@ cargo install --git https://github.com/x0c/subswap --path crates/cli
 - **Claude Code 커스텀 API 엔드포인트**: 인터랙티브 위저드로 DeepSeek, Kimi 등 Anthropic 호환 엔드포인트를 추가하고 일반 Claude 계정처럼 전환할 수 있습니다.
 - **Claude / Codex / Kimi / OpenCode 계정 격리 병렬 환경**: `subswap run`·`shell`·`env`로 사용할 수 있습니다. Cursor는 데스크톱 SQLite 상태 때문에 이 모드를 지원하지 않습니다.
 - **Quota-aware status**: Claude / Kimi / Codex window와 Cursor의 `First-Party Models` / `API` 사용률을 표시합니다.
-- **자동 계정 전환**: 백그라운드 daemon이 사용량이 threshold를 초과한 계정에서 전환하고, 매 quota 업데이트 시 재판정하여 항상 최선의 계정을 선택합니다.
+- **필요할 때만 자동 전환**: 현재 계정의 한도 도달과 사용 가능한 대상 계정을 모두 확인한 뒤 전환합니다. 잔여량이 있는 계정은 유지합니다. 조회 중, 조회 실패, 오래된 캐시는 전환을 유발하지 않으며 초기화가 빠르다는 이유로 소진된 계정을 선택하지 않습니다.
 - **자동 전환 토글**: `subswap autoswap on/off`로 설정 파일을 건드리지 않고 자동 전환을 켜거나 끌 수 있습니다.
-- **수동 전환 후 정착 유예**: 수동으로 계정을 선택한 후 daemon은 유예 기간 동안 자동 전환을 보류하여 의도가 즉시 덮어써지지 않도록 합니다.
+- **수동 선택 보호**: 수동 전환 후 유지 기간에는 자동 전환을 중지합니다. 불확실한 할당량은 기간과 관계없이 현재 계정을 유지합니다.
 - **네트워크에 의존하지 않는 수동 전환**: quota API 실패, token 만료, 네트워크 장애가 있어도 `subswap swap`은 동작합니다.
 - **Quota 결과 캐시와 stale fallback**: 백그라운드 갱신 중에도 캐시 결과를 반환하여 상태 화면이 항상 응답합니다.
 - **파일 기반 자격 증명 저장**: macOS/Linux에서는 자격 증명 파일을 `0600`으로 강제합니다. Windows에서는 현재 사용자의 앱 데이터 권한을 사용합니다. 기존 keyring 기반 설치는 첫 실행 시 자동 마이그레이션됩니다.

@@ -522,15 +522,9 @@ async fn fill_quotas_progressively(
     Ok(())
 }
 
-/// 每收到一份额度就对该 provider 重判一次,而不是查到第一份就锁死决策。
-///
-/// 这样做是为了修掉一个时序竞态:渐进式拉额度时,更优的候选可能还没查回来,
-/// 此时只能先切到一个「逃生候选」(查询失败/loading 时的兜底);等更优候选的额度
-/// 落地后,本函数会再判一次并升级过去——一次 `subswap` 内自我纠正,无需用户再跑一遍。
-///
-/// 防抖动:`auto_decide` 只在当前 active 确实不行(耗尽/超阈值/loading/失败)时才返回
-/// Swap,所以切到一个真正可用的号后会自然 NoOp;再叠加 `abandoned`「不切回已离开的号」,
-/// 保证决策随额度补全单调收敛,不会 A→B→A 来回顶。
+/// 每收到一份额度就对该 provider 重判一次。
+/// 当前账号已确认需切换、候选已确认可用时才激活；查询慢或失败不会导致中间跳转。
+/// 切到可用账号后自然 NoOp，再用 activated_targets / abandoned 避免重复激活及回切。
 async fn try_auto_swap_ready_provider(
     registry: &ProviderRegistry,
     audit: &AuditLog,
@@ -998,18 +992,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_loading_auto_swaps_to_known_candidate() {
+    async fn healthy_active_waits_for_its_own_quota_without_swapping() {
         let (activated_tx, mut activated_rx) = mpsc::unbounded_channel();
         let slow_active = Arc::new(Notify::new());
 
         let mut quotas = HashMap::new();
         quotas.insert(
             "active".into(),
-            vec![quota("claude", "active", 10, QuotaStatus::Ok)],
+            vec![quota("opencode", "active", 10, QuotaStatus::Ok)],
         );
         quotas.insert(
             "candidate".into(),
-            vec![quota("claude", "candidate", 0, QuotaStatus::Ok)],
+            vec![quota("opencode", "candidate", 0, QuotaStatus::Ok)],
         );
 
         let mut wait_by_account = HashMap::new();
@@ -1017,10 +1011,10 @@ mod tests {
 
         let mut registry = ProviderRegistry::new();
         registry.register(Arc::new(MockProvider {
-            id: "claude",
+            id: "opencode",
             accounts: vec![
-                account("claude", "active", true),
-                account("claude", "candidate", false),
+                account("opencode", "active", true),
+                account("opencode", "candidate", false),
             ],
             quotas,
             wait_for_quota: None,
@@ -1058,37 +1052,35 @@ mod tests {
             (snapshots, auto_lines)
         });
 
-        let activated = tokio::time::timeout(Duration::from_millis(300), activated_rx.recv())
-            .await
-            .expect("candidate should activate while active quota is still loading")
-            .expect("activation channel should stay open");
-        assert_eq!(activated, ("claude".to_string(), "candidate".to_string()));
-
-        slow_active.notify_waiters();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), activated_rx.recv())
+                .await
+                .is_err(),
+            "healthy candidate must not replace a loading active account"
+        );
+        slow_active.notify_one();
         let (snapshots, auto_lines) = handle.await.unwrap();
-        let claude = snapshots
+        let opencode = snapshots
             .iter()
-            .find(|snap| snap.provider == "claude")
+            .find(|snap| snap.provider == "opencode")
             .unwrap();
-        assert!(claude
+        assert!(opencode
             .accounts
             .iter()
-            .any(|account| account.account.id.0 == "candidate" && account.account.active));
-        assert_eq!(auto_lines.len(), 1);
-        assert_eq!(auto_lines[0].provider, "claude");
+            .any(|account| account.account.id.0 == "active" && account.account.active));
+        assert!(auto_lines.is_empty());
+        assert!(activated_rx.try_recv().is_err());
     }
 
-    /// 复现并验证修复:active 已耗尽时,先到的「逃生候选」(escape,额度查询失败)
-    /// 被抢先切上;待真正可用的更优候选额度落地后,应在同一次运行内自动升级过去,
-    /// 且最终只保留一条提示行。修复前会锁死在 escape,需用户再跑一次 `subswap` 才纠正。
+    /// 已耗尽时等待已确认可用的候选，不先跳到查询失败的账号。
     #[tokio::test]
-    async fn upgrades_from_escape_candidate_when_better_quota_arrives() {
+    async fn waits_for_usable_candidate_without_intermediate_failed_swap() {
         let (activated_tx, mut activated_rx) = mpsc::unbounded_channel();
-        // better 候选额度拉取放慢,确保 active 先耗尽、escape 先被选中。
+        // 放慢可用候选，确保先收到耗尽与失败结果。
         let slow_better = Arc::new(Notify::new());
 
         let mut quotas = HashMap::new();
-        // active 已耗尽 → 必须切走。
+        // active 已耗尽，但没有可用候选前应保持原号。
         quotas.insert(
             "active".into(),
             vec![quota("claude", "active", 100, QuotaStatus::Exhausted)],
@@ -1098,8 +1090,7 @@ mod tests {
             "better".into(),
             vec![quota("claude", "better", 0, QuotaStatus::Ok)],
         );
-        // escape 的 quota 查询失败 → fetch_state=Failed。allow_unknown=false 下它不是常规
-        // viable 候选,只能走 auto_decide 的「失败候选逃生」兜底被先切上,随后被 better 顶替。
+        // 查询失败的账号不能成为自动候选。
         let mut wait_by_account = HashMap::new();
         wait_by_account.insert("better".into(), slow_better.clone());
         let mut fail_accounts = HashSet::new();
@@ -1125,7 +1116,6 @@ mod tests {
             enabled: true,
             threshold: 0.98,
             allow_unknown: false,
-            // 关闭沉淀宽限:否则切到 escape(Failed)后会被 settle-grace 拦住升级。
             settle_grace_ms: 0,
             manual_hold_ms: 0,
         };
@@ -1150,20 +1140,19 @@ mod tests {
             (snapshots, auto_lines)
         });
 
-        // 第一跳:better 还在 loading,先切到 escape。
-        let first = tokio::time::timeout(Duration::from_millis(300), activated_rx.recv())
-            .await
-            .expect("escape candidate should activate first")
-            .expect("activation channel open");
-        assert_eq!(first, ("claude".to_string(), "escape".to_string()));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), activated_rx.recv())
+                .await
+                .is_err(),
+            "must not switch to an unconfirmed fallback"
+        );
 
-        // better 额度落地 → 应升级到 better。
-        slow_better.notify_waiters();
-        let second = tokio::time::timeout(Duration::from_millis(300), activated_rx.recv())
+        slow_better.notify_one();
+        let selected = tokio::time::timeout(Duration::from_millis(300), activated_rx.recv())
             .await
-            .expect("should upgrade to better candidate once its quota arrives")
+            .expect("should switch once a usable candidate arrives")
             .expect("activation channel open");
-        assert_eq!(second, ("claude".to_string(), "better".to_string()));
+        assert_eq!(selected, ("claude".to_string(), "better".to_string()));
 
         let (snapshots, auto_lines) = handle.await.unwrap();
         let claude = snapshots
@@ -1179,7 +1168,8 @@ mod tests {
             .accounts
             .iter()
             .all(|a| a.account.id.0 == "better" || !a.account.active));
-        // 多次切换只保留一条最新提示行。
+        // 只进行一次有效切换。
+        assert!(activated_rx.try_recv().is_err());
         assert_eq!(auto_lines.len(), 1);
         assert_eq!(auto_lines[0].provider, "claude");
     }
