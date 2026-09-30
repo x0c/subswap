@@ -1158,6 +1158,113 @@ sys.exit(2)
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn rm_opencode_api_key_disconnects_official_credential_and_stays_gone() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    // 用户现场：registry 里有这把 Key，官方库里仍连着它（parked）。
+    let id = login_opencode_key(&tmp, "sk-test-rm-key");
+    let home = tmp.path().join("opencode");
+    let db_path = home.join("opencode.db");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch("CREATE TABLE credential (id TEXT PRIMARY KEY, integration_id TEXT, label TEXT, value TEXT, active INTEGER);").unwrap();
+    conn.execute(
+        "INSERT INTO credential VALUES ('go_cred_rm', 'opencode-go', 'API key', '{\"type\":\"api\",\"key\":\"sk-test-rm-key\"}', 0)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let bin = tmp.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("opencode");
+    fs::write(&fake, r#"#!/usr/bin/env python3
+import os, sqlite3, sys
+args = sys.argv[1:]
+if args == ['--version']:
+    print('opencode v2.0.16')
+    sys.exit(0)
+if len(args) == 4 and args[:3] == ['auth', 'logout', 'opencode-go']:
+    db = os.path.join(os.environ['XDG_DATA_HOME'], 'opencode', 'opencode.db')
+    with sqlite3.connect(db) as conn:
+        conn.execute('DELETE FROM credential WHERE integration_id = ? AND id = ?', (args[2], args[3]))
+    sys.exit(0)
+sys.exit(2)
+"#).unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+
+    let rm_stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["rm", &format!("opencode-api-key/{id}")])
+            .env("PATH", &path)
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        rm_stdout.contains(&format!("removed opencode-api-key/{id}")),
+        "{rm_stdout}"
+    );
+    assert!(
+        rm_stdout.contains("also disconnected the official"),
+        "rm must say the official credential is gone too: {rm_stdout}"
+    );
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let remaining: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM credential WHERE integration_id = 'opencode-go'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining, 0, "official credential must be gone");
+
+    // 下一次默认入口不得复活。
+    let stdout = assert_success(
+        isolated_subswap(&tmp)
+            .env("PATH", &path)
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        !stdout.contains(&id),
+        "removed Go key must not be re-imported on the next run: {stdout}"
+    );
+}
+
+#[test]
+fn rm_v1_opencode_api_key_clears_live_slot_and_keeps_neighbors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let auth = tmp.path().join("opencode").join("auth.json");
+    write(
+        &auth,
+        r#"{"openai":{"type":"api","key":"sk-keep-other"}}"#,
+    );
+    let id = login_opencode_key(&tmp, "sk-test-rm-v1-key");
+
+    let rm_stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["rm", &format!("opencode-api-key/{id}")])
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        rm_stdout.contains(&format!("removed opencode-api-key/{id}")),
+        "{rm_stdout}"
+    );
+
+    let live: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&auth).unwrap()).unwrap();
+    assert_eq!(live["openai"]["key"], "sk-keep-other");
+    assert!(
+        live.get("opencode-go").is_none(),
+        "V1 live slot must be cleared: {live}"
+    );
+}
+
 #[test]
 fn login_commandcode_imports_api_key() {
     let tmp = tempfile::tempdir().unwrap();

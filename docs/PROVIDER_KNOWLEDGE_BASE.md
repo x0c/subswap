@@ -431,6 +431,7 @@ Confirmed on the local V2.0.16 client: OpenCode Console (`opencode`) and OpenCod
 | 隔离运行 | 仅 V1 支持（`XDG_DATA_HOME` + `OPENCODE_AUTH_CONTENT`）；V2 拒绝 | **不支持** `run/shell/env`（凭证在 SQLite + 官方服务，无 env 覆盖机制；同 Cursor 边界），明确报错 |
 
 - 同一订阅的两面：实测同一 workspace 下 Go key 的 `/zen/go/v1/usage` 百分比与 Console token 的 `/go/status` meters 换算一致（如月 50%），互为印证；但两者 token 不通用，查询路径必须按账号种类走对端点。
+- `rm` 连带断开官方：V2 官方库是多凭证权威源，`sync_accounts` 每次都会把库里全部 Key/Console 账号导回 registry，只清 registry 的 `rm` 对 V2 必然复活。因此 `opencode` / `opencode-api-key` 的 `rm` 先经官方 `opencode auth logout <integration> <credential-id>` 断开对应凭证，再清 registry + keyring；官方已无此凭证时直接清本地（幂等）。V1 `opencode-api-key` 删的是当前 live key 时清除 `auth.json` 的 `opencode-go` 项（保留其他供应商）；V1 Console 无可验证的官方登出命令，保持只清本地。官方登出失败时 `rm` 直接报错退出、不动本地记录，避免“删了又回来”的假成功。
 - SQLite 只读：`file:<db>?mode=ro` 经 rusqlite；测试隔离走既有 `SUBSWAP_OPENCODE_HOME`（fixture 目录无 `opencode.db` 即无 Console 账号，Go 单测不受影响）。
 - 阻塞规则：DB 读与官方子进程调用一律 `spawn_blocking`；`opencode` 二进制缺失 → 明确报错不静默跳过。
 - 默认入口和 daemon 各自同步 Console 与 Key；V2 Console 停用账号也可从官方数据库查询其账号余量。Console 无需 capture（不存 secret）；Go Key 无 refresh，所有 Key 固定 `manual_only`。

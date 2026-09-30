@@ -182,10 +182,145 @@ impl OpencodeApiKeyProvider {
     ) -> Result<Account> {
         self.engine.import_raw(raw, label_hint, active)
     }
+
+    /// `rm` 用：先断官方，再由调用方清本地。阻塞 IO（SQLite/子进程/文件）包进
+    /// `spawn_blocking`，遵守 async 内不直接阻塞 IO 的不变量。
+    pub async fn disconnect_official(&self, id: &AccountId) -> Result<OfficialDisconnect> {
+        let home = self.engine.home();
+        let id = id.clone();
+        tokio::task::spawn_blocking(move || disconnect_go_key_official(&home, &id))
+            .await
+            .map_err(|e| {
+                Error::Provider(format!("OpenCode Go disconnect join failed: {e}"))
+            })?
+    }
+}
+
+/// V2 从官方数据库定位该 Key 并经官方 `auth logout` 断开；V1 只在 live 文件的
+/// `opencode-go` 项正好是这把 Key 时清除该项（parked V1 Key 不在 live 里，本地删即可）。
+fn disconnect_go_key_official(home: &Path, id: &AccountId) -> Result<OfficialDisconnect> {
+    match console::read_v2_go_keys(home)? {
+        Some(keys) => {
+            let Some(hit) = keys.iter().find(|k| go_id_for_key(&k.key) == *id) else {
+                return Ok(OfficialDisconnect::AlreadyGone);
+            };
+            let credential_id = hit.credential_id.clone();
+            // 注意：官方集成名是 `opencode-go`（`auth::AUTH_SLOT`），不是 subswap
+            // 内部的 provider id `opencode-api-key`。
+            console::logout_credential(auth::AUTH_SLOT, &credential_id, home).map_err(|e| {
+                Error::Provider(format!(
+                    "cannot disconnect official OpenCode Go credential; \
+                     run `opencode auth logout opencode-go {credential_id}` manually, \
+                     then re-run rm: {e}"
+                ))
+            })?;
+            let still = console::read_v2_go_keys(home)?
+                .unwrap_or_default()
+                .iter()
+                .any(|k| go_id_for_key(&k.key) == *id);
+            if still {
+                return Err(Error::Provider(format!(
+                    "official client still lists OpenCode Go credential {credential_id} \
+                     after logout; disconnect it in the official client first"
+                )));
+            }
+            Ok(OfficialDisconnect::Disconnected)
+        }
+        None => remove_v1_go_slot(home, id),
+    }
+}
+
+/// V1：live 文件的 `opencode-go` 项是目标 Key 才清除该项（保留其他供应商），
+/// 加锁后重读-改-写，避免与并发 `activate` 互盖。
+fn remove_v1_go_slot(home: &Path, id: &AccountId) -> Result<OfficialDisconnect> {
+    let live_path = paths::auth_json_path(home);
+    let content = match std::fs::read_to_string(&live_path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(OfficialDisconnect::AlreadyGone);
+        }
+        Err(e) => {
+            return Err(Error::Provider(format!(
+                "read OpenCode live {}: {e}",
+                live_path.display()
+            )));
+        }
+    };
+    let is_target = auth::extract_blob(&content)
+        .is_some_and(|blob| auth::parse_metadata(&blob).primary_id.as_deref() == Some(id.0.as_str()));
+    if !is_target {
+        return Ok(OfficialDisconnect::AlreadyGone);
+    }
+    let lock_path = home.join(".subswap.lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| {
+            Error::Provider(format!("open OpenCode lock {}: {e}", lock_path.display()))
+        })?;
+    fs2::FileExt::lock_exclusive(&lock_file).map_err(|e| {
+        Error::Provider(format!("lock OpenCode credentials: {e}"))
+    })?;
+    let content = std::fs::read_to_string(&live_path).map_err(|e| {
+        Error::Provider(format!("read OpenCode live {}: {e}", live_path.display()))
+    })?;
+    let mut map: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&content).unwrap_or_default();
+    let still_target = map
+        .get(auth::AUTH_SLOT)
+        .is_some_and(|entry| {
+            auth::parse_metadata(&entry.to_string()).primary_id.as_deref() == Some(id.0.as_str())
+        });
+    if !still_target {
+        return Ok(OfficialDisconnect::AlreadyGone);
+    }
+    map.remove(auth::AUTH_SLOT);
+    write_live_atomic(
+        &live_path,
+        &serde_json::Value::Object(map).to_string(),
+    )?;
+    Ok(OfficialDisconnect::Disconnected)
+}
+
+/// 原子写 live 凭证：tmp + rename + 0o600（与共享引擎 `write_blob` 同策略）。
+fn write_live_atomic(path: &Path, contents: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            Error::Provider(format!("create OpenCode dir {}: {e}", parent.display()))
+        })?;
+    }
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    std::fs::write(&tmp, contents).map_err(|e| {
+        Error::Provider(format!("write OpenCode live {}: {e}", tmp.display()))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
+            Error::Provider(format!("chmod OpenCode live {}: {e}", tmp.display()))
+        })?;
+    }
+    std::fs::rename(&tmp, path).map_err(|e| {
+        Error::Provider(format!("replace OpenCode live {}: {e}", path.display()))
+    })?;
+    Ok(())
 }
 
 fn go_id_for_key(key: &str) -> AccountId {
     AccountId(auth::fingerprint(key))
+}
+
+/// `rm` 断开官方凭证的结果。`Err` 表示官方没断掉，调用方必须直接报错退出、
+/// 不清本地记录，避免“删了又回来”的假成功。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfficialDisconnect {
+    /// 官方凭证已断开，后续同步不会导回。
+    Disconnected,
+    /// 官方本来就没有这份凭证，直接清本地即可（幂等）。
+    AlreadyGone,
+    /// 官方不支持自动断（如 V1 Console），保持只清本地 + 旧提示。
+    Unsupported,
 }
 
 #[async_trait]
@@ -342,6 +477,60 @@ impl OpencodeProvider {
     /// 只对齐当前 Console 登录的元数据 active 标记（默认入口用）。
     pub fn sync_console_active_metadata(&self, label_hint: Option<String>) -> Result<Account> {
         self.import_console_active(label_hint)
+    }
+
+    /// `rm` 用：V2 经官方 `auth logout opencode` 断开对应凭证；官方已无此账号
+    /// 则直接清本地（幂等）；V1 无官方登出命令，返回 `Unsupported` 由调用方只清本地。
+    pub async fn disconnect_official_console(
+        &self,
+        account: &Account,
+    ) -> Result<OfficialDisconnect> {
+        let home = self.go_home();
+        let account_id = account.id.clone();
+        let recorded_credential = account
+            .extra
+            .get("credential_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        tokio::task::spawn_blocking(move || {
+            let lives = console::read_console_accounts(&home)?;
+            let live = lives
+                .into_iter()
+                .find(|l| console::account_id_for(l) == account_id);
+            let Some(live) = live else {
+                return Ok(OfficialDisconnect::AlreadyGone);
+            };
+            let credential_id = recorded_credential.unwrap_or(live.credential_id);
+            match console::detect_major_version() {
+                Ok(major) if major < 2 => Ok(OfficialDisconnect::Unsupported),
+                Ok(_) => {
+                    console::logout_credential(PROVIDER_ID, &credential_id, &home).map_err(|e| {
+                        Error::Provider(format!(
+                            "cannot disconnect official OpenCode Console credential; \
+                             run `opencode auth logout opencode {credential_id}` manually, \
+                             then re-run rm: {e}"
+                        ))
+                    })?;
+                    let still = console::read_console_accounts(&home)?
+                        .into_iter()
+                        .any(|l| console::account_id_for(&l) == account_id);
+                    if still {
+                        return Err(Error::Provider(format!(
+                            "official client still lists Console account {account_id} \
+                             after logout; disconnect it in the official client first"
+                        )));
+                    }
+                    Ok(OfficialDisconnect::Disconnected)
+                }
+                Err(e) => Err(Error::Provider(format!(
+                    "cannot disconnect official OpenCode Console credential \
+                     (`opencode` binary unavailable: {e}); run \
+                     `opencode auth logout opencode {credential_id}` manually, then re-run rm"
+                ))),
+            }
+        })
+        .await
+        .map_err(|e| Error::Provider(format!("OpenCode Console disconnect join failed: {e}")))?
     }
 
     /// 经官方命令切到指定 Console 账号。阻塞子进程，调用方已在 async 上下文时
@@ -502,6 +691,57 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use subswap_core::FileStore;
+
+    #[test]
+    fn v1_disconnect_clears_live_slot_and_keeps_neighbors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let target_key = "sk-test-rm-target-0001";
+        let target_id = AccountId(auth::fingerprint(target_key));
+        std::fs::write(
+            paths::auth_json_path(home),
+            serde_json::json!({
+                "openai": {"type": "api", "key": "sk-keep"},
+                "opencode-go": {"type": "api", "key": target_key},
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let out = disconnect_go_key_official(home, &target_id).unwrap();
+        assert_eq!(out, OfficialDisconnect::Disconnected);
+
+        let live: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(paths::auth_json_path(home)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(live["openai"]["key"], "sk-keep");
+        assert!(live.get("opencode-go").is_none());
+
+        assert_eq!(
+            disconnect_go_key_official(home, &target_id).unwrap(),
+            OfficialDisconnect::AlreadyGone
+        );
+    }
+
+    #[test]
+    fn v1_disconnect_leaves_other_live_key_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let before = serde_json::json!({
+            "opencode-go": {"type": "api", "key": "sk-test-other-0002"},
+        })
+        .to_string();
+        std::fs::write(paths::auth_json_path(home), &before).unwrap();
+
+        let other_id = AccountId(auth::fingerprint("sk-test-unrelated-0003"));
+        let out = disconnect_go_key_official(home, &other_id).unwrap();
+        assert_eq!(out, OfficialDisconnect::AlreadyGone);
+        assert_eq!(
+            std::fs::read_to_string(paths::auth_json_path(home)).unwrap(),
+            before
+        );
+    }
 
     #[test]
     fn migrates_go_keys_without_moving_console_accounts() {

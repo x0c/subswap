@@ -9,7 +9,7 @@
 | `subswap login opencode` | 导入已登录的官方 Console 账号；未登录时调官方命令（V2 `opencode auth login opencode` / V1 `opencode console login`）登录后导入。不会把 Go API key 当成官方账号 |
 | `subswap login opencode-api-key` | 单独导入 Go API key（可用 `-- <key>`）；仅手动切换和监控余量，不参与自动换号。别名 `opencode-go` |
 | `subswap swap [<id\|N>]` | 手动切换；`<id>` 用 id/label/`<provider>/<id>`，`<N>` 用默认入口列出的全局序号。无参只打印编号清单（不查 quota） |
-| `subswap rm <id\|N>` | 删除账号（registry + keyring），引用形式同 `swap`。显式删过的号打开列表不会自动加回；没删过的当前登录仍会自动收入。要重新纳入已删的号，用对应 provider 的 `login` |
+| `subswap rm <id\|N>` | 删除账号（registry + keyring），引用形式同 `swap`。显式删过的号打开列表不会自动加回；没删过的当前登录仍会自动收入。要重新纳入已删的号，用对应 provider 的 `login`。例外：`opencode` / `opencode-api-key`（V2）的 `rm` 会同时断开官方客户端里的对应凭证（`opencode auth logout`），否则下次同步会从官方库导回；V1 `opencode-api-key` 删的是当前 live key 时一并清除 `auth.json` 的 `opencode-go` 项 |
 | `subswap run <provider> <id> [-- args]` | 账号隔离启动：把该账号凭证投影到私有目录，设隔离环境变量后启动原生 CLI（codex/claude/kimi/commandcode/OpenCode V1 API Key），**不动全局活账号**；退出时吸收轮换后的凭证。Cursor、OpenCode 官方账号与 V2 API Key 不支持此模式 |
 | `subswap shell <id>` | 起一个导出好隔离环境变量的子 shell，交互里连跑多条命令；provider 从账号推断；退出时吸收凭证 |
 | `subswap env <id>` | 打印 `export` 行供 `eval`。**注意**：eval 模式不持锁、退出后不吸收凭证，仅供临时短用 |

@@ -331,6 +331,42 @@ pub fn login_args(major: u64) -> Vec<String> {
     }
 }
 
+/// 官方登出命令参数（不含程序名）。V2 `auth logout <integration> <credential>`，非交互。
+pub fn logout_args(integration: &str, credential_id: &str) -> Vec<String> {
+    vec![
+        "auth".into(),
+        "logout".into(),
+        integration.into(),
+        credential_id.into(),
+    ]
+}
+
+/// 断开官方客户端里指定集成的凭证（V2 非交互 logout）。
+/// V1 无可验证的等价命令：明确报错，调用方回退到只清本地。
+pub fn logout_credential(integration: &str, credential_id: &str, home: &Path) -> Result<()> {
+    let major = detect_major_version()?;
+    if major < 2 {
+        return Err(Error::Provider(
+            "removing OpenCode credentials on V1 is not automated; \
+             disconnect in the official client first, then re-run rm"
+                .into(),
+        ));
+    }
+    let mut cmd = Command::new("opencode");
+    cmd.args(logout_args(integration, credential_id));
+    apply_home_env(&mut cmd, home);
+    let out = cmd
+        .output()
+        .map_err(|e| Error::Provider(format!("`opencode auth logout` failed to start: {e}")))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(Error::Provider(format!(
+            "`opencode auth logout {integration} {credential_id}` failed: {}",
+            stderr.trim()
+        )));
+    }
+    Ok(())
+}
 /// 官方切号到指定集成的凭证（V2 `opencode auth switch <integration> <credential>`，非交互）。
 /// V1 无可验证的等价命令：明确报错，提示用户先在官方客户端切好再同步。
 pub fn switch_to(integration: &str, credential_id: &str, major: u64, home: &Path) -> Result<()> {
@@ -624,6 +660,14 @@ mod tests {
     fn login_args_split_by_major() {
         assert_eq!(login_args(2), vec!["auth", "login", "opencode"]);
         assert_eq!(login_args(1), vec!["console", "login"]);
+    }
+
+    #[test]
+    fn logout_args_target_integration_and_credential() {
+        assert_eq!(
+            logout_args("opencode-go", "cred_x"),
+            vec!["auth", "logout", "opencode-go", "cred_x"]
+        );
     }
 
     #[test]
