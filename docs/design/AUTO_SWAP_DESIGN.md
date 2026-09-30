@@ -11,6 +11,10 @@ Across every provider, the default entry and daemon must preserve the current ac
 
 When no confirmed usable target exists, preserve the current selection and degrade to manual action. Do not automatically move to a failed/unknown target or another depleted account merely because it resets sooner. Continue progressive quota collection so a confirmed depleted active account can switch as soon as a usable candidate becomes ready. Healthy accounts remain selected regardless of another account's larger balance or earlier reset. Preserve Cursor's parallel-pool semantics and all manual-only/manual-hold rules.
 
+### All-exhausted fallback (2026-09-30, user decision)
+
+The paragraph above is partially superseded: when **every** account is confirmed unusable, staying put can leave the user on the slowest-recovering account. The default entry and daemon now fall back to the confirmed-depleted account that recovers soonest, in every provider. The ban on failed/unknown/stale targets stands — the fallback pool only admits `Ready` accounts whose gating windows are all confirmed (limit > 0, status known) and already unusable, ranked by earliest known gating reset. Warn-only active accounts (still serving) never fall back into a depleted account; manual-only, manual hold, cooldown, and the flap/oscillation brake keep working unchanged. Known cost: on Codex the swap still rewrites live `auth.json`, so running sessions need a restart even though the target is depleted right now.
+
 ## 1. 触发策略（阈值 + 限流双触发）
 
 ### 1.1 阈值触发
@@ -57,7 +61,7 @@ Apply these rules in order:
 4. Require a completed, non-stale query for the active account before evaluating its switching condition. Empty quotas, unknown status, and zero limits do not establish exhaustion. Cursor switches only when its parallel pools are all confirmed exhausted (or a separately reported hourly threshold is breached); a pool with unknown status is not confirmed exhausted.
 5. Require a `Ready` candidate with usable quota, no hourly threshold breach, and no blocking exhausted window. Cursor accepts any usable parallel pool. Failed, loading, and stale candidates are excluded, including authentication failures and quota endpoint 429. `PolicyConfig.allow_unknown` remains an explicit internal override for unknown windows in a completed response; the default entry and daemon set it to false. It never permits loading, failed, or stale responses.
 6. Among usable candidates, order by earliest `reset_at` (missing last), then usage ratio, account priority, and account ID. This ordering only selects a target after a valid trigger; it never replaces a healthy active account to gain more balance or an earlier reset.
-7. If no usable candidate exists, preserve the current account and return `Degraded`. Do not select a failed quota account or another depleted account based on future reset time. Re-evaluate after the next result or normal polling interval; do not add requests to force a decision.
+7. If no usable candidate exists, try the all-exhausted fallback before degrading: it applies only when the active account is confirmed dead (at least one gating window `Exhausted` with limit > 0; a merely Warn/threshold-breached active account stays put) or when there is no active account. The pool admits only `Ready`, non-`manual_only`, non-active accounts whose gating windows are all confirmed (`limit > 0`, status known, account already unusable) with at least one known gating `reset_at`; failed, loading, stale, and unknown accounts never enter. Rank by earliest gating reset (tie: priority, then account ID) and swap only when the winner recovers strictly sooner than the active account (or the active recovery time is unknown / there is no active account); a non-empty pool whose winner is not sooner means stay (`NoOp`: current recovers soonest). If the pool is empty, return `Degraded` and re-evaluate after the next result or normal polling interval; do not add requests to force a decision.
 8. The daemon retains its five-minute account cooldown and checks the current active identity immediately before activation. Discard decisions if the active identity changed or became manual-only.
 
 `auto_swap.settle_grace_ms` and `PolicyConfig.settle_grace_ms` remain accepted for compatibility. Since v1.11.1, uncertain quotas always preserve the current account, regardless of account age or grace duration. The setting no longer changes the decision; confirmed exhaustion remains eligible for a meaningful switch. Manual hold continues to block even confirmed exhaustion.
@@ -163,6 +167,7 @@ poll_interval_ms = 60000
 - 鉴权失败候选：带旧缓存的 401/403、`needs re-login`、凭据缺失不得成自动候选。
 - `manual_only`: active remains selected; inactive is excluded from every automatic candidate path.
 - Across all providers: candidate-first completion, timeout/429/401, stale exhaustion, and exhausted targets must never produce a swap; confirmed exhaustion plus a ready usable target must still swap.
+- All-exhausted fallback: active 5h exhausted + every other account confirmed exhausted → swap to the one with the earliest gating reset; tie with the active account → stay; failed/loading/stale/unknown or `manual_only` accounts in the pool → excluded (`Degraded` when the pool is empty); Warn-only (not exhausted) active + all others exhausted → stay.
 - 端到端：双账号 + mock HTTP，跑 `subswap` 看 keyring 与 client_targets 同步。
 
 <!-- 该文档整理/压缩于 2026-09-05 -->

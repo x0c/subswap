@@ -222,9 +222,113 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
         };
     }
 
-    // 没有已确认可用的目标就保持原号，不盲切到查询失败或仍耗尽的账号。
+    // 没有已确认可用的目标：先试全员耗尽回退（切到确认恢复最快的耗尽号），
+    // 实在没有可比的才 Degraded。查询失败 / 未知账号永不成为目标。
+    match fallback_to_soonest_recovery(snapshot, active_id.as_ref(), config.threshold) {
+        Fallback::SwapTo(to) => {
+            let reason = match active {
+                Some(a) => format!(
+                    "{} exhausted and no usable target; pick {} (all exhausted, recovers soonest)",
+                    a.account.id, to,
+                ),
+                None => {
+                    format!("no active account and none usable; activate {to} (recovers soonest)")
+                }
+            };
+            return PolicyDecision::Swap {
+                from: active_id,
+                to,
+                reason,
+            };
+        }
+        Fallback::StayCurrent => {
+            let id = active.map(|a| a.account.id.to_string()).unwrap_or_default();
+            return PolicyDecision::NoOp {
+                reason: format!("{id} all exhausted but current recovers soonest"),
+            };
+        }
+        Fallback::NoPool => {}
+    }
     PolicyDecision::Degraded {
         reason: "no swap candidate (others exhausted / fetch failed / unknown status)".into(),
+    }
+}
+
+/// 全员耗尽回退的结果：切走 / 留守（当前恢复最快）/ 无池可比。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Fallback {
+    SwapTo(AccountId),
+    StayCurrent,
+    NoPool,
+}
+
+/// 全员耗尽回退（2026-09-30 用户决策，全 provider 通用）：无可用候选时，
+/// 在已确认死亡的账号里选恢复最快的一个，而不是守着恢复最慢的当前号。
+///
+/// 触发门槛：当前号已确认死亡（至少一个 gating 窗口 `Exhausted` 且 limit > 0），
+/// 或没有当前号。仅 Warn / 小时级超阈值（仍可服务）的当前号不动。
+///
+/// 入池（缺一不可）：非当前号、非 `manual_only`、`Ready`、全部 gating 窗口已确认
+/// （`limit > 0` 且状态已知）、自身已不可用（`account_needs_swap`）、至少一个
+/// gating 窗口有已知 `reset_at`。失败 / 加载中 / 缓存 / 未知账号永不入池。
+/// 按最早 gating 恢复排序（并列按 priority、账号 ID）：优胜者恢复严格早于当前号
+/// （或当前恢复时间未知 / 无当前号）→ [`Fallback::SwapTo`]；池非空但当前号恢复
+/// 最快（或并列）→ [`Fallback::StayCurrent`]；池为空 → [`Fallback::NoPool`]。
+fn fallback_to_soonest_recovery(
+    snapshot: &ProviderSnapshot,
+    active_id: Option<&AccountId>,
+    threshold: f64,
+) -> Fallback {
+    let active = active_id.and_then(|id| snapshot.accounts.iter().find(|a| a.account.id == *id));
+    if let Some(a) = active {
+        let confirmed_dead = auto_swap_quotas(&a.quotas)
+            .any(|q| q.limit > 0 && matches!(q.status, QuotaStatus::Exhausted));
+        if !confirmed_dead {
+            return Fallback::NoPool;
+        }
+    }
+    let active_earliest =
+        active.and_then(|a| auto_swap_quotas(&a.quotas).filter_map(|q| q.reset_at).min());
+    let mut pool: Vec<(&AccountWithQuotas, DateTime<Utc>)> = snapshot
+        .accounts
+        .iter()
+        .filter(|a| Some(&a.account.id) != active_id)
+        .filter(|a| !a.account.manual_only())
+        .filter(|a| matches!(a.fetch_state, QuotaFetchState::Ready))
+        .filter(|a| {
+            let quotas: Vec<&Quota> = auto_swap_quotas(&a.quotas).collect();
+            !quotas.is_empty()
+                && quotas
+                    .iter()
+                    .all(|q| q.limit > 0 && !matches!(q.status, QuotaStatus::Unknown))
+        })
+        .filter(|a| account_needs_swap(a, threshold))
+        .filter_map(|a| {
+            auto_swap_quotas(&a.quotas)
+                .filter_map(|q| q.reset_at)
+                .min()
+                .map(|reset| (a, reset))
+        })
+        .collect();
+    pool.sort_by(|(a, reset_a), (b, reset_b)| {
+        reset_a
+            .cmp(reset_b)
+            .then(a.account.priority.cmp(&b.account.priority))
+            .then(a.account.id.0.cmp(&b.account.id.0))
+    });
+    let (winner, winner_reset) = match pool.into_iter().next() {
+        Some(first) => first,
+        None => return Fallback::NoPool,
+    };
+    let sooner = match active_earliest {
+        Some(current) => winner_reset < current,
+        // 当前恢复时间未知 / 无当前号：有明确恢复时间的候选总比没有强。
+        None => true,
+    };
+    if sooner {
+        Fallback::SwapTo(winner.account.id.clone())
+    } else {
+        Fallback::StayCurrent
     }
 }
 
@@ -608,6 +712,190 @@ mod tests {
         assert!(matches!(d, PolicyDecision::Degraded { .. }));
     }
 
+    /// 全员耗尽回退（2026-09-30 用户决策）：当前号 5h 耗尽、候选 5h 也耗尽但恢复更快 → 切过去。
+    /// 复现真实快照：active 5h 0%（4h 后恢复），candidate 5h 0%（2m 后恢复）+ reset 道具列。
+    #[test]
+    fn all_exhausted_falls_back_to_soonest_recovery() {
+        let now = chrono::Utc::now();
+        let hours4 = now + chrono::Duration::hours(4);
+        let mins2 = now + chrono::Duration::minutes(2);
+        let days7 = now + chrono::Duration::days(7);
+        let mut active = mk_awq("a", true, 100, QuotaStatus::Exhausted);
+        active.quotas = vec![
+            mk_quota_with_window(
+                100,
+                QuotaStatus::Exhausted,
+                QuotaWindow::FiveHour,
+                Some(hours4),
+            ),
+            mk_quota_with_window(16, QuotaStatus::Ok, QuotaWindow::SevenDay, Some(days7)),
+        ];
+        let mut candidate = mk_awq("b", false, 100, QuotaStatus::Exhausted);
+        candidate.quotas = vec![
+            mk_quota_with_window(
+                100,
+                QuotaStatus::Exhausted,
+                QuotaWindow::FiveHour,
+                Some(mins2),
+            ),
+            mk_quota_with_window(31, QuotaStatus::Ok, QuotaWindow::SevenDay, Some(days7)),
+            Quota {
+                provider: "codex".into(),
+                account_id: AccountId("x".into()),
+                window: QuotaWindow::ResetCredits,
+                used: 1,
+                limit: 0,
+                reset_at: Some(now + chrono::Duration::days(30)),
+                status: QuotaStatus::Ok,
+                note: None,
+            },
+        ];
+        let snap = ProviderSnapshot {
+            provider: "codex".into(),
+            accounts: vec![active, candidate],
+        };
+        match decide(&snap, &test_config(60_000)) {
+            PolicyDecision::Swap { from, to, .. } => {
+                assert_eq!(from.unwrap().0, "a");
+                assert_eq!(to.0, "b");
+            }
+            other => panic!("all exhausted must fall back to soonest recovery, got {other:?}"),
+        }
+    }
+
+    /// 池非空但当前号恢复最快（候选更晚）→ 留守 NoOp，不 Degraded。
+    #[test]
+    fn fallback_stays_when_current_recovers_soonest() {
+        let now = chrono::Utc::now();
+        let mut active = mk_awq("a", true, 100, QuotaStatus::Exhausted);
+        active.quotas = vec![mk_quota_with_window(
+            100,
+            QuotaStatus::Exhausted,
+            QuotaWindow::FiveHour,
+            Some(now + chrono::Duration::minutes(2)),
+        )];
+        let mut candidate = mk_awq("b", false, 100, QuotaStatus::Exhausted);
+        candidate.quotas = vec![mk_quota_with_window(
+            100,
+            QuotaStatus::Exhausted,
+            QuotaWindow::FiveHour,
+            Some(now + chrono::Duration::hours(4)),
+        )];
+        let snap = ProviderSnapshot {
+            provider: "codex".into(),
+            accounts: vec![active, candidate],
+        };
+        let d = decide(&snap, &test_config(60_000));
+        assert!(
+            matches!(d, PolicyDecision::NoOp { ref reason, .. } if reason.contains("recovers soonest")),
+            "got {d:?}"
+        );
+    }
+
+    /// 回退池排除未知 / 失败 / manual_only 账号：只剩它们 → Degraded。
+    #[test]
+    fn fallback_ignores_unknown_failed_and_manual_only() {
+        let now = chrono::Utc::now();
+        let reset = Some(now + chrono::Duration::minutes(2));
+        let mut active = mk_awq("a", true, 100, QuotaStatus::Exhausted);
+        active.quotas = vec![mk_quota_with_window(
+            100,
+            QuotaStatus::Exhausted,
+            QuotaWindow::FiveHour,
+            Some(now + chrono::Duration::hours(4)),
+        )];
+        // b：窗口未知（limit 0 / Unknown），不可比。
+        let mut unknown = mk_awq("b", false, 100, QuotaStatus::Exhausted);
+        unknown.quotas = vec![mk_quota_with_window(
+            0,
+            QuotaStatus::Unknown,
+            QuotaWindow::FiveHour,
+            reset,
+        )];
+        unknown.quotas[0].limit = 0;
+        // c：查询失败。
+        let mut failed = mk_awq("c", false, 100, QuotaStatus::Exhausted);
+        failed.quotas = vec![mk_quota_with_window(
+            100,
+            QuotaStatus::Exhausted,
+            QuotaWindow::FiveHour,
+            reset,
+        )];
+        failed.fetch_state = QuotaFetchState::Failed("timeout".into());
+        // d：manual_only，即使恢复更快也不入池。
+        let mut held = mk_awq("d", false, 100, QuotaStatus::Exhausted);
+        held.quotas = vec![mk_quota_with_window(
+            100,
+            QuotaStatus::Exhausted,
+            QuotaWindow::FiveHour,
+            reset,
+        )];
+        held.account.extra.insert("manual_only".into(), true.into());
+        let snap = ProviderSnapshot {
+            provider: "codex".into(),
+            accounts: vec![active, unknown, failed, held],
+        };
+        let d = decide(&snap, &test_config(60_000));
+        assert!(matches!(d, PolicyDecision::Degraded { .. }), "got {d:?}");
+    }
+
+    /// 仅 Warn（未耗尽）的当前号 + 其他全耗尽 → 不回退（当前仍可服务），Degraded。
+    #[test]
+    fn fallback_never_leaves_warn_only_active_for_depleted() {
+        let now = chrono::Utc::now();
+        let mut active = mk_awq("a", true, 99, QuotaStatus::Warn);
+        active.quotas = vec![mk_quota_with_window(
+            99,
+            QuotaStatus::Warn,
+            QuotaWindow::FiveHour,
+            Some(now + chrono::Duration::hours(4)),
+        )];
+        let mut candidate = mk_awq("b", false, 100, QuotaStatus::Exhausted);
+        candidate.quotas = vec![mk_quota_with_window(
+            100,
+            QuotaStatus::Exhausted,
+            QuotaWindow::FiveHour,
+            Some(now + chrono::Duration::minutes(2)),
+        )];
+        let snap = ProviderSnapshot {
+            provider: "codex".into(),
+            accounts: vec![active, candidate],
+        };
+        let d = decide(&snap, &test_config(60_000));
+        assert!(matches!(d, PolicyDecision::Degraded { .. }), "got {d:?}");
+    }
+
+    /// 无当前号 + 全耗尽 → 激活恢复最快的。
+    #[test]
+    fn fallback_without_active_activates_soonest() {
+        let now = chrono::Utc::now();
+        let mut slow = mk_awq("slow", false, 100, QuotaStatus::Exhausted);
+        slow.quotas = vec![mk_quota_with_window(
+            100,
+            QuotaStatus::Exhausted,
+            QuotaWindow::FiveHour,
+            Some(now + chrono::Duration::hours(4)),
+        )];
+        let mut fast = mk_awq("fast", false, 100, QuotaStatus::Exhausted);
+        fast.quotas = vec![mk_quota_with_window(
+            100,
+            QuotaStatus::Exhausted,
+            QuotaWindow::FiveHour,
+            Some(now + chrono::Duration::minutes(2)),
+        )];
+        let snap = ProviderSnapshot {
+            provider: "codex".into(),
+            accounts: vec![slow, fast],
+        };
+        match decide(&snap, &test_config(60_000)) {
+            PolicyDecision::Swap { from, to, .. } => {
+                assert!(from.is_none());
+                assert_eq!(to.0, "fast");
+            }
+            other => panic!("expected fallback activation, got {other:?}"),
+        }
+    }
+
     #[test]
     fn active_quota_fetch_failure_keeps_current_account() {
         let mut a = mk_awq("a", true, 0, QuotaStatus::Unknown);
@@ -907,8 +1195,10 @@ mod tests {
         }
     }
 
+    /// 全员耗尽回退（2026-09-30 用户决策，替代旧的「耗尽号之间不按重置时间挑」）：
+    /// 无可用候选时，在已确认耗尽的号里选恢复最快的一个（b 3m 胜出 c 1h）。
     #[test]
-    fn does_not_pick_earlier_reset_when_no_candidate_has_headroom() {
+    fn all_exhausted_picks_soonest_reset_among_depleted() {
         let now = Utc::now();
         let mut active = mk_awq("a", true, 100, QuotaStatus::Exhausted);
         active.quotas = vec![
@@ -942,11 +1232,18 @@ mod tests {
             accounts: vec![active, later, sooner],
         };
         let d = decide(&snap, &test_config(60_000));
-        assert!(matches!(d, PolicyDecision::Degraded { .. }), "got {d:?}");
+        match d {
+            PolicyDecision::Swap { from, to, .. } => {
+                assert_eq!(from.unwrap().0, "a");
+                assert_eq!(to.0, "b");
+            }
+            other => panic!("expected fallback swap to soonest recovery, got {other:?}"),
+        }
     }
 
+    /// 当前号恢复最快 → 留守 NoOp（旧规则要求 Degraded，已被 2026-09-30 用户决策替代）。
     #[test]
-    fn waits_when_active_account_has_soonest_reset() {
+    fn stays_when_active_recovers_soonest() {
         let now = Utc::now();
         let mut active = mk_awq("a", true, 100, QuotaStatus::Exhausted);
         active.quotas = vec![mk_quota_with_reset(
@@ -967,7 +1264,10 @@ mod tests {
             accounts: vec![active, later],
         };
         let d = decide(&snap, &test_config(60_000));
-        assert!(matches!(d, PolicyDecision::Degraded { .. }), "got {d:?}");
+        assert!(
+            matches!(d, PolicyDecision::NoOp { ref reason, .. } if reason.contains("recovers soonest")),
+            "got {d:?}"
+        );
     }
 
     fn cursor_account(
