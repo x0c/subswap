@@ -16,7 +16,7 @@ subswap wants to use your confidential information stored in "subswap" in your k
 2. `service = "subswap"` 多 item；扫全员 quota 多次弹。
 3. 默认入口自动拉 daemon → 前台外再读 Keychain。
 4. 早期默认同步写回 Keychain + 查 inactive quota。
-5. 只改源码未覆盖 PATH 中二进制 → 仍跑旧版（本机曾是 `/Users/geraltgraham/.local/bin/subswap`）。
+5. 只改源码未覆盖 PATH 中二进制 → 仍跑旧版（本机曾是 `~/.local/bin/subswap`）。
 
 ## 验证（修此类必须验真实二进制）
 
@@ -26,9 +26,9 @@ type -a subswap
 pkill -f '[s]ubswap __daemon' || true
 pkill -f '[s]ubswapd' || true
 cargo build -p subswap-cli --release
-install -m 755 target/release/subswap /Users/geraltgraham/.local/bin/subswap
-/Users/geraltgraham/.local/bin/subswap --help
-/Users/geraltgraham/.local/bin/subswap
+install -m 755 target/release/subswap ~/.local/bin/subswap
+~/.local/bin/subswap --help
+~/.local/bin/subswap
 pgrep -af 'subswap|subswapd' || true
 ```
 

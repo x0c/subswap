@@ -12,7 +12,7 @@
    - 重启 daemon，并验证版本与构建产物哈希。
    - 再提交 Git、创建并推送版本 tag、确认 GitHub Release 发布成功。
    - GitHub Release publish 后 `update-homebrew.yml` 会**自动**更新 `x0c/homebrew-tap` 的 formula，无需手动操作。
-     详见 [docs/OPERATIONS_GUIDE.md](docs/OPERATIONS_GUIDE.md) §「Homebrew Tap 自动更新」。
+     详见 [docs/OPERATIONS_GUIDE.md](~/Codes/Subswap/docs/OPERATIONS_GUIDE.md) §「Homebrew Tap 自动更新」。
 2. **修改代码前先查调用链。**
    编辑函数 / 方法 / 类型前用 codebase-memory-mcp 的 `trace_path` 查清调用者 / 被调用者，评估影响面后再动手。
 3. **工作区可能是脏的。**
@@ -33,7 +33,7 @@
   `cursor-access-token` / `cursor-refresh-token` keychain item **只能 fork `/usr/bin/security`**，
   禁止用 `keyring` crate（security-framework 原生 API）：keyring 写会把 item ACL 重置成「仅 subswap」，
   导致官方客户端（也用 `security` 读）每次切换后反复弹授权框。详见
-  [docs/troubleshooting/2026-06-11-claude-code-keychain-acl-poisoning.md](docs/troubleshooting/2026-06-11-claude-code-keychain-acl-poisoning.md)。
+  [docs/troubleshooting/2026-06-11-claude-code-keychain-acl-poisoning.md](~/Codes/Subswap/docs/troubleshooting/2026-06-11-claude-code-keychain-acl-poisoning.md)。
   Cursor 官方钥匙串**已有条目只改内容、禁止 delete 后再 add**：删建会把解密权限收成「仅 security」，
   桌面版界面邮箱对了、请求却报未登录。新建时才把 `/usr/bin/security` 和 Cursor.app 写入信任名单。
   - 测试隔离：集成测试**禁止触碰真实登录钥匙串**（否则 `cargo test` 在 macOS 弹授权框并改写本机凭证）。
@@ -43,12 +43,12 @@
 - Cursor 命令行的令牌与身份必须成套读写：切换时同时写令牌后端和 `cli-config.json` 的 `authInfo`。
   live 主人只认令牌 JWT，不得用过期邮箱去对号；仓库里令牌 JWT 与账号身份不一致时显示 `needs re-login`，
   **禁止**拿这份令牌查额度或刷新（会把真正主人的一次性 refresh token 刷废）。
-  详见 [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) 的「Cursor」与
-  [docs/troubleshooting/2026-08-14-cursor-quota-cloned-across-accounts.md](docs/troubleshooting/2026-08-14-cursor-quota-cloned-across-accounts.md)。
+  详见 [docs/PROVIDER_KNOWLEDGE_BASE.md](~/Codes/Subswap/docs/PROVIDER_KNOWLEDGE_BASE.md) 的「Cursor」与
+  [docs/troubleshooting/2026-08-14-cursor-quota-cloned-across-accounts.md](~/Codes/Subswap/docs/troubleshooting/2026-08-14-cursor-quota-cloned-across-accounts.md)。
 - `subswap run claude` 的隔离 `.claude.json` 必须包含 `hasCompletedOnboarding: true`，
   否则 claude 无论钥匙串里有无有效凭证都会弹「Select login method」首次引导——
   由 `materialize_isolated` 调 `mark_onboarding_complete` 写入；改隔离物化流程时不得删除该调用。
-  详见 [docs/design/ACCOUNT_ISOLATION_DESIGN.md](docs/design/ACCOUNT_ISOLATION_DESIGN.md) §2.3。
+  详见 [docs/design/ACCOUNT_ISOLATION_DESIGN.md](~/Codes/Subswap/docs/design/ACCOUNT_ISOLATION_DESIGN.md) §2.3。
 - `Provider::activate` 必须先写快照，任一目标写失败要回滚。
 - refresh token 是一次性轮换，active 账号默认只读不刷；允许自愈的唯一例外是**复用原生客户端官方协调机制**，
   绝不能由 subswap 自创一套互不相认的锁或并行抢刷：Codex 通过官方 app-server 查询/刷新，Kimi 只在能
@@ -58,19 +58,19 @@
   (`reconcile_active_from_live`，只 live→store) 补「绕过 swap 离开」的缺口；refresh 被上游拒绝时必须有
   死 token 守卫止住反复刷的风暴并显示 `needs re-login`，Kimi/Cursor 的跨进程守卫只保存 refresh token
   SHA-256 指纹、不保存 secret。细节见
-  [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) 的「Refresh token 轮换」。
+  [docs/PROVIDER_KNOWLEDGE_BASE.md](~/Codes/Subswap/docs/PROVIDER_KNOWLEDGE_BASE.md) 的「Refresh token 轮换」。
   **`capture_live_into_store` 绝不能用缺 access / refresh 的 live 快照覆盖 store 里对应凭据完整的副本**
   （会把账号静默写死），各 Provider 都必须保留守卫，改此逻辑前见
-  [docs/troubleshooting/2026-06-18-live-capture-clobbers-refresh-token.md](docs/troubleshooting/2026-06-18-live-capture-clobbers-refresh-token.md)。
+  [docs/troubleshooting/2026-06-18-live-capture-clobbers-refresh-token.md](~/Codes/Subswap/docs/troubleshooting/2026-06-18-live-capture-clobbers-refresh-token.md)。
 - 新 Provider 只能放在 `crates/providers/<id>`，再到 `AppContext::build()` 注册，并在默认入口同步本地 active。
   Cursor 这类凭证位于 SQLite、切换还要协调 GUI 生命周期的 Provider 必须独立实现 `Provider`，不能硬塞进
   文件型 JSON 共享引擎；Cursor 也不支持 `subswap run/shell/env` 隔离运行。细节见
-  [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) 的「Cursor」与
-  [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) 的「扩展新 Provider」。
+  [docs/PROVIDER_KNOWLEDGE_BASE.md](~/Codes/Subswap/docs/PROVIDER_KNOWLEDGE_BASE.md) 的「Cursor」与
+  [docs/design/ARCHITECTURE.md](~/Codes/Subswap/docs/design/ARCHITECTURE.md) 的「扩展新 Provider」。
 - OpenCode 官方 Console 账号与 Go API Key 是独立 Provider：`opencode` 只放官方账号，`opencode-api-key`
   只放 Key 且全部 `manual_only`。自动换号只在官方账号间进行；V2 切 Key 必须经官方数据库与
   `opencode auth switch opencode-go`，只改旧 `auth.json` 不算切换成功。详见
-  [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) 的「OpenCode Console official sign-in and Go monitoring」。
+  [docs/PROVIDER_KNOWLEDGE_BASE.md](~/Codes/Subswap/docs/PROVIDER_KNOWLEDGE_BASE.md) 的「OpenCode Console official sign-in and Go monitoring」。
 - 文件型（凭证是本地一个 JSON blob、靠覆盖文件切换）provider 的切换机制统一在 `crates/providers/common`
   （`FileBlobProvider<A>` 引擎）。新增此类 provider（如未来第三个）**只写一个 `FileBlobRuntime` 实现**
   （路径、元数据解析、刷新、usage 查询等差异点），在 `AppContext::build()` 的 provider 列表注册一行，
@@ -87,7 +87,7 @@
   provider（如 Kimi）用默认值即可。Claude 因 macOS 钥匙串 + API 账号特殊逻辑，不在此引擎上，`run.rs`
   保留其专用分支。
 - AutoSwap 默认阈值只改 `crates/core/src/defaults.rs::AUTO_SWAP_THRESHOLD`，并同步
-  [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md)。
+  [docs/design/AUTO_SWAP_DESIGN.md](~/Codes/Subswap/docs/design/AUTO_SWAP_DESIGN.md)。
 - `async fn` 内不得直接做阻塞 IO；文件锁、`std::fs`、keyring 等必须包进 `tokio::task::spawn_blocking`。
 - 写入 `registry.toml` 的 `Option<T>` 字段必须加
   `#[serde(skip_serializing_if = "Option::is_none")]`，避免 TOML null 报错。
@@ -98,15 +98,15 @@
   Anthropic usage 端点限流极严（~每账号每分钟 1 次），**禁止手动 `curl` 连发去"复现"**——会打爆桶、
   污染判断。查询前先走缓存节流：缓存比 `settings.quota.min_refresh_interval_ms`(默认 90s) 新就复用、
   不打端点；daemon 与 CLI 共用 `quota_cache.json`，两条路径都要尊重。**429 ≠ token 失效**，三种「查不出」
-  的区分与处理见 [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) 的「Usage 接口异常状态码」；
+  的区分与处理见 [docs/PROVIDER_KNOWLEDGE_BASE.md](~/Codes/Subswap/docs/PROVIDER_KNOWLEDGE_BASE.md) 的「Usage 接口异常状态码」；
   根因与修复历史见
-  [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](docs/troubleshooting/TROUBLESHOOTING_INDEX.md)。
+  [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](~/Codes/Subswap/docs/troubleshooting/TROUBLESHOOTING_INDEX.md)。
 
 ## 代码风格
 
 - 代码注释、doc comment 用中文。
 - 用户可见输出、错误文本、tracing message、Cargo description 用英文且简洁。
-- 成功路径尽量短；冗余 hint 只在失败时出现。账号池写操作（`login` / `add-api` / `swap <目标>` / `rm`）成功后必须再打印与默认入口同一张余量表，不要收成一行回执；`run` / `shell` / `env` / `doctor` / 无参 `swap` 除外。详见 [docs/CLI.md](docs/CLI.md)「写操作后回到状态面」。
+- 成功路径尽量短；冗余 hint 只在失败时出现。账号池写操作（`login` / `add-api` / `swap <目标>` / `rm`）成功后必须再打印与默认入口同一张余量表，不要收成一行回执；`run` / `shell` / `env` / `doctor` / 无参 `swap` 除外。详见 [docs/CLI.md](~/Codes/Subswap/docs/CLI.md)「写操作后回到状态面」。
 - 公共 API 加中文 doc comment；trait 不暴露 keyring 等具体实现类型。
 
 ## 常用验证命令
@@ -159,21 +159,21 @@ docs/                     中文项目文档
 
 | 文档 | 用途 |
 |---|---|
-| [docs/PROVIDER_KNOWLEDGE_BASE.md](docs/PROVIDER_KNOWLEDGE_BASE.md) | Provider 凭证、额度与切换边界：Claude/Codex/Kimi/Cursor、OpenCode 官方账号与独立 API Key、Command Code；含 Codex 客户端重启、OpenCode V1/V2 登录和 Key 切换、Cursor Credits、文件型共享引擎与刷新协调。涉及这些行为时必读 |
-| [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) | 改、评审或分析 workspace 分层、Provider 抽象、核心数据流、凭证文件布局、新 Provider 接入前**必读**。不读会把新 Provider 塞错引擎（文件型 vs keychain/SQLite 特化）或改坏激活/回滚边界 |
-| [docs/design/AUTO_SWAP_DESIGN.md](docs/design/AUTO_SWAP_DESIGN.md) | 改、评审或排查自动切换候选筛选、阈值、manual_only、防抖/振荡刹车、daemon token 保活，或排查「默认入口渐进式重判 / 一次 subswap 多次切换 / 连跑结果不同 / 卡在耗尽号 / **Codex 已自动切但客户端仍旧号 / macOS 未拉 daemon 像没自动切** / 自动切到 0% 号（Cursor 1st 还有余量却切到全空） / Cursor 全员 1st 见底却切到全空号放过 API 余量 / Cursor 1st·Credits·API 三池并行 / 账号间无限横跳(A→B→A 振荡)」前**必读**。不读会改错候选窗或阈值语义，把可切号切成卡死/横跳，或把 Codex 客户端不热读误判成自动切未实现 |
-| [docs/design/PREWARM_DESIGN.md](docs/design/PREWARM_DESIGN.md) | 设计、评审或实现窗口预热、预热阈值、预热通知与自动切换协同时**必读**。不读会把预热做成高频打额度或与 AutoSwap 抢触发 |
-| [docs/design/ACCOUNT_ISOLATION_DESIGN.md](docs/design/ACCOUNT_ISOLATION_DESIGN.md) | 改、评审、分析或排查 `subswap run`/`shell`/`env` 账号环境隔离、checkout 锁、daemon 避让、macOS 钥匙串命名空间、Claude resume 会话共享前**必读**。不读会漏 `hasCompletedOnboarding`、污染宿主钥匙串或让 Cursor 误接隔离命令 |
-| [docs/CONFIG.md](docs/CONFIG.md) | 改、评审或排查 `config.toml` 字段、热加载、默认阈值、轮询间隔、quota 查询节流、应用目录覆盖、便携运行或配置生效问题前**必读**（配置数字权威源）。不读会把阈值/节流改到打爆上游或热加载不生效 |
-| [docs/CLI.md](docs/CLI.md) | 改、评审、分析或排查 CLI 命令面、Provider 登录/导入语义、默认入口额度输出、写操作后余量表（status-after-action）、`subswapd` 辅助进程（含 **macOS `SUBSWAP_AUTO_DAEMON`**）、**Codex 切号后须重启**、账号环境隔离命令或 Cursor 不支持隔离运行的边界前**必读**。不读会改丢写操作后状态面、给 Cursor 加上不存在的隔离入口，或把 macOS 未拉 daemon 当成自动切缺失 |
-| [docs/OPERATIONS_GUIDE.md](docs/OPERATIONS_GUIDE.md) | 改、评审或排查本地构建、三平台测试隔离、release 构建、本机覆盖安装、daemon 冒烟、Linux 发布依赖安装、CI/Release 发布流程、README CI/Release failing 徽章与 draft 安装 404、Homebrew tap formula 更新机制或 `HOMEBREW_TAP_TOKEN` 配置前**必读**。不读会漏覆盖安装/版本哈希核对，或手动乱改已自动更新的 Homebrew tap |
-| [docs/OSS_READINESS_REVIEW.md](docs/OSS_READINESS_REVIEW.md) | 优化、评审或发布 GitHub 对外呈现、star 增长与首次使用转化、README、安装入口、Release notes、贡献或安全入口前**必读**。不读会让公开描述、支持范围与实际行为再次失真 |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | 开始、评审或合并外部贡献前**必读**。不读会让凭证安全边界、测试隔离或公开文档同步在贡献中被遗漏 |
-| [SECURITY.md](SECURITY.md) | 处理安全漏洞、凭证泄露、安装完整性或私密披露前**必读**。不读会把应私下处理的敏感问题暴露到公开 issue |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | 规划、评审或同步里程碑范围、已完成能力和后续功能优先级前**必读**。不读会把已完成能力当待办，或把未打磨半成品写进对外承诺 |
-| [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（含 **Codex 切号后仍用旧号 / 误以为没自动切**、Codex 两个 `7d`/附加 gpt-reserve、**Codex 只有当前号有额度停用号全 401**、keychain ACL 中毒、Cursor 命令行钥匙串登录查不到额度、Cursor 多个账号额度完全一样、Cursor 自动切到 1st 0% 号、access/refresh token 覆写、429 vs invalid_grant、TOML null、Claude/Codex 用量 401 但客户端能正常用等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
-| [docs/superpowers/specs/2026-07-17-kimi-provider-and-shared-engine-design.md](docs/superpowers/specs/2026-07-17-kimi-provider-and-shared-engine-design.md) | 追溯 2026-07-17 Kimi Provider / 文件型共享引擎**历史设计决策**时可读；日常改代码以 PROVIDER_KB 与 ARCHITECTURE 为准。不读历史稿不会挡日常开发 |
-| [docs/superpowers/plans/2026-07-17-kimi-provider-and-shared-engine.md](docs/superpowers/plans/2026-07-17-kimi-provider-and-shared-engine.md) | 仅追溯同日实现清单 / 验收步骤时可读；日常无需翻阅。权威行为与现状以 PROVIDER_KB、ARCHITECTURE、源码为准 |
+| [docs/PROVIDER_KNOWLEDGE_BASE.md](~/Codes/Subswap/docs/PROVIDER_KNOWLEDGE_BASE.md) | Provider 凭证、额度与切换边界：Claude/Codex/Kimi/Cursor、OpenCode 官方账号与独立 API Key、Command Code；含 Codex 客户端重启、OpenCode V1/V2 登录和 Key 切换、Cursor Credits、文件型共享引擎与刷新协调。涉及这些行为时必读 |
+| [docs/design/ARCHITECTURE.md](~/Codes/Subswap/docs/design/ARCHITECTURE.md) | 改、评审或分析 workspace 分层、Provider 抽象、核心数据流、凭证文件布局、新 Provider 接入前**必读**。不读会把新 Provider 塞错引擎（文件型 vs keychain/SQLite 特化）或改坏激活/回滚边界 |
+| [docs/design/AUTO_SWAP_DESIGN.md](~/Codes/Subswap/docs/design/AUTO_SWAP_DESIGN.md) | 改、评审或排查自动切换候选筛选、阈值、manual_only、防抖/振荡刹车、daemon token 保活，或排查「默认入口渐进式重判 / 一次 subswap 多次切换 / 连跑结果不同 / 卡在耗尽号 / **Codex 已自动切但客户端仍旧号 / macOS 未拉 daemon 像没自动切** / 自动切到 0% 号（Cursor 1st 还有余量却切到全空） / Cursor 全员 1st 见底却切到全空号放过 API 余量 / Cursor 1st·Credits·API 三池并行 / 账号间无限横跳(A→B→A 振荡)」前**必读**。不读会改错候选窗或阈值语义，把可切号切成卡死/横跳，或把 Codex 客户端不热读误判成自动切未实现 |
+| [docs/design/PREWARM_DESIGN.md](~/Codes/Subswap/docs/design/PREWARM_DESIGN.md) | 设计、评审或实现窗口预热、预热阈值、预热通知与自动切换协同时**必读**。不读会把预热做成高频打额度或与 AutoSwap 抢触发 |
+| [docs/design/ACCOUNT_ISOLATION_DESIGN.md](~/Codes/Subswap/docs/design/ACCOUNT_ISOLATION_DESIGN.md) | 改、评审、分析或排查 `subswap run`/`shell`/`env` 账号环境隔离、checkout 锁、daemon 避让、macOS 钥匙串命名空间、Claude resume 会话共享前**必读**。不读会漏 `hasCompletedOnboarding`、污染宿主钥匙串或让 Cursor 误接隔离命令 |
+| [docs/CONFIG.md](~/Codes/Subswap/docs/CONFIG.md) | 改、评审或排查 `config.toml` 字段、热加载、默认阈值、轮询间隔、quota 查询节流、应用目录覆盖、便携运行或配置生效问题前**必读**（配置数字权威源）。不读会把阈值/节流改到打爆上游或热加载不生效 |
+| [docs/CLI.md](~/Codes/Subswap/docs/CLI.md) | 改、评审、分析或排查 CLI 命令面、Provider 登录/导入语义、默认入口额度输出、写操作后余量表（status-after-action）、`subswapd` 辅助进程（含 **macOS `SUBSWAP_AUTO_DAEMON`**）、**Codex 切号后须重启**、账号环境隔离命令或 Cursor 不支持隔离运行的边界前**必读**。不读会改丢写操作后状态面、给 Cursor 加上不存在的隔离入口，或把 macOS 未拉 daemon 当成自动切缺失 |
+| [docs/OPERATIONS_GUIDE.md](~/Codes/Subswap/docs/OPERATIONS_GUIDE.md) | 改、评审或排查本地构建、三平台测试隔离、release 构建、本机覆盖安装、daemon 冒烟、Linux 发布依赖安装、CI/Release 发布流程、README CI/Release failing 徽章与 draft 安装 404、Homebrew tap formula 更新机制或 `HOMEBREW_TAP_TOKEN` 配置前**必读**。不读会漏覆盖安装/版本哈希核对，或手动乱改已自动更新的 Homebrew tap |
+| [docs/OSS_READINESS_REVIEW.md](~/Codes/Subswap/docs/OSS_READINESS_REVIEW.md) | 优化、评审或发布 GitHub 对外呈现、star 增长与首次使用转化、README、安装入口、Release notes、贡献或安全入口前**必读**。不读会让公开描述、支持范围与实际行为再次失真 |
+| [CONTRIBUTING.md](~/Codes/Subswap/CONTRIBUTING.md) | 开始、评审或合并外部贡献前**必读**。不读会让凭证安全边界、测试隔离或公开文档同步在贡献中被遗漏 |
+| [SECURITY.md](~/Codes/Subswap/SECURITY.md) | 处理安全漏洞、凭证泄露、安装完整性或私密披露前**必读**。不读会把应私下处理的敏感问题暴露到公开 issue |
+| [docs/ROADMAP.md](~/Codes/Subswap/docs/ROADMAP.md) | 规划、评审或同步里程碑范围、已完成能力和后续功能优先级前**必读**。不读会把已完成能力当待办，或把未打磨半成品写进对外承诺 |
+| [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](~/Codes/Subswap/docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（含 **Codex 切号后仍用旧号 / 误以为没自动切**、Codex 两个 `7d`/附加 gpt-reserve、**Codex 只有当前号有额度停用号全 401**、keychain ACL 中毒、Cursor 命令行钥匙串登录查不到额度、Cursor 多个账号额度完全一样、Cursor 自动切到 1st 0% 号、access/refresh token 覆写、429 vs invalid_grant、TOML null、Claude/Codex 用量 401 但客户端能正常用等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
+| [docs/superpowers/specs/2026-07-17-kimi-provider-and-shared-engine-design.md](~/Codes/Subswap/docs/superpowers/specs/2026-07-17-kimi-provider-and-shared-engine-design.md) | 追溯 2026-07-17 Kimi Provider / 文件型共享引擎**历史设计决策**时可读；日常改代码以 PROVIDER_KB 与 ARCHITECTURE 为准。不读历史稿不会挡日常开发 |
+| [docs/superpowers/plans/2026-07-17-kimi-provider-and-shared-engine.md](~/Codes/Subswap/docs/superpowers/plans/2026-07-17-kimi-provider-and-shared-engine.md) | 仅追溯同日实现清单 / 验收步骤时可读；日常无需翻阅。权威行为与现状以 PROVIDER_KB、ARCHITECTURE、源码为准 |
 
 ## 领域地图（doc-init）
 
