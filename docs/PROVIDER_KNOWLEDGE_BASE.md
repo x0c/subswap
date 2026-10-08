@@ -62,6 +62,8 @@ Token 刷新体：`{"grant_type":"refresh_token","refresh_token":"...","client_i
 - `five_hour.utilization` — 0~100 已用%；`five_hour.resets_at` — ISO8601
 - `seven_day.utilization` / `seven_day.resets_at`
 - `extra_usage.utilization` / `extra_usage.resets_at` / `extra_usage.monthly_limit` / `extra_usage.used_credits`
+  （`extra_usage` 无 `utilization` 时不产生 `Month` 窗口，直接跳过，与 OpenCode 缺失窗口跳过一致；
+  否则常驻的 `limit == 0 / Unknown` 月窗口会把全员耗尽回退池永久挡死）
 
 `utilization` 固定按 0~100 已用% 解析。**小于 1 仍表示不到 1% 已用，禁止当 0~1 比例放大**（否则 `0.97%`→`97%`）。
 

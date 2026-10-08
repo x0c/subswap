@@ -269,9 +269,9 @@ enum Fallback {
 /// 或没有当前号。仅 Warn / 小时级超阈值（仍可服务）的当前号不动。
 ///
 /// 入池（缺一不可）：非当前号、非 `manual_only`、`Ready`、全部 gating 窗口已确认
-/// （`limit > 0` 且状态已知）、自身已不可用（`account_needs_swap`）、至少一个
-/// gating 窗口有已知 `reset_at`。失败 / 加载中 / 缓存 / 未知账号永不入池。
-/// 按最早 gating 恢复排序（并列按 priority、账号 ID）：优胜者恢复严格早于当前号
+/// （`limit > 0` 且状态已知）、自身已不可用（`account_needs_swap`）、有效恢复时间已知
+/// （见 `effective_recovery`）。失败 / 加载中 / 缓存 / 未知账号永不入池。
+/// 按有效恢复时间排序（并列按 priority、账号 ID）：优胜者恢复严格早于当前号
 /// （或当前恢复时间未知 / 无当前号）→ [`Fallback::SwapTo`]；池非空但当前号恢复
 /// 最快（或并列）→ [`Fallback::StayCurrent`]；池为空 → [`Fallback::NoPool`]。
 fn fallback_to_soonest_recovery(
@@ -287,8 +287,7 @@ fn fallback_to_soonest_recovery(
             return Fallback::NoPool;
         }
     }
-    let active_earliest =
-        active.and_then(|a| auto_swap_quotas(&a.quotas).filter_map(|q| q.reset_at).min());
+    let active_recovery = active.and_then(|a| effective_recovery(a, threshold));
     let mut pool: Vec<(&AccountWithQuotas, DateTime<Utc>)> = snapshot
         .accounts
         .iter()
@@ -303,12 +302,7 @@ fn fallback_to_soonest_recovery(
                     .all(|q| q.limit > 0 && !matches!(q.status, QuotaStatus::Unknown))
         })
         .filter(|a| account_needs_swap(a, threshold))
-        .filter_map(|a| {
-            auto_swap_quotas(&a.quotas)
-                .filter_map(|q| q.reset_at)
-                .min()
-                .map(|reset| (a, reset))
-        })
+        .filter_map(|a| effective_recovery(a, threshold).map(|reset| (a, reset)))
         .collect();
     pool.sort_by(|(a, reset_a), (b, reset_b)| {
         reset_a
@@ -320,7 +314,7 @@ fn fallback_to_soonest_recovery(
         Some(first) => first,
         None => return Fallback::NoPool,
     };
-    let sooner = match active_earliest {
+    let sooner = match active_recovery {
         Some(current) => winner_reset < current,
         // 当前恢复时间未知 / 无当前号：有明确恢复时间的候选总比没有强。
         None => true,
@@ -330,6 +324,53 @@ fn fallback_to_soonest_recovery(
     } else {
         Fallback::StayCurrent
     }
+}
+
+/// 有效恢复时间：账号从“不可用”回到“可用”的预计时间。
+///
+/// 叠加/嵌套窗口（Claude / Codex / Kimi / OpenCode / Command Code）：大窗口包含小窗口，
+/// 任一阻塞窗口未恢复账号整体仍不可用，因此取阻塞窗口中最晚的 `reset_at`（`max`）。
+/// 阻塞窗口 = `Exhausted`（`limit > 0`）或 `FiveHour` 超阈值；任一阻塞窗口缺 `reset_at`
+/// 则恢复时间未知（`None`），调用方不得将其选为回退目标。
+///
+/// 并行池（Cursor `1st` / Credits / `API`）：任一池恢复即算恢复，因此取已知 gating
+/// `reset_at` 中最早的一个（`min`）；全部未知则为 `None`。
+fn effective_recovery(a: &AccountWithQuotas, threshold: f64) -> Option<DateTime<Utc>> {
+    let quotas: Vec<&Quota> = auto_swap_quotas(&a.quotas).collect();
+    if quotas.is_empty() {
+        return None;
+    }
+    if cursor_parallel_pools(&a.account.provider, &quotas) {
+        if quotas
+            .iter()
+            .any(|q| quota_exceeds_auto_threshold(q, threshold))
+        {
+            return quotas
+                .iter()
+                .filter(|q| quota_exceeds_auto_threshold(q, threshold))
+                .filter_map(|q| q.reset_at)
+                .min();
+        }
+        return quotas.iter().filter_map(|q| q.reset_at).min();
+    }
+    let blocking: Vec<&Quota> = quotas
+        .iter()
+        .copied()
+        .filter(|q| {
+            (q.limit > 0 && matches!(q.status, QuotaStatus::Exhausted))
+                || quota_exceeds_auto_threshold(q, threshold)
+        })
+        .collect();
+    if blocking.is_empty() {
+        return None;
+    }
+    if blocking.iter().any(|q| q.reset_at.is_none()) {
+        return None;
+    }
+    blocking
+        .iter()
+        .filter_map(|q| q.reset_at)
+        .max()
 }
 
 fn account_needs_swap(a: &AccountWithQuotas, threshold: f64) -> bool {
@@ -448,7 +489,8 @@ fn compare_candidates(a: &AccountWithQuotas, b: &AccountWithQuotas) -> std::cmp:
 }
 
 fn earliest_reset(quotas: &[Quota]) -> Option<DateTime<Utc>> {
-    quotas.iter().filter_map(|q| q.reset_at).min()
+    // 可用候选排序只看 gating 窗口：`ResetCredits` 是只读展示的过期时间，不是恢复时间。
+    auto_swap_quotas(quotas).filter_map(|q| q.reset_at).min()
 }
 
 /// `None`（无重置时间信息）视为「最晚」，排在已知重置时间的候选之后。
@@ -710,6 +752,130 @@ mod tests {
         };
         let d = decide(&snap, &test_config(60_000));
         assert!(matches!(d, PolicyDecision::Degraded { .. }));
+    }
+
+    /// 嵌套窗口（2026-10-08 用户现场）：两号 `5h` 都有余量、`7d` 都耗尽。
+    /// 大窗口包含小窗口，`7d` 耗尽时 `5h` 余量不算数；有效恢复取阻塞窗（`7d`）最晚值。
+    /// active `5h` 47m 后重置也不能先恢复，候选 `7d` 48h < active `7d` 3d → 切到候选。
+    #[test]
+    fn nested_7d_exhausted_falls_back_to_sooner_7d_recovery() {
+        let now = chrono::Utc::now();
+        let mut active = mk_awq("a", true, 9, QuotaStatus::Ok);
+        active.quotas = vec![
+            mk_quota_with_window(
+                9,
+                QuotaStatus::Ok,
+                QuotaWindow::FiveHour,
+                Some(now + chrono::Duration::minutes(47)),
+            ),
+            mk_quota_with_window(
+                100,
+                QuotaStatus::Exhausted,
+                QuotaWindow::SevenDay,
+                Some(now + chrono::Duration::days(3)),
+            ),
+        ];
+        let mut candidate = mk_awq("b", false, 0, QuotaStatus::Ok);
+        candidate.quotas = vec![
+            mk_quota_with_window(0, QuotaStatus::Ok, QuotaWindow::FiveHour, None),
+            mk_quota_with_window(
+                100,
+                QuotaStatus::Exhausted,
+                QuotaWindow::SevenDay,
+                Some(now + chrono::Duration::hours(48)),
+            ),
+        ];
+        let snap = ProviderSnapshot {
+            provider: "claude".into(),
+            accounts: vec![active, candidate],
+        };
+        match decide(&snap, &test_config(60_000)) {
+            PolicyDecision::Swap { from, to, .. } => {
+                assert_eq!(from.unwrap().0, "a");
+                assert_eq!(to.0, "b");
+            }
+            other => panic!("nested 7d exhausted must swap to sooner 7d recovery, got {other:?}"),
+        }
+    }
+
+    /// 嵌套窗口：阻塞窗缺 `reset_at` 则恢复时间未知，不得入回退池。
+    /// 候选 `7d` 耗尽但无重置时间 → 池空 → `Degraded`，不能按 `5h` 已知重置硬切。
+    #[test]
+    fn nested_blocking_window_missing_reset_is_excluded() {
+        let now = chrono::Utc::now();
+        let mut active = mk_awq("a", true, 9, QuotaStatus::Ok);
+        active.quotas = vec![
+            mk_quota_with_window(
+                9,
+                QuotaStatus::Ok,
+                QuotaWindow::FiveHour,
+                Some(now + chrono::Duration::minutes(47)),
+            ),
+            mk_quota_with_window(
+                100,
+                QuotaStatus::Exhausted,
+                QuotaWindow::SevenDay,
+                Some(now + chrono::Duration::days(3)),
+            ),
+        ];
+        let mut candidate = mk_awq("b", false, 0, QuotaStatus::Ok);
+        candidate.quotas = vec![
+            mk_quota_with_window(0, QuotaStatus::Ok, QuotaWindow::FiveHour, None),
+            mk_quota_with_window(100, QuotaStatus::Exhausted, QuotaWindow::SevenDay, None),
+        ];
+        let snap = ProviderSnapshot {
+            provider: "claude".into(),
+            accounts: vec![active, candidate],
+        };
+        let d = decide(&snap, &test_config(60_000));
+        assert!(matches!(d, PolicyDecision::Degraded { .. }), "got {d:?}");
+    }
+
+    /// 嵌套窗口：双窗都耗尽时恢复取阻塞中最晚值。
+    /// active `5h 4h + 7d 3d` → 3d；候选 `5h 2m + 7d 4d` → 4d；当前更快 → 留守。
+    /// 按旧 `min(全部窗口)` 会误算成 `4h vs 2m` 而硬切。
+    #[test]
+    fn nested_both_exhausted_uses_latest_blocking_reset() {
+        let now = chrono::Utc::now();
+        let mut active = mk_awq("a", true, 100, QuotaStatus::Exhausted);
+        active.quotas = vec![
+            mk_quota_with_window(
+                100,
+                QuotaStatus::Exhausted,
+                QuotaWindow::FiveHour,
+                Some(now + chrono::Duration::hours(4)),
+            ),
+            mk_quota_with_window(
+                100,
+                QuotaStatus::Exhausted,
+                QuotaWindow::SevenDay,
+                Some(now + chrono::Duration::days(3)),
+            ),
+        ];
+        let mut candidate = mk_awq("b", false, 100, QuotaStatus::Exhausted);
+        candidate.quotas = vec![
+            mk_quota_with_window(
+                100,
+                QuotaStatus::Exhausted,
+                QuotaWindow::FiveHour,
+                Some(now + chrono::Duration::minutes(2)),
+            ),
+            mk_quota_with_window(
+                100,
+                QuotaStatus::Exhausted,
+                QuotaWindow::SevenDay,
+                Some(now + chrono::Duration::days(4)),
+            ),
+        ];
+        let snap = ProviderSnapshot {
+            provider: "claude".into(),
+            accounts: vec![active, candidate],
+        };
+        let d = decide(&snap, &test_config(60_000));
+        assert!(
+            matches!(d, PolicyDecision::NoOp { ref reason, .. } if reason.contains("recovers soonest")),
+            "got {d:?}"
+        );
     }
 
     /// 全员耗尽回退（2026-09-30 用户决策）：当前号 5h 耗尽、候选 5h 也耗尽但恢复更快 → 切过去。

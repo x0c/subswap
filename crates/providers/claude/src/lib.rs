@@ -921,7 +921,7 @@ impl Provider for ClaudeProvider {
                 seven.resets_at,
             ));
         }
-        if let Some(extra) = usage.extra_usage {
+        if let Some(extra) = usage.extra_usage.filter(|e| e.utilization.is_some()) {
             out.push(make_quota(
                 id,
                 QuotaWindow::Month,
