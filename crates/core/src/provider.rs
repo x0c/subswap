@@ -11,9 +11,6 @@ use async_trait::async_trait;
 /// - 所有可能阻塞的方法都是 async，统一在 tokio 上调度。
 /// - 凭证读写不直接暴露 token；Provider 持有 [`crate::store::CredentialStore`] 引用。
 /// - `activate` 必须保证多客户端的原子性（失败回滚），由实现内部加文件锁。
-// 新版 clippy 经 `async_trait` 展开在该 trait 上报 `double_must_use`（返回的 `Result`
-// 本身已是 `#[must_use]`）；此处显式 allow，旧工具链下该 lint 不存在，此属性无副作用。
-#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Provider: Send + Sync {
     /// Provider 标识，例如 "codex" / "claude"。CLI 命令里会用到。
