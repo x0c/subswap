@@ -341,6 +341,7 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
         let lock_file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
+            .truncate(false)
             .open(&lock_path)
             .map_err(|e| Error::Provider(format!("open lock {}: {e}", lock_path.display())))?;
         fs2::FileExt::lock_exclusive(&lock_file)
@@ -366,9 +367,10 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
             }
         }
         if self.live_account_id().is_ok() {
-            return Err(Error::Provider(format!(
+            return Err(Error::Provider(
                 "live credentials still present after removal; disconnect in the client first"
-            )));
+                    .to_owned(),
+            ));
         }
         Ok(OfficialDisconnect::Disconnected)
     }

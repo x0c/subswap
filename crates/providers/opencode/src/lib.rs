@@ -254,6 +254,7 @@ fn remove_v1_go_slot(home: &Path, id: &AccountId) -> Result<OfficialDisconnect> 
     let lock_file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(false)
         .open(&lock_path)
         .map_err(|e| Error::Provider(format!("open OpenCode lock {}: {e}", lock_path.display())))?;
     fs2::FileExt::lock_exclusive(&lock_file)
@@ -656,7 +657,7 @@ pub fn migrate_legacy_api_keys(
             account.extra.insert("manual_only".into(), true.into());
         }
     }
-    accounts.retain(|a| !(a.provider == PROVIDER_ID && !console::is_console_account(a)));
+    accounts.retain(|a| a.provider != PROVIDER_ID || console::is_console_account(a));
     registry.save(&accounts)?;
     for old in legacy {
         store.delete(PROVIDER_ID, &old.id.0, "blob")?;

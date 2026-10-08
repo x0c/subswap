@@ -663,6 +663,7 @@ fn disconnect_oauth_live(
     let lock_file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(false)
         .open(&lock_path)
         .map_err(|e| Error::Provider(format!("open Claude lock {}: {e}", lock_path.display())))?;
     fs2::FileExt::lock_exclusive(&lock_file)
