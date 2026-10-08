@@ -326,51 +326,32 @@ fn fallback_to_soonest_recovery(
     }
 }
 
+/// 阻塞窗口：`Exhausted`（`limit > 0`）或 `FiveHour` 超阈值。
+/// 叠加池与 [`account_needs_swap`] 共用此定义，避免两处各写一遍谓词。
+fn is_blocking(q: &Quota, threshold: f64) -> bool {
+    (q.limit > 0 && matches!(q.status, QuotaStatus::Exhausted))
+        || quota_exceeds_auto_threshold(q, threshold)
+}
+
 /// 有效恢复时间：账号从“不可用”回到“可用”的预计时间。
 ///
 /// 叠加/嵌套窗口（Claude / Codex / Kimi / OpenCode / Command Code）：大窗口包含小窗口，
-/// 任一阻塞窗口未恢复账号整体仍不可用，因此取阻塞窗口中最晚的 `reset_at`（`max`）。
-/// 阻塞窗口 = `Exhausted`（`limit > 0`）或 `FiveHour` 超阈值；任一阻塞窗口缺 `reset_at`
-/// 则恢复时间未知（`None`），调用方不得将其选为回退目标。
-///
-/// 并行池（Cursor `1st` / Credits / `API`）：任一池恢复即算恢复，因此取已知 gating
-/// `reset_at` 中最早的一个（`min`）；全部未知则为 `None`。
+/// 任一阻塞未恢复整体仍不可用，取阻塞中最晚的 `reset_at`；任一阻塞缺 `reset_at` 则未知。
+/// 并行池（Cursor `1st` / Credits / `API`，无小时级窗口）：任一池恢复即恢复，取最早的已知 `reset_at`。
 fn effective_recovery(a: &AccountWithQuotas, threshold: f64) -> Option<DateTime<Utc>> {
     let quotas: Vec<&Quota> = auto_swap_quotas(&a.quotas).collect();
     if quotas.is_empty() {
         return None;
     }
     if cursor_parallel_pools(&a.account.provider, &quotas) {
-        if quotas
-            .iter()
-            .any(|q| quota_exceeds_auto_threshold(q, threshold))
-        {
-            return quotas
-                .iter()
-                .filter(|q| quota_exceeds_auto_threshold(q, threshold))
-                .filter_map(|q| q.reset_at)
-                .min();
-        }
         return quotas.iter().filter_map(|q| q.reset_at).min();
     }
-    let blocking: Vec<&Quota> = quotas
-        .iter()
-        .copied()
-        .filter(|q| {
-            (q.limit > 0 && matches!(q.status, QuotaStatus::Exhausted))
-                || quota_exceeds_auto_threshold(q, threshold)
-        })
-        .collect();
-    if blocking.is_empty() {
-        return None;
+    let mut blocking = quotas.into_iter().filter(|q| is_blocking(q, threshold));
+    let mut latest = blocking.next()?.reset_at?;
+    for q in blocking {
+        latest = latest.max(q.reset_at?);
     }
-    if blocking.iter().any(|q| q.reset_at.is_none()) {
-        return None;
-    }
-    blocking
-        .iter()
-        .filter_map(|q| q.reset_at)
-        .max()
+    Some(latest)
 }
 
 fn account_needs_swap(a: &AccountWithQuotas, threshold: f64) -> bool {
@@ -391,11 +372,8 @@ fn account_needs_swap(a: &AccountWithQuotas, threshold: f64) -> bool {
             .all(|q| q.limit > 0 && matches!(q.status, QuotaStatus::Exhausted));
         return fivehour_over || all_exhausted;
     }
-    // 叠加池（Claude 等）：任一耗尽或小时级超阈值即切。
-    quotas.iter().any(|q| {
-        (q.limit > 0 && matches!(q.status, QuotaStatus::Exhausted))
-            || quota_exceeds_auto_threshold(q, threshold)
-    })
+    // 叠加池（Claude 等）：任一阻塞（耗尽或小时级超阈值）即切，定义见 `is_blocking`。
+    quotas.iter().any(|q| is_blocking(q, threshold))
 }
 
 fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: bool) -> bool {
