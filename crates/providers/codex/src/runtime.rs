@@ -29,6 +29,14 @@ impl FileBlobRuntime for CodexRuntime {
     fn store_field(&self) -> &'static str {
         "auth_json"
     }
+    /// `rm` 清凭证仓库时删同一字段。
+    fn credential_store_fields(&self) -> &'static [&'static str] {
+        &["auth_json"]
+    }
+    /// 官方客户端不热读新号，已打开的会话须重启。
+    fn post_swap_notice(&self) -> Option<&'static str> {
+        Some("Restart running Codex CLI sessions to use this account.")
+    }
     /// 沿用此次迁移前 `registry.toml` 就已存在的键名，兼容存量账号数据（无需迁移即可继续匹配）。
     fn dedup_extra_key(&self) -> &'static str {
         META_CHATGPT_ACCOUNT_ID

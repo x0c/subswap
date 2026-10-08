@@ -36,8 +36,10 @@ pub async fn run(ctx: &AppContext, id_input: Option<&str>, json: bool) -> Result
                 tracing::warn!(err = %e, provider = %acc.provider, "record manual hold failed");
             }
             println!("swap → {}/{}", acc.provider, acc.id);
-            if acc.provider == "codex" && !json {
-                println!("Restart running Codex CLI sessions to use this account.");
+            if !json {
+                if let Some(notice) = p.post_swap_notice() {
+                    println!("{notice}");
+                }
             }
             if !json {
                 print_status_overview(ctx).await?;

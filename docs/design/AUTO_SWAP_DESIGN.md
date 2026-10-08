@@ -27,11 +27,12 @@ The paragraph above is partially superseded: when **every** account is confirmed
   大窗口耗尽时小窗口余量不算数，账号整体不可用，直到所有阻塞窗口都恢复。
   因此有效恢复时间取阻塞窗口中最晚的 `reset_at`（任一阻塞窗口缺 `reset_at` 则恢复时间未知）。
   **Cursor 例外**：`1st`、**Credits**、**API** 是并行可用池——任一池仍有余量即可承接；
-  全部耗尽才切（`cursor_parallel_pools` 要求 `provider == "cursor"`）。其它 provider
+  全部耗尽才切（语义由各 provider 经 `Provider::quota_pool_semantics` 声明，快照自带；
+  `auto_policy` 只读该声明，不按 provider 名判断）。其它 provider
   （如 Command Code）即使发出 `Credits` 窗口，仍按叠加语义处理。
   仅当所有池都耗尽才触发/阻断。因此「全员 1st 见底、某号 API 仍有 10%」必须切到该号，
   **禁止**按重置时间优先挑全空号。反过来：`1st` 仍有余量时，也不要因 API 耗尽就切走
-  （见 2026-08-21）。实现见 `auto_policy` 的 `cursor_parallel_pools`。
+  （见 2026-08-21）。实现见 `auto_policy` 的 `parallel_pools`（读快照语义）。
 - 不适用：`Quota.limit == 0` 或 `status == Unknown` → **不触发**。
 
 ### 1.2 限流触发

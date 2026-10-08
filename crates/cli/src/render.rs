@@ -542,6 +542,7 @@ fn style(color: bool, sgr: &str, body: &str) -> String {
 mod tests {
     use super::*;
     use subswap_core::AccountId;
+    use subswap_core::QuotaPoolSemantics;
 
     fn quota(window: QuotaWindow, used: u64, limit: u64, status: QuotaStatus) -> Quota {
         Quota {
@@ -689,6 +690,7 @@ mod tests {
     fn render_to_string_emits_global_numbers() {
         let snap_a = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![
                 make_awq("a@x.com", true, QuotaFetchState::Loading),
                 make_awq("b@x.com", false, QuotaFetchState::Loading),
@@ -696,6 +698,7 @@ mod tests {
         };
         let snap_b = ProviderSnapshot {
             provider: "codex".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![make_awq("c@x.com", false, QuotaFetchState::Loading)],
         };
         let text = render_to_string(&[snap_a, snap_b], &[], false);
@@ -710,10 +713,12 @@ mod tests {
         // 不能像过去那样整段静默消失(见 sync_local_active 的 signed_in_but_untracked)。
         let claude = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![make_awq("a@x.com", true, QuotaFetchState::Ready)],
         };
         let cursor = ProviderSnapshot {
             provider: "cursor".into(),
+            pool_semantics: QuotaPoolSemantics::Parallel,
             accounts: Vec::new(),
         };
         let notices = [AutoLine {
@@ -813,10 +818,12 @@ mod tests {
             &[
                 ProviderSnapshot {
                     provider: "claude".into(),
+                    pool_semantics: QuotaPoolSemantics::Stacked,
                     accounts: vec![claude, custom],
                 },
                 ProviderSnapshot {
                     provider: "codex".into(),
+                    pool_semantics: QuotaPoolSemantics::Stacked,
                     accounts: vec![codex],
                 },
             ],
@@ -843,6 +850,7 @@ mod tests {
     fn render_active_row_has_cyan_star_in_color_mode() {
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![make_awq("a@x.com", true, QuotaFetchState::Loading)],
         };
         let text = render_to_string(&[snap], &[], true);

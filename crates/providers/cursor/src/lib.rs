@@ -23,7 +23,7 @@ use subswap_core::error::{Error, Result};
 use subswap_core::swap::{persist_pre_swap_snapshot_in, SnapshotEntry};
 use subswap_core::{
     Account, AccountId, AccountRegistry, ClientTarget, CredentialStore, OfficialDisconnect,
-    Provider, Quota, QuotaStatus, QuotaWindow,
+    Provider, Quota, QuotaPoolSemantics, QuotaStatus, QuotaWindow,
 };
 
 pub const PROVIDER_ID: &str = "cursor";
@@ -1060,6 +1060,16 @@ impl Provider for CursorProvider {
 
     async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>> {
         self.query_quota_inner(id.clone()).await
+    }
+
+    /// `1st` / Credits / `API` 是并行可用池：任一池有余量即可承接。
+    fn quota_pool_semantics(&self) -> QuotaPoolSemantics {
+        QuotaPoolSemantics::Parallel
+    }
+
+    /// 桌面端切换会先请 Cursor 正常退出，成功后不再拉起。
+    fn disconnect_quits_client(&self) -> bool {
+        true
     }
 }
 

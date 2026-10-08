@@ -932,6 +932,11 @@ impl Provider for ClaudeProvider {
         }
         Ok(out)
     }
+
+    /// OAuth 凭证 + 自定义 API Key 共存于凭证仓库。
+    fn credential_store_fields(&self) -> &'static [&'static str] {
+        &["credentials_json", "api_key"]
+    }
 }
 
 /// macOS：隔离环境下 Claude Code 凭证钥匙串 item 的 service 名。

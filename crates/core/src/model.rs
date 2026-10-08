@@ -172,6 +172,20 @@ impl QuotaStatus {
     }
 }
 
+/// 额度池语义：决定自动切换如何判定“可用”与“恢复”。
+/// 由各 Provider 通过 [`crate::Provider::quota_pool_semantics`] 声明，
+/// 共享决策逻辑只读该声明，不按 Provider 名分发。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaPoolSemantics {
+    /// 叠加池（默认）：大窗口包含小窗口，任一窗口耗尽整体即不可用；
+    /// 恢复取阻塞窗口中最晚者。
+    Stacked,
+    /// 并行池：任一池有余量即可承接，仅全部耗尽才需切换；
+    /// 恢复取最早者。
+    Parallel,
+}
+
 /// 单个窗口的额度快照。一个账号可能同时存在多个窗口（如 Claude 同时给 5h 与 7d）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Quota {

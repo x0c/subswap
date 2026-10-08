@@ -382,6 +382,26 @@ impl Provider for OpencodeApiKeyProvider {
     async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>> {
         self.engine.query_quota(id).await
     }
+
+    /// V2 只认官方凭证数据库；旧的 auth.json/环境变量不能保证私有会话选中指定 Key。
+    async fn ensure_isolation_supported(&self) -> Result<()> {
+        let home = self.engine.home();
+        let major = tokio::task::spawn_blocking(move || {
+            if console::read_v2_go_keys(&home)?.is_some() {
+                Ok(2)
+            } else {
+                console::detect_major_version()
+            }
+        })
+        .await
+        .map_err(|e| Error::Provider(format!("detect OpenCode version task failed: {e}")))??;
+        if major >= 2 {
+            return Err(Error::Provider(
+                "OpenCode V2 API key isolation is unavailable; use `subswap swap` to select the key in the official client".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl OpencodeProvider {

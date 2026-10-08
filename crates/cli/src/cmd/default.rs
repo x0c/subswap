@@ -146,7 +146,11 @@ fn print_quota_json(snapshots: &[ProviderSnapshot]) -> Result<()> {
     Ok(())
 }
 
-fn auto_swap_success_text(snap: &ProviderSnapshot, to: &AccountId) -> String {
+fn auto_swap_success_text(
+    snap: &ProviderSnapshot,
+    to: &AccountId,
+    post_swap_notice: Option<&str>,
+) -> String {
     let target = snap
         .accounts
         .iter()
@@ -164,10 +168,9 @@ fn auto_swap_success_text(snap: &ProviderSnapshot, to: &AccountId) -> String {
         Some(label) => format!("auto: swapped to {label}"),
         None => "auto: swapped".into(),
     };
-    if snap.provider == "codex" {
-        format!("{message}; restart running Codex CLI sessions to use it")
-    } else {
-        message
+    match post_swap_notice {
+        Some(notice) => format!("{message}; {notice}"),
+        None => message,
     }
 }
 
@@ -410,6 +413,7 @@ async fn build_loading_snapshots(registry: &ProviderRegistry) -> Vec<ProviderSna
                     fetch_state: QuotaFetchState::Loading,
                 })
                 .collect(),
+            pool_semantics: p.quota_pool_semantics(),
         }
     });
     join_all(provider_tasks).await
@@ -580,7 +584,7 @@ async fn try_auto_swap_ready_provider(
     }
 
     let p = registry.get(provider)?;
-    let success_text = auto_swap_success_text(snap, &to);
+    let success_text = auto_swap_success_text(snap, &to, p.post_swap_notice());
     match p.activate(&to).await {
         Ok(()) => {
             set_auto_line(auto_lines, provider, success_text, AutoLineKind::Info);
@@ -704,7 +708,8 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
     use subswap_core::{
-        Account, ClientTarget, Provider, QuotaFetchState, QuotaStatus, QuotaWindow,
+        Account, ClientTarget, Provider, QuotaFetchState, QuotaPoolSemantics, QuotaStatus,
+        QuotaWindow,
     };
     use tokio::sync::{mpsc, Notify};
 
@@ -725,6 +730,7 @@ mod tests {
                 quotas: Vec::new(),
                 fetch_state: QuotaFetchState::Ready,
             }],
+            pool_semantics: QuotaPoolSemantics::Stacked,
         }
     }
 
@@ -738,9 +744,18 @@ mod tests {
         assert_eq!(
             auto_swap_success_text(
                 &snap,
-                &AccountId("c1311d9b-47d1-4b8b-95e9-3401f967abd6".into())
+                &AccountId("c1311d9b-47d1-4b8b-95e9-3401f967abd6".into()),
+                Some("Restart running Codex CLI sessions to use this account."),
             ),
-            "auto: swapped to stromandanika707621@gmail.com; restart running Codex CLI sessions to use it"
+            "auto: swapped to stromandanika707621@gmail.com; Restart running Codex CLI sessions to use this account."
+        );
+        assert_eq!(
+            auto_swap_success_text(
+                &snap,
+                &AccountId("c1311d9b-47d1-4b8b-95e9-3401f967abd6".into()),
+                None,
+            ),
+            "auto: swapped to stromandanika707621@gmail.com"
         );
     }
 
@@ -754,9 +769,10 @@ mod tests {
         assert_eq!(
             auto_swap_success_text(
                 &snap,
-                &AccountId("c1311d9b-47d1-4b8b-95e9-3401f967abd6".into())
+                &AccountId("c1311d9b-47d1-4b8b-95e9-3401f967abd6".into()),
+                Some("Restart running Codex CLI sessions to use this account."),
             ),
-            "auto: swapped; restart running Codex CLI sessions to use it"
+            "auto: swapped; Restart running Codex CLI sessions to use this account."
         );
     }
 

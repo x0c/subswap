@@ -10,7 +10,7 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::model::{Account, AccountId, Quota, QuotaStatus, QuotaWindow};
+use crate::model::{Account, AccountId, Quota, QuotaPoolSemantics, QuotaStatus, QuotaWindow};
 use crate::settings;
 
 #[derive(Debug, Clone, Copy)]
@@ -103,6 +103,10 @@ impl QuotaFetchState {
 pub struct ProviderSnapshot {
     pub provider: String,
     pub accounts: Vec<AccountWithQuotas>,
+    /// 该 provider 声明的额度池语义（见 [`QuotaPoolSemantics`]）。
+    /// 构建快照时从 provider 对象取（`Provider::quota_pool_semantics`），
+    /// 决策逻辑只读该字段，不按 provider 名分发。
+    pub pool_semantics: QuotaPoolSemantics,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,7 +185,7 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
 
     // 2. 判断当前 active 是否需要切走。
     let needs_swap = match active {
-        Some(a) => account_needs_swap(a, config.threshold),
+        Some(a) => account_needs_swap(a, snapshot.pool_semantics, config.threshold),
         None => true, // 没有 active 时主动选一个激活
     };
 
@@ -198,7 +202,14 @@ pub fn decide(snapshot: &ProviderSnapshot, config: &PolicyConfig) -> PolicyDecis
         .iter()
         .filter(|a| Some(&a.account.id) != active_id.as_ref())
         .filter(|a| !a.account.manual_only())
-        .filter(|a| is_viable_candidate(a, config.threshold, config.allow_unknown))
+        .filter(|a| {
+            is_viable_candidate(
+                a,
+                snapshot.pool_semantics,
+                config.threshold,
+                config.allow_unknown,
+            )
+        })
         .collect();
 
     if let Some(best) = candidates
@@ -287,7 +298,8 @@ fn fallback_to_soonest_recovery(
             return Fallback::NoPool;
         }
     }
-    let active_recovery = active.and_then(|a| effective_recovery(a, threshold));
+    let active_recovery =
+        active.and_then(|a| effective_recovery(a, snapshot.pool_semantics, threshold));
     let mut pool: Vec<(&AccountWithQuotas, DateTime<Utc>)> = snapshot
         .accounts
         .iter()
@@ -301,8 +313,10 @@ fn fallback_to_soonest_recovery(
                     .iter()
                     .all(|q| q.limit > 0 && !matches!(q.status, QuotaStatus::Unknown))
         })
-        .filter(|a| account_needs_swap(a, threshold))
-        .filter_map(|a| effective_recovery(a, threshold).map(|reset| (a, reset)))
+        .filter(|a| account_needs_swap(a, snapshot.pool_semantics, threshold))
+        .filter_map(|a| {
+            effective_recovery(a, snapshot.pool_semantics, threshold).map(|reset| (a, reset))
+        })
         .collect();
     pool.sort_by(|(a, reset_a), (b, reset_b)| {
         reset_a
@@ -335,15 +349,18 @@ fn is_blocking(q: &Quota, threshold: f64) -> bool {
 
 /// 有效恢复时间：账号从“不可用”回到“可用”的预计时间。
 ///
-/// 叠加/嵌套窗口（Claude / Codex / Kimi / OpenCode / Command Code）：大窗口包含小窗口，
-/// 任一阻塞未恢复整体仍不可用，取阻塞中最晚的 `reset_at`；任一阻塞缺 `reset_at` 则未知。
-/// 并行池（Cursor `1st` / Credits / `API`，无小时级窗口）：任一池恢复即恢复，取最早的已知 `reset_at`。
-fn effective_recovery(a: &AccountWithQuotas, threshold: f64) -> Option<DateTime<Utc>> {
+/// 叠加池：大窗口包含小窗口，任一阻塞未恢复整体仍不可用，取阻塞中最晚的 `reset_at`；
+/// 任一阻塞缺 `reset_at` 则未知。并行池：任一池恢复即恢复，取最早的已知 `reset_at`。
+fn effective_recovery(
+    a: &AccountWithQuotas,
+    semantics: QuotaPoolSemantics,
+    threshold: f64,
+) -> Option<DateTime<Utc>> {
     let quotas: Vec<&Quota> = auto_swap_quotas(&a.quotas).collect();
     if quotas.is_empty() {
         return None;
     }
-    if cursor_parallel_pools(&a.account.provider, &quotas) {
+    if parallel_pools(semantics, &quotas) {
         return quotas.iter().filter_map(|q| q.reset_at).min();
     }
     let mut blocking = quotas.into_iter().filter(|q| is_blocking(q, threshold));
@@ -354,7 +371,11 @@ fn effective_recovery(a: &AccountWithQuotas, threshold: f64) -> Option<DateTime<
     Some(latest)
 }
 
-fn account_needs_swap(a: &AccountWithQuotas, threshold: f64) -> bool {
+fn account_needs_swap(
+    a: &AccountWithQuotas,
+    semantics: QuotaPoolSemantics,
+    threshold: f64,
+) -> bool {
     if a.quotas.is_empty() {
         return false; // 无窗口数据时不主动切（保守）
     }
@@ -362,8 +383,8 @@ fn account_needs_swap(a: &AccountWithQuotas, threshold: f64) -> bool {
     if quotas.is_empty() {
         return false;
     }
-    // Cursor 的 1st / Credits 并行：任一池仍可用就不必切；全部耗尽才切。
-    if cursor_parallel_pools(&a.account.provider, &quotas) {
+    // 并行池：任一池仍可用就不必切；全部耗尽才切。
+    if parallel_pools(semantics, &quotas) {
         let fivehour_over = quotas
             .iter()
             .any(|q| quota_exceeds_auto_threshold(q, threshold));
@@ -372,11 +393,16 @@ fn account_needs_swap(a: &AccountWithQuotas, threshold: f64) -> bool {
             .all(|q| q.limit > 0 && matches!(q.status, QuotaStatus::Exhausted));
         return fivehour_over || all_exhausted;
     }
-    // 叠加池（Claude 等）：任一阻塞（耗尽或小时级超阈值）即切，定义见 `is_blocking`。
+    // 叠加池：任一阻塞（耗尽或小时级超阈值）即切，定义见 `is_blocking`。
     quotas.iter().any(|q| is_blocking(q, threshold))
 }
 
-fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: bool) -> bool {
+fn is_viable_candidate(
+    a: &AccountWithQuotas,
+    semantics: QuotaPoolSemantics,
+    threshold: f64,
+    allow_unknown: bool,
+) -> bool {
     if a.account.manual_only() {
         return false;
     }
@@ -387,7 +413,7 @@ fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: boo
         return allow_unknown;
     }
     // 候选不能有小时级窗口达到/超过 threshold，否则切过去仍无法正常承接流量。
-    // 长窗口只在明确 Exhausted 时阻断。Cursor 走并行池（见 `cursor_parallel_pools`）。
+    // 长窗口只在明确 Exhausted 时阻断。并行池走“任一可用即可”（见 `parallel_pools`）。
     let quotas: Vec<&Quota> = auto_swap_quotas(&a.quotas).collect();
     if quotas.is_empty() {
         return allow_unknown;
@@ -395,7 +421,7 @@ fn is_viable_candidate(a: &AccountWithQuotas, threshold: f64, allow_unknown: boo
     let no_above_threshold = quotas
         .iter()
         .all(|q| !quota_exceeds_auto_threshold(q, threshold));
-    if cursor_parallel_pools(&a.account.provider, &quotas) {
+    if parallel_pools(semantics, &quotas) {
         let any_usable = quotas
             .iter()
             .any(|q| q.limit > 0 && matches!(q.status, QuotaStatus::Ok | QuotaStatus::Warn));
@@ -427,19 +453,19 @@ fn quota_exceeds_auto_threshold(q: &Quota, threshold: f64) -> bool {
 
 /// 自动切换参与判定的窗口。
 ///
-/// Cursor 的 `1st` / Credits / `API` 全部参与，靠 `cursor_parallel_pools` 做「任一可用即可」；
+/// 并行池的 `1st` / Credits / `API` 全部参与，靠 `parallel_pools` 做「任一可用即可」；
 /// 不再排除 `API`（否则全员 1st 见底时会退化成只按重置时间挑全空号）。
-/// Claude 5h/7d、Codex 月度仍是叠加上限，全部参与且任一耗尽即切。
+/// 叠加池（Claude 5h/7d、Codex 月度等）全部参与且任一耗尽即切。
 /// Codex 重置道具（`ResetCredits`）只读展示，永不参与判定。
 fn quota_gates_auto_swap(q: &Quota) -> bool {
     !matches!(q.window, QuotaWindow::ResetCredits)
 }
 
-/// Cursor：带有 `1st` / Credits / `API` 任一产品池时走并行语义（见 `account_needs_swap`）。
-/// 必须同时要求 provider 是 cursor——其它 provider（如 Command Code）也可能发出 Credits，
-/// 但应按叠加窗口语义处理，不能误进 Cursor 并行池。
-fn cursor_parallel_pools(provider: &str, quotas: &[&Quota]) -> bool {
-    provider == "cursor"
+/// 并行池：语义由 provider 声明（见 [`QuotaPoolSemantics`]），且快照里确实带有
+/// `1st` / Credits / `API` 任一产品池窗口。窗口检查保留——纯叠加账号即使被误标并行
+/// 也不会进并行分支。
+fn parallel_pools(semantics: QuotaPoolSemantics, quotas: &[&Quota]) -> bool {
+    semantics == QuotaPoolSemantics::Parallel
         && quotas.iter().any(|q| {
             matches!(
                 q.window,
@@ -564,6 +590,7 @@ mod tests {
     fn noop_when_active_below_threshold() {
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![
                 mk_awq("a", true, 50, QuotaStatus::Ok),
                 mk_awq("b", false, 0, QuotaStatus::Ok),
@@ -577,6 +604,7 @@ mod tests {
     fn swap_when_active_above_threshold() {
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![
                 mk_awq("a", true, 99, QuotaStatus::Warn),
                 mk_awq("b", false, 10, QuotaStatus::Ok),
@@ -600,6 +628,7 @@ mod tests {
     fn kimi_provider_swaps_identically_to_other_providers() {
         let snap = ProviderSnapshot {
             provider: "kimi".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![
                 mk_awq("a", true, 99, QuotaStatus::Warn),
                 mk_awq("b", false, 10, QuotaStatus::Ok),
@@ -627,6 +656,7 @@ mod tests {
         )];
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![active, mk_awq("b", false, 10, QuotaStatus::Ok)],
         };
         let d = decide(&snap, &test_config(60_000));
@@ -654,6 +684,7 @@ mod tests {
         exhausted.quotas.push(reset_quota(2));
         let snap = ProviderSnapshot {
             provider: "codex".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![exhausted, mk_awq("b", false, 10, QuotaStatus::Ok)],
         };
         match decide(&snap, &test_config(60_000)) {
@@ -668,6 +699,7 @@ mod tests {
         };
         let snap = ProviderSnapshot {
             provider: "codex".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![mk_awq("a", true, 100, QuotaStatus::Exhausted), reset_only],
         };
         assert!(
@@ -690,6 +722,7 @@ mod tests {
         ));
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![mk_awq("a", true, 99, QuotaStatus::Warn), candidate],
         };
         let d = decide(&snap, &test_config(60_000));
@@ -710,6 +743,7 @@ mod tests {
         )];
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![active, mk_awq("b", false, 10, QuotaStatus::Ok)],
         };
         let d = decide(&snap, &test_config(60_000));
@@ -723,6 +757,7 @@ mod tests {
     fn degraded_when_all_candidates_exhausted() {
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![
                 mk_awq("a", true, 100, QuotaStatus::Exhausted),
                 mk_awq("b", false, 100, QuotaStatus::Exhausted),
@@ -765,6 +800,7 @@ mod tests {
         ];
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![active, candidate],
         };
         match decide(&snap, &test_config(60_000)) {
@@ -803,6 +839,7 @@ mod tests {
         ];
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![active, candidate],
         };
         let d = decide(&snap, &test_config(60_000));
@@ -847,6 +884,7 @@ mod tests {
         ];
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![active, candidate],
         };
         let d = decide(&snap, &test_config(60_000));
@@ -896,6 +934,7 @@ mod tests {
         ];
         let snap = ProviderSnapshot {
             provider: "codex".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![active, candidate],
         };
         match decide(&snap, &test_config(60_000)) {
@@ -927,6 +966,7 @@ mod tests {
         )];
         let snap = ProviderSnapshot {
             provider: "codex".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![active, candidate],
         };
         let d = decide(&snap, &test_config(60_000));
@@ -977,6 +1017,7 @@ mod tests {
         held.account.extra.insert("manual_only".into(), true.into());
         let snap = ProviderSnapshot {
             provider: "codex".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![active, unknown, failed, held],
         };
         let d = decide(&snap, &test_config(60_000));
@@ -1003,6 +1044,7 @@ mod tests {
         )];
         let snap = ProviderSnapshot {
             provider: "codex".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![active, candidate],
         };
         let d = decide(&snap, &test_config(60_000));
@@ -1029,6 +1071,7 @@ mod tests {
         )];
         let snap = ProviderSnapshot {
             provider: "codex".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![slow, fast],
         };
         match decide(&snap, &test_config(60_000)) {
@@ -1046,6 +1089,7 @@ mod tests {
         a.fetch_state = QuotaFetchState::Failed("timeout".into());
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
         };
         let d = decide(&snap, &test_config(60_000));
@@ -1059,6 +1103,7 @@ mod tests {
         a.fetch_state = QuotaFetchState::Loading;
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
         };
         let d = decide(&snap, &test_config(60_000));
@@ -1075,6 +1120,7 @@ mod tests {
         crate::manual_hold::record_manual_swap_with_hold("claude", 600_000).unwrap();
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![
                 mk_awq("a", true, 100, QuotaStatus::Exhausted),
                 mk_awq("b", false, 10, QuotaStatus::Ok),
@@ -1110,6 +1156,7 @@ mod tests {
         a.account.last_used_at = Some(Utc::now());
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
         };
         let cfg = test_config(60_000);
@@ -1125,6 +1172,7 @@ mod tests {
         a.account.last_used_at = Some(Utc::now());
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
         };
         let cfg = test_config(60_000);
@@ -1139,6 +1187,7 @@ mod tests {
         a.account.last_used_at = Some(Utc::now());
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![a, mk_awq("b", false, 10, QuotaStatus::Ok)],
         };
         let cfg = test_config(60_000);
@@ -1158,6 +1207,7 @@ mod tests {
         a.account.last_used_at = Some(Utc::now() - chrono::Duration::seconds(120));
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![a, mk_awq("b", false, 0, QuotaStatus::Ok)],
         };
         let cfg = test_config(60_000);
@@ -1173,6 +1223,7 @@ mod tests {
         api.fetch_state = QuotaFetchState::Loading;
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![api, mk_awq("oauth", false, 0, QuotaStatus::Ok)],
         };
         let d = decide(&snap, &test_config(60_000));
@@ -1185,6 +1236,7 @@ mod tests {
         api.account.extra.insert("manual_only".into(), true.into());
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![mk_awq("oauth", true, 100, QuotaStatus::Exhausted), api],
         };
         let d = decide(&snap, &test_config(60_000));
@@ -1199,6 +1251,7 @@ mod tests {
         b.fetch_state = QuotaFetchState::Failed("429".into());
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![a, b],
         };
         let d = decide(&snap, &test_config(60_000));
@@ -1209,6 +1262,7 @@ mod tests {
     fn activates_when_no_active_account() {
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![
                 mk_awq("a", false, 20, QuotaStatus::Ok),
                 mk_awq("b", false, 5, QuotaStatus::Ok),
@@ -1229,6 +1283,7 @@ mod tests {
         // 用户实际场景：两个号都接近耗尽时不应该硬切。
         let snap = ProviderSnapshot {
             provider: "codex".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![
                 mk_awq("a", true, 100, QuotaStatus::Exhausted),
                 mk_awq("b", false, 99, QuotaStatus::Warn),
@@ -1247,6 +1302,7 @@ mod tests {
         let d = decide(
             &ProviderSnapshot {
                 provider: "claude".into(),
+                pool_semantics: QuotaPoolSemantics::Stacked,
                 accounts: vec![
                     mk_awq("active", true, 100, QuotaStatus::Exhausted),
                     candidate,
@@ -1268,6 +1324,7 @@ mod tests {
         let d = decide(
             &ProviderSnapshot {
                 provider: "claude".into(),
+                pool_semantics: QuotaPoolSemantics::Stacked,
                 accounts: vec![
                     mk_awq("active", true, 100, QuotaStatus::Exhausted),
                     candidate,
@@ -1287,6 +1344,7 @@ mod tests {
         let d = decide(
             &ProviderSnapshot {
                 provider: "claude".into(),
+                pool_semantics: QuotaPoolSemantics::Stacked,
                 accounts: vec![
                     mk_awq("active", true, 100, QuotaStatus::Exhausted),
                     candidate,
@@ -1312,6 +1370,7 @@ mod tests {
 
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![active, more_headroom, soonest_reset],
         };
         let d = decide(&snap, &test_config(60_000));
@@ -1330,6 +1389,7 @@ mod tests {
         c.account.priority = 10;
         let snap = ProviderSnapshot {
             provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![mk_awq("a", true, 99, QuotaStatus::Warn), b, c],
         };
         let d = decide(&snap, &test_config(60_000));
@@ -1373,6 +1433,7 @@ mod tests {
 
         let snap = ProviderSnapshot {
             provider: "codex".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![active, later, sooner],
         };
         let d = decide(&snap, &test_config(60_000));
@@ -1405,6 +1466,7 @@ mod tests {
 
         let snap = ProviderSnapshot {
             provider: "codex".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![active, later],
         };
         let d = decide(&snap, &test_config(60_000));
@@ -1447,6 +1509,7 @@ mod tests {
     fn cursor_api_exhausted_does_not_block_first_party_candidate() {
         let snap = ProviderSnapshot {
             provider: "cursor".into(),
+            pool_semantics: QuotaPoolSemantics::Parallel,
             accounts: vec![
                 cursor_account(
                     "caleb",
@@ -1479,6 +1542,7 @@ mod tests {
     fn cursor_stays_on_first_party_headroom_even_if_api_exhausted() {
         let snap = ProviderSnapshot {
             provider: "cursor".into(),
+            pool_semantics: QuotaPoolSemantics::Parallel,
             accounts: vec![
                 cursor_account(
                     "kimberly",
@@ -1509,6 +1573,7 @@ mod tests {
     fn cursor_six_percent_first_party_beats_empty_sooner_reset() {
         let snap = ProviderSnapshot {
             provider: "cursor".into(),
+            pool_semantics: QuotaPoolSemantics::Parallel,
             accounts: vec![
                 cursor_account(
                     "caleb",
@@ -1542,6 +1607,7 @@ mod tests {
     fn cursor_warn_only_first_party_is_still_a_candidate() {
         let snap = ProviderSnapshot {
             provider: "cursor".into(),
+            pool_semantics: QuotaPoolSemantics::Parallel,
             accounts: vec![
                 cursor_account(
                     "dead",
@@ -1592,6 +1658,7 @@ mod tests {
         )];
         let snap = ProviderSnapshot {
             provider: "cursor".into(),
+            pool_semantics: QuotaPoolSemantics::Parallel,
             accounts: vec![active, candidate],
         };
         let d = decide(&snap, &test_config(60_000));
@@ -1629,6 +1696,7 @@ mod tests {
     fn cursor_prefers_api_remaining_over_sooner_reset_empty_account() {
         let snap = ProviderSnapshot {
             provider: "cursor".into(),
+            pool_semantics: QuotaPoolSemantics::Parallel,
             accounts: vec![
                 cursor_account(
                     "kimberly",
@@ -1680,6 +1748,7 @@ mod tests {
     fn cursor_credits_exhausted_keeps_active_when_first_party_ok() {
         let snap = ProviderSnapshot {
             provider: "cursor".into(),
+            pool_semantics: QuotaPoolSemantics::Parallel,
             accounts: vec![
                 cursor_account_with_credits(
                     "spent-credits",
@@ -1708,6 +1777,7 @@ mod tests {
     fn cursor_first_party_exhausted_keeps_active_when_credits_ok() {
         let snap = ProviderSnapshot {
             provider: "cursor".into(),
+            pool_semantics: QuotaPoolSemantics::Parallel,
             accounts: vec![
                 cursor_account_with_credits(
                     "spent-1st",
@@ -1736,6 +1806,7 @@ mod tests {
     fn cursor_both_gating_pools_exhausted_triggers_swap() {
         let snap = ProviderSnapshot {
             provider: "cursor".into(),
+            pool_semantics: QuotaPoolSemantics::Parallel,
             accounts: vec![
                 cursor_account_with_credits(
                     "spent",
@@ -1767,6 +1838,7 @@ mod tests {
     fn cursor_credits_warn_does_not_trigger_early_swap() {
         let snap = ProviderSnapshot {
             provider: "cursor".into(),
+            pool_semantics: QuotaPoolSemantics::Parallel,
             accounts: vec![
                 cursor_account_with_credits(
                     "active",
@@ -1795,6 +1867,7 @@ mod tests {
     fn cursor_candidate_with_only_credits_exhausted_is_still_viable() {
         let snap = ProviderSnapshot {
             provider: "cursor".into(),
+            pool_semantics: QuotaPoolSemantics::Parallel,
             accounts: vec![
                 cursor_account_with_credits(
                     "spent-active",

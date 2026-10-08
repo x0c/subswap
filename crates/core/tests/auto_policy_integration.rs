@@ -1,7 +1,7 @@
 use chrono::Utc;
 use subswap_core::{
     auto_decide, Account, AccountId, AccountWithQuotas, PolicyConfig, PolicyDecision,
-    ProviderSnapshot, Quota, QuotaFetchState, QuotaStatus, QuotaWindow,
+    ProviderSnapshot, Quota, QuotaFetchState, QuotaPoolSemantics, QuotaStatus, QuotaWindow,
 };
 
 fn account(id: &str, active: bool) -> Account {
@@ -42,6 +42,7 @@ fn snapshot(accounts: Vec<AccountWithQuotas>) -> ProviderSnapshot {
     ProviderSnapshot {
         provider: "mock".into(),
         accounts,
+        pool_semantics: QuotaPoolSemantics::Stacked,
     }
 }
 
@@ -136,6 +137,12 @@ fn all_providers_preserve_uncertain_active_and_require_a_usable_target() {
             ProviderSnapshot {
                 provider: provider.into(),
                 accounts,
+                // 测试夹具按 provider 声明语义（生产代码里快照由 provider 对象直接给出）。
+                pool_semantics: if provider == "cursor" {
+                    QuotaPoolSemantics::Parallel
+                } else {
+                    QuotaPoolSemantics::Stacked
+                },
             }
         };
         let policy = PolicyConfig {
@@ -234,6 +241,7 @@ fn cursor_unknown_parallel_pools_do_not_establish_exhaustion() {
     let snap = ProviderSnapshot {
         provider: "cursor".into(),
         accounts: vec![active, candidate],
+        pool_semantics: QuotaPoolSemantics::Parallel,
     };
     assert!(matches!(
         auto_decide(&snap, &PolicyConfig::default()),

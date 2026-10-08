@@ -58,6 +58,14 @@ pub trait FileBlobRuntime: Send + Sync + 'static {
     fn dedup_extra_key(&self) -> &'static str {
         "dedup_key"
     }
+    /// `rm` 清凭证仓库时要删除的字段。默认 `["blob"]`；Codex 存量字段名为 `"auth_json"`。
+    fn credential_store_fields(&self) -> &'static [&'static str] {
+        &["blob"]
+    }
+    /// 切换成功后需要提醒用户的内容（例如官方客户端不热读新号，须重启）。默认无。
+    fn post_swap_notice(&self) -> Option<&'static str> {
+        None
+    }
     /// 解析 provider 工作目录（读 env + 默认目录）。
     fn home(&self) -> PathBuf;
     /// 工作目录内的 live 凭证文件路径。

@@ -2,7 +2,7 @@
 //! 通过 [`crate::registry::ProviderRegistry`] 注册到 CLI / daemon。
 
 use crate::error::Result;
-use crate::model::{Account, AccountId, ClientTarget, Quota};
+use crate::model::{Account, AccountId, ClientTarget, Quota, QuotaPoolSemantics};
 use async_trait::async_trait;
 
 /// Provider 接口。
@@ -31,4 +31,33 @@ pub trait Provider: Send + Sync {
     /// 查询某账号的额度。可能返回多窗口（例如 Claude 的 5h + 7d）。
     /// 实现允许返回 `Vec` 为空表示"暂无可查"，但应优先返回 status=Unknown 的占位。
     async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>>;
+
+    /// 额度池语义（见 [`QuotaPoolSemantics`]）。默认叠加；并行池的 Provider 覆盖。
+    /// 共享自动切换逻辑只读该声明，不按 Provider 名分发。
+    fn quota_pool_semantics(&self) -> QuotaPoolSemantics {
+        QuotaPoolSemantics::Stacked
+    }
+
+    /// 切换成功后需要提醒用户的内容（例如官方客户端不热读新号，须重启）。
+    /// 无需提醒返回 `None`。
+    fn post_swap_notice(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// 从原生客户端断开登录时是否会退出客户端且不再拉起。
+    /// 为 `true` 时 CLI 在断开成功后附一句说明。
+    fn disconnect_quits_client(&self) -> bool {
+        false
+    }
+
+    /// `rm` 清凭证仓库时要删除的字段。默认空（无专属字段）。
+    fn credential_store_fields(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// `run`/`shell`/`env` 隔离运行的前置检查。默认直接允许；
+    /// 当前官方客户端版本不支持隔离投影时返回错误（不静默起错凭证）。
+    async fn ensure_isolation_supported(&self) -> Result<()> {
+        Ok(())
+    }
 }

@@ -48,13 +48,13 @@ pub async fn run(ctx: &AppContext, id_input: &str, json: bool) -> Result<()> {
 
     ctx.registry.remove(&acc.provider, &acc.id)?;
 
-    let fields: &[&str] = match acc.provider.as_str() {
-        "claude" => &["credentials_json", "api_key"],
-        "codex" => &["auth_json"],
-        "cursor" | "kimi" | "opencode-api-key" | "commandcode" => &["blob"],
-        _ => &[],
-    };
-    for f in fields {
+    // 各 provider 的专属凭证字段由 provider 自己声明（`credential_store_fields`）。
+    for f in ctx
+        .providers
+        .get(&acc.provider)
+        .map(|p| p.credential_store_fields())
+        .unwrap_or(&[])
+    {
         if let Err(e) = ctx.store.delete(&acc.provider, acc.id.0.as_str(), f) {
             tracing::warn!(err=%e, field=%f, "keyring delete failed (continuing)");
         }
@@ -73,9 +73,14 @@ pub async fn run(ctx: &AppContext, id_input: &str, json: bool) -> Result<()> {
             "also signed out {}/{} in the native client; it will not be re-imported",
             acc.provider, acc.id,
         );
-        if acc.provider == "cursor" {
+        let quits_client = ctx
+            .providers
+            .get(&acc.provider)
+            .map(|p| p.disconnect_quits_client())
+            .unwrap_or(false);
+        if quits_client {
             println!(
-                "note: if Cursor was running, it was quit for the sign-out and was not relaunched"
+                "note: if the client was running, it was quit for the sign-out and was not relaunched"
             );
         }
     }

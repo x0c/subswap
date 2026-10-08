@@ -661,6 +661,14 @@ impl<A: FileBlobRuntime> Provider for FileBlobProvider<A> {
         })?;
         self.runtime.fetch_quota(&access, &account).await
     }
+
+    fn credential_store_fields(&self) -> &'static [&'static str] {
+        self.runtime.credential_store_fields()
+    }
+
+    fn post_swap_notice(&self) -> Option<&'static str> {
+        self.runtime.post_swap_notice()
+    }
 }
 
 impl<A: FileBlobRuntime> FileBlobProvider<A> {

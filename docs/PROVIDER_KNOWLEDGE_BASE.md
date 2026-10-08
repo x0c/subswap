@@ -561,7 +561,7 @@ Go 订阅 = API key（`{"type":"api","key":"sk-..."}`），无 refresh，不刷�
   - `credits.monthlyCredits` + `purchasedCredits` + `freeCredits`：余量美元之和 → `QuotaWindow::Credits`（存分）；未知套餐总额时有余量 `used=0/limit=remaining_cents`，耗尽 `1/1`
 - 窗口：`fiveHour` → 5h，`weekly` → 7d，credits → `$`
 - `401` / `403` = key 无效（需重新导入）；**不得**把 `429` 当 key 作废
-- 自动换号：5h 过默认阈值切走；7d / Credits 只在明确耗尽时触发。Credits **不**进 Cursor 并行池（`cursor_parallel_pools` 要求 `provider == "cursor"`）
+- 自动换号：5h 过默认阈值切走；7d / Credits 只在明确耗尽时触发。Credits **不**进并行池（并行语义由 provider 声明，Command Code 声明为叠加）。
 - 测试：`SUBSWAP_COMMANDCODE_BASE` → mock
 
 ### 隔离运行

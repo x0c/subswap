@@ -450,6 +450,7 @@ async fn build_snapshots(providers: &ProviderRegistry) -> Vec<ProviderSnapshot> 
         out.push(ProviderSnapshot {
             provider: provider_id,
             accounts: awqs,
+            pool_semantics: p.quota_pool_semantics(),
         });
     }
     if let Some(path) = cache_path {
@@ -564,7 +565,8 @@ mod tests {
     use chrono::Utc;
     use subswap_core::{
         auto_decide, checkout::Checkout, Account, AccountId, AccountWithQuotas, PolicyConfig,
-        PolicyDecision, ProviderSnapshot, Quota, QuotaFetchState, QuotaStatus, QuotaWindow,
+        PolicyDecision, ProviderSnapshot, Quota, QuotaFetchState, QuotaPoolSemantics, QuotaStatus,
+        QuotaWindow,
     };
 
     use super::auto_swap_still_allowed;
@@ -638,6 +640,7 @@ mod tests {
         ));
         let snapshot = ProviderSnapshot {
             provider: "codex".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
             accounts: vec![
                 account_with_quota("active", true, 100, QuotaStatus::Exhausted),
                 account_with_quota("candidate", false, 0, QuotaStatus::Ok),

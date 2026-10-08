@@ -50,7 +50,7 @@ pub async fn shell(ctx: &AppContext, id_input: &str) -> Result<()> {
 /// `subswap env <id>`：打印 export 行供 `eval`。无法持锁、退出后不吸收（见模块文档）。
 pub async fn env(ctx: &AppContext, id_input: &str) -> Result<()> {
     let acc = resolve_account(ctx, id_input)?;
-    ensure_opencode_isolation_supported(&acc).await?;
+    ensure_isolation_supported(ctx, &acc).await?;
     warn_if_global_active(&acc);
 
     // API 账号：直接打印 env vars，无需物化目录与 checkout 锁。
@@ -96,7 +96,7 @@ async fn launch_program(
     program: String,
     args: Vec<String>,
 ) -> Result<()> {
-    ensure_opencode_isolation_supported(acc).await?;
+    ensure_isolation_supported(ctx, acc).await?;
     warn_if_global_active(acc);
 
     // API 账号：无 refresh token 轮换，直接注入 env vars，跳过 checkout 锁、物化与 absorb。
@@ -134,25 +134,11 @@ async fn launch_program(
     Ok(())
 }
 
-/// V2 只认官方凭证数据库；旧的 auth.json/环境变量不能保证私有会话选中指定 Key。
-async fn ensure_opencode_isolation_supported(acc: &Account) -> Result<()> {
-    if acc.provider != "opencode-api-key" {
-        return Ok(());
-    }
-    let major = tokio::task::spawn_blocking(|| {
-        let home = subswap_provider_opencode::paths::opencode_home();
-        if subswap_provider_opencode::console::read_v2_go_keys(&home)?.is_some() {
-            Ok(2)
-        } else {
-            subswap_provider_opencode::console::detect_major_version()
-        }
-    })
-    .await
-    .context("detect OpenCode version task failed")?
-    .context("detect OpenCode version for isolated run")?;
-    if major >= 2 {
-        bail!("OpenCode V2 API key isolation is unavailable; use `subswap swap` to select the key in the official client");
-    }
+/// 隔离运行前置检查：当前官方客户端版本是否支持把该 provider 投影到私有目录。
+/// 判断逻辑由各 provider 自己声明（`Provider::ensure_isolation_supported`）。
+async fn ensure_isolation_supported(ctx: &AppContext, acc: &Account) -> Result<()> {
+    let p = ctx.providers.get(&acc.provider)?;
+    p.ensure_isolation_supported().await?;
     Ok(())
 }
 
