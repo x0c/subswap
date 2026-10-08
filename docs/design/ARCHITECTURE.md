@@ -266,6 +266,24 @@ Linux keyutils 按**内核 session keyring** 隔离。`subswapd` 经 `fork + set
 
 不要在 `core` 写任何 Provider 特定逻辑。
 
+### Provider 能力声明（替代 `provider == "<id>"` 按名分发）
+
+共享逻辑（自动切换决策、切换/断开提示、凭证清理、`run` 隔离门控）只认 `Provider` trait 上的
+能力声明，不得按 Provider 名 `if`/`match`。新 Provider 只覆盖与 defaults 不同的 hook：
+
+| 能力 hook（defaults） | 覆盖者 | 说明 |
+|---|---|---|
+| `quota_pool_semantics()` → 叠加 | Cursor → 并行 | 叠加：大窗口包含小窗口，任一耗尽即不可用，恢复取阻塞中最晚者；并行：任一池有余量即可承接，全部耗尽才切，恢复取最早者。`auto_policy` 只读快照里的语义 |
+| `post_swap_notice()` → 无 | Codex → 重启提示 | 切换后已运行的官方客户端不会热读新号时，给一句提示 |
+| `disconnect_quits_client()` → `false` | Cursor → `true` | 断开原生登录会退出客户端且不再拉起时，附一句说明 |
+| `credential_store_fields()` → 空 | Claude/Codex/Cursor/Kimi/Key/CommandCode 各自字段 | `rm` 清 keyring 时按此删对应字段 |
+| `ensure_isolation_supported()` → `Ok` | `opencode-api-key` → V2 拒绝 | 官方客户端版本不支持隔离投影时直接报错，不静默起错凭证 |
+
+仍保留按名路由的仅三处（均为编排层、逻辑仍在 Provider 内）：`rm` 的断开/验活分发
+（各家方法签名不同：同步/异步、`&AccountId`/`&Account`）、`run.rs` 的 Claude 专用分支
+（钥匙串命名空间 + API 账号，见 ACCOUNT_ISOLATION_DESIGN.md §2）、daemon 的各家同步与
+门控（SQLite/keychain/文件形态各异）。登录流程永不通用查表（见 AGENTS.md 不变量）。
+
 ## 5.5 数值调优常量的管理
 
 **运行期** → `crates/core/src/settings.rs::current()`（`<config_dir>/config.toml`，热生效）；

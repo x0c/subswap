@@ -67,6 +67,11 @@
   文件型 JSON 共享引擎；Cursor 也不支持 `subswap run/shell/env` 隔离运行。细节见
   [docs/PROVIDER_KNOWLEDGE_BASE.md](~/Codes/Subswap/docs/PROVIDER_KNOWLEDGE_BASE.md) 的「Cursor」与
   [docs/design/ARCHITECTURE.md](~/Codes/Subswap/docs/design/ARCHITECTURE.md) 的「扩展新 Provider」。
+- 共享逻辑禁止绑定具体 Provider：`core` / `cli` / `daemon` 不得出现 `provider == "<某id>"` 这类
+  按名分发的决策、提示或分支。Provider 差异必须以 `Provider` trait 能力声明（额度池语义、
+  切换后客户端提示、断开提示、凭证字段、隔离支持），调用方只认抽象；新 Provider 只覆盖
+  与 defaults 不同的 hook。能力清单见
+  [docs/design/ARCHITECTURE.md](~/Codes/Subswap/docs/design/ARCHITECTURE.md) 的「扩展新 Provider」。
 - OpenCode 官方 Console 账号与 Go API Key 是独立 Provider：`opencode` 只放官方账号，`opencode-api-key`
   只放 Key 且全部 `manual_only`。自动换号只在官方账号间进行；V2 切 Key 必须经官方数据库与
   `opencode auth switch opencode-go`，只改旧 `auth.json` 不算切换成功。详见
