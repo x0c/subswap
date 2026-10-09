@@ -8,8 +8,10 @@
 //! - 敏感数据：credentials.json 整段写 keyring；registry.toml 只存元数据。
 
 mod claude_files;
+mod native_usage;
 mod oauth;
 mod paths;
+mod usage_poll;
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
@@ -94,6 +96,7 @@ impl ClaudeApiConfig {
     }
 }
 
+#[derive(Clone)]
 pub struct ClaudeProvider {
     store: Arc<dyn CredentialStore>,
     registry: Arc<AccountRegistry>,
@@ -856,81 +859,74 @@ impl Provider for ClaudeProvider {
     }
 
     async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>> {
-        if self
-            .registry
-            .find(PROVIDER_ID, id)?
-            .as_ref()
-            .is_some_and(is_api_account)
-        {
-            return Ok(Vec::new());
-        }
-        let (mut creds, from_live) = match self.read_active_credentials_if_matches(id)? {
-            // 命中本地实体文件(~/.claude/.credentials.json)→ 这是 active 账号,Claude Code 持有它。
-            Some(creds) => (creds, true),
-            // 实体文件缺失/不匹配时回落凭证仓库(parked 账号)。macOS 上 Claude Code 把凭证存进钥匙串、
-            // 不写实体文件,激活账号也走这里;FileStore 后端是明文文件,读任何账号都不弹钥匙串。
-            None => (self.load_credentials(id)?, false),
-        };
-        // 空 access token 不应继续请求 usage 端点：上游可能先返回 429，反而掩盖凭据已损坏的事实。
-        if creds.oauth.access_token.trim().is_empty() {
-            return Err(missing_access_token_error(id));
-        }
-        // 进程内自愈：access_token 失效(401)且有 refresh_token 时，best-effort 刷新一次再重试。
-        // 动机：daemon 后台保活在部分环境(如 Linux keyutils 按 session 隔离)读不到本进程写入的
-        //       keyring 条目，无法保活；查询进程能看到自己的 keyring，因此在这里自愈最可靠。
-        // 关键约束：仅对 parked 账号自愈刷新。active 账号(from_live)的 token 由 Claude Code 唯一
-        // 轮换,subswap 刷新只写 keyring、不写 live 文件,会让 live 持有的 refresh token 被作废 →
-        // "refresh token already used"。保守起见只在 401 时刷新、且只重试一次,避免请求风暴(AGENTS.md #10)。
-        let usage = match oauth::fetch_usage(&creds.oauth.access_token).await {
-            Ok(u) => u,
-            Err(e) if is_auth_error(&e) && !from_live && creds.oauth.refresh_token.is_some() => {
-                let refresh_token = creds.oauth.refresh_token.clone().unwrap_or_default();
-                // 死 token 守卫：refresh token 已知作废或已过期时不再尝试刷新，直接透出 re-login。
-                if self.is_refresh_dead(&refresh_token) || refresh_token_expired(&creds) {
-                    return Err(relogin_required_error(id));
-                }
-                match apply_refresh_to_creds(&mut creds).await {
-                    Ok(()) => {
-                        // 刷新后的 token 写回凭证仓库,避免下次查询重复刷新(FileStore 写入不弹钥匙串)。
-                        self.save_credentials(id, &creds)?;
-                    }
-                    Err(re) if is_invalid_grant(&re) => {
-                        self.mark_refresh_dead(&refresh_token);
-                        return Err(relogin_required_error(id));
-                    }
-                    Err(re) => return Err(re),
-                }
-                oauth::fetch_usage(&creds.oauth.access_token).await?
+        let provider = self.clone();
+        let account = id.clone();
+        let prepared = tokio::task::spawn_blocking(move || {
+            if provider
+                .registry
+                .find(PROVIDER_ID, &account)?
+                .as_ref()
+                .is_some_and(is_api_account)
+            {
+                return Ok(None);
             }
-            Err(e) => return Err(e),
+            let live = provider.read_active_credentials_if_matches(&account)?;
+            let from_live = live.is_some();
+            let creds = match live {
+                Some(creds) => creds,
+                None => provider.load_credentials(&account)?,
+            };
+            if creds.oauth.access_token.trim().is_empty() {
+                return Err(missing_access_token_error(&account));
+            }
+            let root = subswap_core::paths::AppPaths::resolve()?
+                .cache_dir
+                .join("claude-usage");
+            Ok(Some((creds, from_live, root)))
+        })
+        .await
+        .map_err(|e| Error::Provider(format!("prepare Claude usage query: {e}")))??;
+        let Some((creds, from_live, root)) = prepared else {
+            return Ok(Vec::new());
         };
-
-        let mut out = Vec::new();
-        if let Some(five) = usage.five_hour {
-            out.push(make_quota(
-                id,
-                QuotaWindow::FiveHour,
-                five.utilization,
-                five.resets_at,
-            ));
+        let cfg = settings::current();
+        if from_live {
+            let home = self.claude_home.clone();
+            let account = id.clone();
+            let max_age = cfg
+                .claude
+                .usage_min_refresh_interval_ms
+                .max(cfg.quota.min_refresh_interval_ms);
+            if let Some(quotas) =
+                tokio::task::spawn_blocking(move || cached_native_usage(&home, &account, max_age))
+                    .await
+                    .map_err(|e| Error::Provider(format!("read Claude usage snapshot: {e}")))?
+            {
+                return Ok(quotas);
+            }
         }
-        if let Some(seven) = usage.seven_day {
-            out.push(make_quota(
-                id,
-                QuotaWindow::SevenDay,
-                seven.utilization,
-                seven.resets_at,
-            ));
-        }
-        if let Some(extra) = usage.extra_usage.filter(|e| e.utilization.is_some()) {
-            out.push(make_quota(
-                id,
-                QuotaWindow::Month,
-                extra.utilization,
-                extra.resets_at,
-            ));
-        }
-        Ok(out)
+        let account = id.0.clone();
+        let config = cfg.clone();
+        let begin =
+            tokio::task::spawn_blocking(move || usage_poll::begin(&root, &account, &config))
+                .await
+                .map_err(|e| Error::Provider(format!("reserve Claude usage query: {e}")))??;
+        let lease = match begin {
+            usage_poll::Begin::Cached(quotas) => return Ok(quotas),
+            usage_poll::Begin::Fetch(lease) => lease,
+        };
+        let result = self.query_usage(id, creds, from_live).await;
+        let saved_result = result.as_ref().map(Clone::clone).map_err(|e| match e {
+            Error::QuotaRateLimited { message, retry_at } => Error::QuotaRateLimited {
+                message: message.clone(),
+                retry_at: *retry_at,
+            },
+            _ => Error::QuotaFetch(e.to_string()),
+        });
+        tokio::task::spawn_blocking(move || lease.finish(&saved_result, &cfg))
+            .await
+            .map_err(|e| Error::Provider(format!("save Claude usage query: {e}")))??;
+        result
     }
 
     /// OAuth 凭证 + 自定义 API Key 共存于凭证仓库。
@@ -1278,6 +1274,103 @@ fn validate_api_id(id: &str) -> Result<()> {
 }
 
 impl ClaudeProvider {
+    async fn query_usage(
+        &self,
+        id: &AccountId,
+        mut creds: CredentialsFile,
+        from_live: bool,
+    ) -> Result<Vec<Quota>> {
+        let usage = if from_live {
+            let home = self.claude_home.clone();
+            let before = read_oauth_account_async(home.clone()).await?;
+            if before.as_ref().map(|a| a.email_address.as_str()) != Some(id.0.as_str()) {
+                return Err(Error::QuotaFetch(
+                    "Claude account changed before usage query".into(),
+                ));
+            }
+            // 官方通道失败后不再换 HTTP 渠道；官方进程独占 active 凭据刷新。
+            let usage = native_usage::fetch(&home).await;
+            let after = read_oauth_account_async(home).await?;
+            if before.as_ref().map(|a| (&a.email_address, &a.account_uuid))
+                != after.as_ref().map(|a| (&a.email_address, &a.account_uuid))
+            {
+                return Err(Error::QuotaFetch(
+                    "Claude account changed during usage query".into(),
+                ));
+            }
+            self.reconcile_active_from_live().await?;
+            match usage {
+                Err(error) if is_expired_or_soon(&creds, 0) => {
+                    let provider = self.clone();
+                    let still_expired = tokio::task::spawn_blocking(move || provider.read_live_credentials().map(|c| is_expired_or_soon(&c, 0)))
+                        .await.map_err(|e| Error::Provider(format!("check Claude credential recovery: {e}")))??;
+                    if still_expired {
+                        return Err(Error::QuotaFetch(format!("Claude credential expired; official usage unavailable; {error}")));
+                    }
+                    return Err(error);
+                }
+                result => result?,
+            }
+        } else {
+            // usage 限流可能先于鉴权判定返回；不能拿已知过期 token 再去碰 usage。
+            if is_expired_or_soon(&creds, 0) {
+                creds = self.refresh_parked_for_usage(id).await?;
+            }
+            match oauth::fetch_usage(&creds.oauth.access_token).await {
+                Ok(usage) => usage,
+                Err(error) if is_auth_error(&error) => {
+                    creds = self.refresh_parked_for_usage(id).await?;
+                    oauth::fetch_usage(&creds.oauth.access_token).await?
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let quotas = usage_quotas(id, usage);
+        if quotas.is_empty() {
+            return Err(Error::QuotaFetch(
+                "Claude usage unavailable; no valid quota windows".into(),
+            ));
+        }
+        Ok(quotas)
+    }
+
+    async fn refresh_parked_for_usage(&self, id: &AccountId) -> Result<CredentialsFile> {
+        let provider = self.clone();
+        let account = id.clone();
+        let mut creds = tokio::task::spawn_blocking(move || {
+            if provider.active_account_id()?.as_ref() == Some(&account) {
+                return Err(Error::QuotaFetch(
+                    "Claude account became active; official client owns refresh".into(),
+                ));
+            }
+            provider.load_credentials(&account)
+        })
+        .await
+        .map_err(|e| Error::Provider(format!("read Claude parked credentials: {e}")))??;
+        let token = creds.oauth.refresh_token.clone().unwrap_or_default();
+        if token.is_empty() || self.is_refresh_dead(&token) || refresh_token_expired(&creds) {
+            return Err(relogin_required_error(id));
+        }
+        match apply_refresh_to_creds(&mut creds).await {
+            Ok(()) => {
+                let provider = self.clone();
+                let account = id.clone();
+                let saved = creds.clone();
+                tokio::task::spawn_blocking(move || provider.save_credentials(&account, &saved))
+                    .await
+                    .map_err(|e| {
+                        Error::Provider(format!("save Claude parked credentials: {e}"))
+                    })??;
+                Ok(creds)
+            }
+            Err(error) if is_invalid_grant(&error) => {
+                self.mark_refresh_dead(&token);
+                Err(relogin_required_error(id))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     fn read_active_credentials_if_matches(
         &self,
         id: &AccountId,
@@ -1291,6 +1384,69 @@ impl ClaudeProvider {
         }
         Ok(None)
     }
+}
+
+async fn read_oauth_account_async(home: PathBuf) -> Result<Option<OauthAccount>> {
+    tokio::task::spawn_blocking(move || read_oauth_account(&global_config_path(&home)))
+        .await
+        .map_err(|e| Error::Provider(format!("read Claude account identity: {e}")))?
+}
+
+fn usage_quotas(id: &AccountId, usage: oauth::UsageResponse) -> Vec<Quota> {
+    let mut out = Vec::new();
+    for (window, reading) in [
+        (QuotaWindow::FiveHour, usage.five_hour),
+        (QuotaWindow::SevenDay, usage.seven_day),
+    ] {
+        if let Some(reading) = reading.filter(|r| {
+            r.utilization
+                .is_some_and(|p| p.is_finite() && (0.0..=100.0).contains(&p))
+        }) {
+            if reading.resets_at.is_some_and(|d| d <= Utc::now()) {
+                continue;
+            }
+            out.push(make_quota(
+                id,
+                window,
+                reading.utilization,
+                reading.resets_at,
+            ));
+        }
+    }
+    if let Some(extra) = usage
+        .extra_usage
+        .filter(|e| e.utilization.is_some_and(|p| p.is_finite() && p >= 0.0))
+    {
+        out.push(make_quota(
+            id,
+            QuotaWindow::Month,
+            extra.utilization,
+            extra.resets_at,
+        ));
+    }
+    out
+}
+
+fn cached_native_usage(home: &Path, id: &AccountId, max_age_ms: u64) -> Option<Vec<Quota>> {
+    let config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(global_config_path(home)).ok()?).ok()?;
+    if config.pointer("/oauthAccount/emailAddress")?.as_str()? != id.0 {
+        return None;
+    }
+    let uuid = config.pointer("/oauthAccount/accountUuid")?.as_str()?;
+    let cached = config.get("cachedUsageUtilization")?;
+    if cached.get("accountUuid")?.as_str()? != uuid {
+        return None;
+    }
+    let fetched =
+        chrono::DateTime::<Utc>::from_timestamp_millis(cached.get("fetchedAtMs")?.as_i64()?)?;
+    let age = (Utc::now() - fetched).num_milliseconds();
+    if age < 0 || age as u64 >= max_age_ms {
+        return None;
+    }
+    let usage = serde_json::from_value(cached.get("utilization")?.clone()).ok()?;
+    let quotas = usage_quotas(id, usage);
+    (!quotas.is_empty()).then_some(quotas)
 }
 
 /// macOS：Claude Code 凭证所在 Keychain generic password 的 service 名。
