@@ -104,11 +104,16 @@ pub async fn fetch_usage(access_token: &str) -> Result<UsageResponse> {
 
     let status = resp.status();
     if !status.is_success() {
-        let retry_at = resp.headers().get(reqwest::header::RETRY_AFTER)
+        let retry_at = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| retry_after(v, Utc::now()));
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Err(Error::QuotaRateLimited { message: "Claude usage endpoint throttled".into(), retry_at });
+            return Err(Error::QuotaRateLimited {
+                message: "Claude usage endpoint throttled".into(),
+                retry_at,
+            });
         }
         let body = resp.text().await.unwrap_or_default();
         return Err(Error::QuotaFetch(format!(
@@ -125,9 +130,14 @@ pub async fn fetch_usage(access_token: &str) -> Result<UsageResponse> {
 fn retry_after(value: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
     let value = value.trim();
     if let Ok(seconds) = value.parse::<i64>() {
-        return (seconds > 0).then(|| now.checked_add_signed(chrono::Duration::seconds(seconds))).flatten();
+        return (seconds > 0)
+            .then(|| chrono::Duration::try_seconds(seconds).and_then(|d| now.checked_add_signed(d)))
+            .flatten();
     }
-    DateTime::parse_from_rfc2822(value).ok().map(|d| d.with_timezone(&Utc)).filter(|d| *d > now)
+    DateTime::parse_from_rfc2822(value)
+        .ok()
+        .map(|d| d.with_timezone(&Utc))
+        .filter(|d| *d > now)
 }
 
 #[derive(Debug, Deserialize)]
