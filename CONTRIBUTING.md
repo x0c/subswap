@@ -7,13 +7,13 @@ Thank you for improving subswap. It manages local credentials and native client 
 - Read [AGENTS.md](AGENTS.md). It contains the project's non-negotiable safety, release, and verification rules.
 - Never commit credentials, refresh tokens, API keys, complete login files, real email addresses, or billing screenshots.
 - Do not add behavior intended to share credentials, bypass limits, evade provider policies, or aggressively probe quota endpoints.
-- User-visible CLI text, errors, and logs are English. Internal collaboration docs and code comments are Chinese.
+- User-visible CLI text, errors, and logs are English. Code comments are Chinese.
 
 ## Project shape
 
 subswap is a Rust workspace with a small core, a CLI, a background daemon, and one adapter per native client:
 
-- Claude Code, Codex / ChatGPT, Kimi Code, Cursor, and OpenCode Go are supported.
+- Claude Code, Codex (ChatGPT login), Kimi Code, Cursor, OpenCode Console / Go API keys, and Command Code are supported.
 - File-based OAuth clients share the common switching engine where their safety boundary permits it.
 - Claude and Cursor keep dedicated adapters because their credential storage, API mode, desktop lifecycle, and refresh coordination are different.
 

@@ -41,6 +41,7 @@ pub struct Settings {
     pub token: Token,
     pub daemon: Daemon,
     pub codex: Codex,
+    pub claude: Claude,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -107,6 +108,24 @@ pub struct Codex {
     pub usage_cache_max_age_ms: i64,
     /// 停用账号可选重置明细的查询预算；当前号只复用官方同次响应。
     pub reset_details_timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Claude {
+    /// Claude 额度真实查询下限；另受 quota 通用下限约束。
+    pub usage_min_refresh_interval_ms: u64,
+    /// 无有效 Retry-After 时，Claude 429 的保守等待时间。
+    pub usage_rate_limit_backoff_ms: u64,
+}
+
+impl Default for Claude {
+    fn default() -> Self {
+        Self {
+            usage_min_refresh_interval_ms: defaults::CLAUDE_USAGE_MIN_REFRESH_INTERVAL_MS,
+            usage_rate_limit_backoff_ms: defaults::CLAUDE_USAGE_RATE_LIMIT_BACKOFF_MS,
+        }
+    }
 }
 
 impl Default for AutoSwap {
