@@ -1282,7 +1282,15 @@ impl ClaudeProvider {
                 ));
             }
             // 官方通道失败后不再换 HTTP 渠道；官方进程独占 active 凭据刷新。
-            let usage = native_usage::fetch(&home).await;
+            let usage = match native_usage::fetch(&home).await {
+                Ok(Some(usage)) => Ok(usage),
+                // 尚未发送 usage 请求时才允许旧客户端兼容路径；不得把过期 token 发上游。
+                Ok(None) if is_expired_or_soon(&creds, 0) => Err(Error::QuotaFetch(
+                    "Claude credential expired; compatible native client unavailable".into(),
+                )),
+                Ok(None) => oauth::fetch_usage(&creds.oauth.access_token).await,
+                Err(error) => Err(error),
+            };
             let after = read_oauth_account_async(home).await?;
             if before.as_ref().map(|a| (&a.email_address, &a.account_uuid))
                 != after.as_ref().map(|a| (&a.email_address, &a.account_uuid))

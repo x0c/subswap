@@ -19,17 +19,17 @@ fn supported_version(text: &str) -> bool {
     matches!(numbers.as_slice(), [Ok(major), Ok(minor), Ok(patch)] if (*major, *minor, *patch) >= (2, 1, 169))
 }
 
-pub async fn fetch(home: &Path) -> Result<UsageResponse> {
-    let version = Command::new("claude")
+pub async fn fetch(home: &Path) -> Result<Option<UsageResponse>> {
+    let Ok(version) = Command::new("claude")
         .arg("--version")
         .kill_on_drop(true)
         .output()
         .await
-        .map_err(|_| Error::QuotaFetch("Claude Code CLI unavailable".into()))?;
+    else {
+        return Ok(None);
+    };
     if !version.status.success() || !supported_version(&String::from_utf8_lossy(&version.stdout)) {
-        return Err(Error::QuotaFetch(
-            "Claude Code structured usage requires version 2.1.169 or later".into(),
-        ));
+        return Ok(None);
     }
     let mut command = Command::new("claude");
     command
@@ -79,13 +79,13 @@ pub async fn fetch(home: &Path) -> Result<UsageResponse> {
     }
     #[cfg(windows)]
     command.creation_flags(0x08000000);
-    let mut child = command
-        .spawn()
-        .map_err(|_| Error::QuotaFetch("start Claude Code usage query failed".into()))?;
+    let Ok(mut child) = command.spawn() else {
+        return Ok(None);
+    };
     let result = query(&mut child).await;
     let _ = child.kill().await;
     let _ = child.wait().await;
-    result
+    result.map(Some)
 }
 
 async fn query(child: &mut Child) -> Result<UsageResponse> {
