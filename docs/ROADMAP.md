@@ -13,7 +13,6 @@
 
 ## Open improvements
 
-- Prevent [quota-result ordering from swapping a healthy active account](troubleshooting/2026-09-29-codex-auto-swap-with-healthy-accounts.md). The current default entry can switch before the active account's quota returns; the fix must retain timely escape from confirmed exhaustion. The waiting and query-failure policy is still to be designed.
 - Decide whether macOS can start background switching by default for providers that do not require an extra Keychain authorization. The [current opt-in](CLI.md) avoids possible Keychain dialogs. A changed default needs verification of authorization behavior and must tell users that already-running Codex sessions still need a restart after a global swap. Status: pending product decision; the current opt-in remains in place.
 
 <!-- 该文档整理/压缩于 2026-09-05 -->

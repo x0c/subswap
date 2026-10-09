@@ -7,9 +7,9 @@
 
 <h1 align="center">subswap</h1>
 
-<p align="center"><strong>Switch work and personal Claude Code, ChatGPT, Codex, and Cursor accounts without logging out.</strong></p>
+<p align="center"><strong>Check remaining quota and switch AI coding accounts.</strong></p>
 
-<p align="center">Keep several AI coding logins on one machine. See which account still has usage left, then switch in one command — no browser dance.</p>
+<p align="center">Manage saved logins for Claude Code, Codex, Kimi Code, Cursor, OpenCode, and Command Code. See which account has quota left, then switch with one command.</p>
 
 <p align="center">
   <a href="https://github.com/x0c/subswap/actions/workflows/ci.yml"><img src="https://github.com/x0c/subswap/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -20,42 +20,41 @@
 <p align="center">
   <img src="docs/images/demo-swap.gif" width="920" alt="Sample terminal demo: list accounts, then subswap swap to another Codex login without logging out">
 </p>
-<p align="center"><em>Sample demo with example accounts — not a recording of your machine.</em></p>
-
-<p align="center">
-  <img src="docs/images/demo-status.svg" width="920" alt="Example account list with quota left and a swap tip">
-</p>
+<p align="center"><em>Demo with example accounts.</em></p>
 
 ## Install
 
 On **macOS or Linux with Homebrew**:
 
+Linux prebuilt packages require glibc 2.39 or newer; build from source on older systems.
+
 ```bash
 brew install x0c/tap/subswap
-subswap
+subswap --help
 ```
 
 <details>
-<summary>Windows / GitHub Release / from source</summary>
+<summary>Windows / prebuilt downloads / from source</summary>
 
 **Windows**
 
 ```powershell
 irm https://raw.githubusercontent.com/x0c/subswap/main/install.ps1 | iex
+subswap --help
 ```
 
 The installer downloads the latest Windows release, verifies its SHA-256 checksum, and adds `subswap.exe` to your user `PATH`. You can also download the zip and checksum from the [latest release](https://github.com/x0c/subswap/releases/latest).
 
-**GitHub Release (any OS)**
+**Prebuilt downloads**
 
-Download from the [latest release](https://github.com/x0c/subswap/releases/latest) and verify the accompanying SHA-256 file before installing.
+The [latest release](https://github.com/x0c/subswap/releases/latest) includes macOS (Apple silicon / Intel), Linux (ARM64 / x64), and Windows (x64) packages. Verify the accompanying SHA-256 file before installing.
 
-**From source** (Rust 1.80+, for development)
+**From source** (current stable Rust, for development)
 
 ```bash
 git clone https://github.com/x0c/subswap
 cd subswap
-cargo install --path crates/cli
+cargo install --locked --path crates/cli
 subswap --help
 ```
 
@@ -63,38 +62,37 @@ Prefer Homebrew or a release asset for normal use.
 
 </details>
 
-## What you can do
-
-- **Keep work, personal, and client accounts separate** — switch Claude Code, ChatGPT, Codex, and Cursor without logging out and back in.
-- **See remaining headroom** — Claude, Codex, Kimi, Cursor, OpenCode, and Command Code quota windows in one list.
-- **Switch offline when you must** — manual `swap` never waits on a network or quota API; auto-swap is optional.
-- **Run a second account in parallel when it is safe** — Claude, Codex, Kimi, Command Code, and OpenCode V1 API keys can run in isolation without changing the global active login.
-- **Cursor on the desktop** — import, switch, and quota; Cursor does not support isolated `run` / `shell` / `env`.
-
 ## First use
 
-Sign in to a supported client first, then:
+Install and sign in to a supported native client first. Automatic switching is enabled by default; start in manual mode to choose each account yourself:
 
 ```bash
-subswap autoswap off   # stay manual while you try it
-subswap                # import local logins and list accounts
-subswap swap 2         # use a number from your list
+subswap autoswap off
+subswap                # save local logins and show accounts + quota
 ```
 
-<details>
-<summary>More import / login / isolated-run examples</summary>
+Save another account before switching between accounts. For Claude Code and Codex, subswap can start the native sign-in flow:
 
 ```bash
-subswap login kimi
-subswap login cursor
-subswap login opencode
-subswap login opencode-api-key
-subswap login commandcode
-subswap login claude
-subswap login codex
+subswap login codex    # sign in to another Codex account; use claude for Claude Code
+subswap swap 2         # replace 2 with a number shown in your account list
+```
 
+For Kimi Code, Cursor, and Command Code, sign in to the other account in the native client, then run `subswap login kimi`, `subswap login cursor`, or `subswap login commandcode` to save it. `subswap login opencode` imports official Console accounts and starts the official sign-in flow if needed; `subswap login opencode-api-key` imports Go API keys into a separate list.
+
+After a Codex swap, restart an already-running Codex CLI session, or reload the IDE window and open a new session. Existing processes can retain the previous account. A Cursor desktop swap closes and reopens the app if it was running.
+
+<details>
+<summary>More commands</summary>
+
+```bash
 subswap swap alice@example.com
 subswap swap claude/alice@example.com
+
+subswap add-api         # add a Claude Code compatible API endpoint
+subswap autoswap on     # enable automatic switching
+subswap autoswap off    # return to manual mode
+subswap doctor         # inspect local paths and client setup
 
 subswap run codex bob@example.com -- --version
 subswap shell claude/alice@example.com
@@ -103,22 +101,35 @@ eval "$(subswap env codex/bob@example.com)"
 
 </details>
 
-<details>
-<summary>Supported clients</summary>
+## What you can do
 
-| Client | Import and switch | Quota and auto-swap | Isolated run | Important boundary |
-|---|---:|---:|---:|---|
-| Claude Code | Yes | Yes | Yes | Custom API endpoints are manual-only. |
-| Codex CLI / ChatGPT | Yes | Yes | Yes | Quota lookup uses the official app-server channel. |
-| Kimi Code | Yes | Yes | Yes | Sign in with the native client, then import. |
-| Cursor desktop | Yes | Yes | No | Switching coordinates a desktop-app restart and its SQLite state. |
-| OpenCode Console | Yes | Yes | No | Official sign-in; automatic switching stays within Console accounts. |
-| OpenCode API Key | Yes | No, manual only | V1 only | Separate key list and quota; V2 selection uses the official client. |
-| Command Code | Yes | Yes | Yes | Switches `~/.commandcode/auth.json`; quota via `/alpha/billing/credits`. |
+- **Switch saved accounts** — choose an account with `subswap swap <number>` instead of signing in again for every change.
+- **Check quota and reset times** — see remaining usage across supported clients, including available Codex reset counts and expiration times when provided by the service.
+- **Use custom Claude Code API endpoints** — add an Anthropic-compatible endpoint with `subswap add-api`; these accounts are selected manually.
+- **Run another account in parallel** — use `run`, `shell`, or `env` for clients that support isolation, keeping the global active login unchanged.
+- **Enable automatic switching** — let subswap select another saved account when the configured quota conditions are met.
 
-The CLI is tested in CI on macOS, Linux, and Windows. The background daemon is Unix-only: it auto-starts on Linux, requires explicit opt-in on macOS, and is unavailable on Windows.
+## Supported clients
 
-</details>
+| Client / account type | Import and switch | Quota | Auto-swap | Isolated run | Notes |
+|---|---:|---:|---:|---:|---|
+| Claude Code (OAuth) | Yes | Yes | Yes | Yes | Custom API endpoints are manual-only. |
+| Codex (ChatGPT login) | Yes | Yes | Yes | Yes | Restart existing Codex sessions after a global swap. |
+| Kimi Code | Yes | Yes | Yes | Yes | Sign in with the native client, then import. |
+| Cursor desktop / CLI | Yes | Yes | Yes | No | Desktop switching coordinates an app restart. |
+| OpenCode Console | Yes | Yes | Yes | No | Automatic switching stays within official Console accounts. |
+| OpenCode Go API key | Yes | Yes | No | V1 only | V2 key selection uses the official client. |
+| Command Code | Yes | Yes | Yes | Yes | Sign in with the native client, then import. |
+
+The CLI is tested in CI on macOS, Linux, and Windows. Install the native clients you want to use. Using the same account in multiple sessions can require signing in again if they refresh its credentials concurrently; use different saved accounts for parallel work where possible.
+
+## Automatic switching
+
+`subswap autoswap off` disables automatic switching for both the default command and the background daemon. `subswap autoswap on` enables it. Manual choices have a configurable grace period before automatic switching resumes.
+
+Automatic decisions preserve the current account while its quota is loading, failed, or stale. Normally, a quota threshold triggers selection of a usable account. If the current account is confirmed exhausted and no confirmed usable target exists, subswap may select a confirmed-depleted account that recovers sooner. See [configuration](docs/CONFIG.md) for thresholds and timing.
+
+The background daemon is Unix-only. Linux starts it automatically when `subswap` runs; macOS requires `SUBSWAP_AUTO_DAEMON=1`; Windows uses the foreground CLI. `SUBSWAP_NO_DAEMON=1` prevents auto-starting a daemon. It does not stop one already running or disable automatic decisions in the foreground command.
 
 <details>
 <summary>Environment check (`subswap doctor`)</summary>
@@ -129,47 +140,31 @@ The CLI is tested in CI on macOS, Linux, and Windows. The background daemon is U
 
 </details>
 
-## Before you start
+## Credentials
 
-- Use only accounts that you own or are authorized to use. subswap does not share credentials, bypass service limits, or make any upstream account policy compliant.
-- Cursor cannot be used in an isolated run because its identity is desktop-app state; a Cursor swap coordinates closing and reopening the app.
-- On Linux, the first `subswap` run starts a single background daemon for quota checks and optional auto-swap. On macOS, set `SUBSWAP_AUTO_DAEMON=1` to opt in. Set `SUBSWAP_NO_DAEMON=1` to disable it entirely.
-- Credential data stays in the application data directory. On macOS and Linux, private credential files are forced to `0600`; Windows relies on the current user's application-data permissions.
+Saved credentials are plaintext files in subswap's per-user application-data directory, separate from account metadata. On macOS and Linux, private credential and snapshot files use `0600` permissions; Windows relies on the current user's application-data permissions. `subswap doctor` shows the resolved paths. Native clients also keep their own active credentials. Custom Claude API mode writes its API key in Claude Code's settings; switching back to OAuth restores the managed settings from before API mode.
 
-## Safety guarantees
-
-1. **Manual switching stays available offline.** Quota data is advisory: network trouble or an expired token does not stop `subswap swap` from attempting the local switch.
-2. **Switches are transactional.** subswap takes a private snapshot before changing native client state and rolls back if a target write fails.
-3. **Automatic switching requires confirmed need and a usable target.** Healthy accounts stay selected. Loading, failed, or stale quota data never triggers a swap; depleted targets are not selected merely for an earlier reset. Manual selections and manual-only accounts remain protected.
-4. **Native clients keep their own safety boundary.** Codex refreshes through its official app-server, Cursor coordinates its desktop lifecycle, and unsupported refresh states fail safely instead of racing a one-time token.
+Manage only accounts you own or are authorized to use.
 
 ## FAQ
 
-### Does a manual swap call quota APIs?
+### Does a manual swap depend on quota APIs?
 
-No. `subswap swap` is the network-independent escape hatch.
+The account change does not depend on a quota lookup. After a successful swap, subswap prints a quota table, which may query the network when cached data is too old. A quota-query failure does not undo the completed account change. With no target, `subswap swap` only lists saved accounts and does not query quota.
 
-### Where are credentials stored?
+### Does this change my ChatGPT browser login?
 
-Private credential data is stored in the subswap application-data directory, separate from account metadata. On Unix, credential and snapshot files use `0600` permissions. Custom Claude API mode also needs its API key in Claude Code's settings; subswap restores the managed settings when you switch back to OAuth.
+It manages the ChatGPT-backed login used by Codex. Your ChatGPT browser session is separate.
 
-### Can I turn off automatic switching?
+### Can I use Cursor with `run`, `shell`, or `env`?
 
-Yes. Run `subswap autoswap off`, or disable the background daemon with `SUBSWAP_NO_DAEMON=1`.
-
-### Does Cursor work like the command-line clients?
-
-Not completely. Cursor supports import, switching, and quota status, but not `run`, `shell`, or `env` isolation because its identity is coordinated with the desktop application's SQLite state.
-
-### Is this only for Claude or Codex?
-
-No. Claude Code, Codex / ChatGPT, Kimi Code, Cursor, OpenCode Console and API keys, and Command Code are supported today.
+Cursor supports import, switching, and quota status through its desktop or CLI credentials. It does not support these isolated-run commands.
 
 ## Contributing and security
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) for the supported contribution paths and local checks. Do not open a public issue with credentials, refresh tokens, login files, real email addresses, or billing screenshots. See [SECURITY.md](SECURITY.md) for private vulnerability reporting.
 
-If subswap saves you from logging out all day, [star the repo](https://github.com/x0c/subswap) so you can find it again later.
+If you find subswap useful, [star the repo](https://github.com/x0c/subswap) so you can find it again later.
 
 ## License
 

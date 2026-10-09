@@ -11,7 +11,7 @@
 ## 已确认的优势（对外应表达）
 
 - 五 Provider 同一核心策略与注册表；文件型 OAuth 复用共享引擎；Claude / Cursor 因钥匙串·API / SQLite·桌面生命周期保留专用实现。
-- AutoSwap requires confirmed need and a usable target; manual priority, uncertain-quota preservation, and `manual_only` boundaries have tests. Earliest reset orders only already-usable candidates.
+- AutoSwap requires a confirmed trigger and normally selects a usable target. When no usable target exists and the active account is confirmed exhausted, the all-exhausted fallback may select a confirmed-depleted account that recovers sooner. Manual priority, uncertain-quota preservation, and `manual_only` boundaries have tests; see [the current policy](design/AUTO_SWAP_DESIGN.md).
 - 三平台 CI、原生 Release、Homebrew、Windows 一键安装（SHA-256）已存在。
 
 ## P0 / P1（2026-08-31 已关闭）
@@ -57,6 +57,10 @@
 
 ## README 维护约定
 
+Lead the README and repository description with the concrete tasks users can perform: checking remaining quota and switching saved AI coding accounts. Keep the wording useful regardless of why someone has multiple accounts; work/personal/client roles are optional examples, not the product's purpose. Name supported clients accurately rather than presenting a Codex login as a separate ChatGPT web-account switching feature.
+
+Mention Codex reset availability and expiration within the quota-query description, rather than adding a separate feature item. Describe the switch itself separately from the quota table printed afterward: the account change does not depend on quota, but the post-action table may query it. Daemon auto-start controls do not disable foreground auto-swap or terminate an existing daemon; `subswap autoswap off` is the user-facing way to disable automatic switching.
+
 新增或移除 Provider、平台能力、安装渠道或用户可见限制时，同一次变更同步核对：README 四种语言、GitHub 仓库简介、topics、支持矩阵、Quick start、FAQ、`CONTRIBUTING.md` 和 Release notes。README 是对外权威入口；内部 `docs/` 可保留实现细节，但不能替代对外边界说明。
 
 ## 实施结果（2026-08-31）
@@ -82,3 +86,27 @@ Priorities:
 3. Record a short real terminal walkthrough with synthetic accounts before a concentrated promotion. The current SVG is an illustrative status example, not a recording.
 4. Prepare a useful usage story and a focused announcement after the release is verified. External posts and replies require explicit user authorization; no messages have been sent.
 5. Compare new external stars, unique views, referrers, and installation feedback over subsequent windows. Do not promise a star count or infer humans from clone totals.
+
+## README audit (2026-10-09)
+
+Scope: the English README, its three translations, the repository description, contributor support list and directly conflicting project documentation. This is a documentation correction, not a change to account, quota or automatic-swap behavior.
+
+| Finding | Required correction and evidence |
+|---|---|
+| Work/personal roles dominate the headline; ChatGPT appears to be a separate supported client. | Lead with quota checks and saved-account switching. Describe Codex's ChatGPT login accurately; do not claim browser-session switching. |
+| Codex reset visibility is missing. | Mention available reset count and expiration within the quota feature. The [official response](https://learn.chatgpt.com/docs/app-server) provides a count and optional expiration details; unavailable details must not be promised. |
+| Manual swap is described as never calling quota APIs. | `swap::run` activates first, then `print_status_overview` can fetch quota. Distinguish an independent account change from the subsequent status refresh. |
+| Preventing daemon auto-start is described as disabling automatic switching. | `daemon_spawn::ensure_daemon_running` only skips startup. Use `subswap autoswap off` to disable the shared foreground/background policy; an already running daemon is not stopped by the environment flag. |
+| Support rows combine quota and auto-swap, hiding OpenCode API-key quota support. Cursor CLI and the Codex session restart are missing. | Separate quota/auto-swap columns, include Cursor desktop/CLI, and explain the restart near the first swap example. OpenCode V2 and Console do not support isolation; V1 API keys do. |
+| Automatic-swap guarantees omit the implemented all-exhausted fallback. | Match `auto_policy::decide` and `fallback_to_soonest_recovery`: unknown results preserve the current account, but confirmed depletion can select an earlier-recovering depleted account when no usable target exists. |
+| First use does not explain how a second account is saved. | Explain the first import, native login/import differences, then selecting a saved number. Put manual-mode setup before the first status query. |
+| Source installation promises Rust 1.80 and translations combine `--git`/`--path`. | Require a current stable Rust and use `cargo install --locked --path crates/cli`. The locked graph includes native dependencies declaring Rust 1.86; 1.80 is not a verified build floor. [Cargo's install modes and lockfile rules](https://doc.rust-lang.org/cargo/commands/cargo-install.html) distinguish local path from Git sources. |
+| Linux prebuilt compatibility is unspecified. | Both 1.14.6 Linux archives require `GLIBC_2.39` in their ELF version-dependency sections. State glibc 2.39+ and point older systems to source builds. Retain the parsed dependency evidence with the audit logs. |
+| A universal transactional/snapshot guarantee overstates the inspected implementation. | File-based adapters use private snapshots; OpenCode Console delegates selection/restore to the native client and updates the registry separately. Do not promise universal atomicity in the README. Failure injection across native selection and registry updates remains outside this documentation audit. |
+| Japanese/Korean READMEs retain old OpenCode/API, isolation, milestone and internal-maintenance claims. | Align all four documents to the same sections, commands, support matrix and current limits; remove obsolete internal material from translations. |
+
+References were inspected from shallow checkouts of [aisw](https://github.com/burakdede/aisw) and [CodexBar](https://github.com/steipete/CodexBar). Adopt short task descriptions, concrete first-use commands and explicit support boundaries; do not copy account-role assumptions, profile/context features, session relay, GUI presentation or capabilities absent from Subswap. [Homebrew's tap syntax](https://docs.brew.sh/Taps) supports the existing fully qualified install route. No competitor implementation is being adopted.
+
+Follow-up outside this documentation change: reconcile the declared Cargo Rust baseline with the locked dependency graph and add an actual minimum-version build gate before publishing a numeric minimum again.
+
+Verification: all four READMEs now share the same 12-heading structure, six command blocks and seven capability rows. Normalized command and capability comparisons, relative-link checks, HTML details/fence balance, privacy checks and `git diff --check` passed. Nine installed CLI help paths returned successfully. The unchanged 1.14.6 code and release artifacts retain the workspace, three-platform CI, native installation and live quota/reset acceptance recorded in [the quota investigation](troubleshooting/2026-10-09-codex-active-quota-loading.md); documentation edits do not require another usage request. Parsed Linux ELF requirements and documentation checks are retained under `~/.config/subswap/verification/20261009-readme/`. Minimum-Rust and older-glibc runtime compatibility were not tested; the README no longer promises Rust 1.80 support.

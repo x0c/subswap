@@ -63,6 +63,11 @@ pub const CODEX_USAGE_CACHE_MAX_AGE_MS: i64 = 10 * 60 * 1000;
 /// 停用 Codex 账号可选重置明细的最大等待时间。
 pub const CODEX_RESET_DETAILS_TIMEOUT_MS: u64 = 1_000;
 
+/// Claude 额度查询下限；不同账号/客户端的实际限流预算并非固定合同。
+pub const CLAUDE_USAGE_MIN_REFRESH_INTERVAL_MS: u64 = 180_000;
+/// Claude 429 无服务端等待时间时的保守退避，避免每 90 秒重新竞争限流桶。
+pub const CLAUDE_USAGE_RATE_LIMIT_BACKOFF_MS: u64 = 1_800_000;
+
 /// 单次 quota 查询 attempt 的超时（毫秒）。
 ///
 /// CLI 与 daemon 都通过统一重试包装查询 quota。单次 attempt 超过此值会被取消，并按

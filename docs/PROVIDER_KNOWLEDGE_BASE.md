@@ -76,6 +76,8 @@ Token 刷新体：`{"grant_type":"refresh_token","refresh_token":"...","client_i
 
 **429 是 usage 端点真实极严限流**（有效 token 间隔约 4s 仍 `200→429→429` + `retry-after`），不是鉴权伪装。完整排查：[troubleshooting/2026-06-14](troubleshooting/2026-06-14-claude-quota-unqueryable-429-vs-invalid-grant.md)。
 
+Research update (2026-10-09): the historical one-request-per-minute observation is not an official allowance. Upstream reports include hour-scale blocks, busy-account 429 across fresh tokens/request identities, and optional official statusline readings that add no usage request. An expired active credential can coexist with a cached 429; 429 does not validate the credential. Current code also drops `Retry-After`. Evidence, limitations, and proposed alternatives: [persistent Claude usage 429](troubleshooting/2026-10-09-claude-persistent-usage-429.md). The research does not enable a new query or refresh path.
+
 | 信号 | 端点/状态 | 含义 | 处理 |
 |---|---|---|---|
 | `429 rate_limit_error` | usage 429 + `retry-after` | 约**每账号每分钟 1 次** | 缓存节流，**不是**重登 |

@@ -13,7 +13,7 @@ use subswap_core::error::{Error, Result};
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const REFRESH_URL: &str = "https://platform.claude.com/v1/oauth/token";
 const BETA_HEADER: &str = "oauth-2025-04-20";
-const USER_AGENT: &str = "subswap/0.1";
+const USER_AGENT: &str = concat!("subswap/", env!("CARGO_PKG_VERSION"));
 
 /// 凭据中无 scope 时的 fallback。取自 Claude Code 的默认 OAuth scope 集。
 const DEFAULT_SCOPES: &[&str] = &[
@@ -104,6 +104,12 @@ pub async fn fetch_usage(access_token: &str) -> Result<UsageResponse> {
 
     let status = resp.status();
     if !status.is_success() {
+        let retry_at = resp.headers().get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| retry_after(v, Utc::now()));
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(Error::QuotaRateLimited { message: "Claude usage endpoint throttled".into(), retry_at });
+        }
         let body = resp.text().await.unwrap_or_default();
         return Err(Error::QuotaFetch(format!(
             "usage returned {status}: {body}"
@@ -113,6 +119,15 @@ pub async fn fetch_usage(access_token: &str) -> Result<UsageResponse> {
     resp.json::<UsageResponse>()
         .await
         .map_err(|e| Error::QuotaFetch(format!("parse usage response: {e}")))
+}
+
+/// Retry-After 支持秒数与 HTTP-date；0/过去时间交由调用方采用保守下限。
+fn retry_after(value: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let value = value.trim();
+    if let Ok(seconds) = value.parse::<i64>() {
+        return (seconds > 0).then(|| now.checked_add_signed(chrono::Duration::seconds(seconds))).flatten();
+    }
+    DateTime::parse_from_rfc2822(value).ok().map(|d| d.with_timezone(&Utc)).filter(|d| *d > now)
 }
 
 #[derive(Debug, Deserialize)]

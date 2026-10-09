@@ -7,9 +7,9 @@
 
 <h1 align="center">subswap</h1>
 
-<p align="center"><strong>업무용과 개인용 Claude Code, ChatGPT, Codex, Cursor 계정을 로그아웃 없이 전환하세요.</strong></p>
+<p align="center"><strong>AI 코딩 도구의 남은 사용량을 확인하고 계정을 전환하세요.</strong></p>
 
-<p align="center">한 대의 컴퓨터에 여러 AI 코딩 로그인을 남겨 둘 수 있습니다. 남은 사용량을 보고 한 줄로 전환 — 브라우저로 다시 로그인할 필요 없습니다.</p>
+<p align="center">Claude Code, Codex, Kimi Code, Cursor, OpenCode, Command Code의 로그인을 저장하고 관리합니다. 사용량이 남은 계정을 확인하고 명령 하나로 전환하세요.</p>
 
 <p align="center">
   <a href="https://github.com/x0c/subswap/actions/workflows/ci.yml"><img src="https://github.com/x0c/subswap/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -18,252 +18,154 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/demo-swap.gif" width="920" alt="샘플: 계정 목록 후 subswap swap으로 다른 Codex로 전환(로그아웃 없음)">
+  <img src="docs/images/demo-swap.gif" width="920" alt="터미널 데모: 계정 목록을 보고 subswap swap으로 다른 Codex 계정 선택">
 </p>
-<p align="center"><em>예시 계정 데모이며, 사용자 기기 녹화본이 아닙니다.</em></p>
-
-<p align="center">
-  <img src="docs/images/demo-status.svg" width="920" alt="subswap 상태 예시">
-</p>
+<p align="center"><em>예시 계정을 사용한 데모입니다.</em></p>
 
 ## 설치
 
-### macOS / Linux (Homebrew)
+**Homebrew가 설치된 macOS 또는 Linux**:
+
+Linux 사전 빌드 패키지는 glibc 2.39 이상이 필요합니다. 이전 시스템에서는 소스에서 빌드하세요.
 
 ```bash
 brew install x0c/tap/subswap
-subswap
+subswap --help
 ```
 
-먼저 tap을 추가한 뒤 이름으로 설치할 수도 있습니다.
+<details>
+<summary>Windows / 사전 빌드 다운로드 / 소스에서 설치</summary>
 
-```bash
-brew tap x0c/tap
-brew install subswap
-```
-
-### Windows (PowerShell)
+**Windows**
 
 ```powershell
 irm https://raw.githubusercontent.com/x0c/subswap/main/install.ps1 | iex
+subswap --help
 ```
 
-`subswap.exe`를 설치하고 사용자 `PATH`에 추가합니다. Windows에는 Unix 전용 daemon이 포함되지 않습니다.
+설치 프로그램은 최신 Windows Release를 다운로드하고 SHA-256을 검증한 뒤 `subswap.exe`를 사용자 `PATH`에 추가합니다. [최신 Release](https://github.com/x0c/subswap/releases/latest)에서 zip과 체크섬을 직접 받을 수도 있습니다.
 
-### 소스에서 설치
+**사전 빌드 다운로드**
 
-소스에서 설치하려면 Rust 1.80+가 필요합니다.
+[최신 Release](https://github.com/x0c/subswap/releases/latest)는 macOS(Apple silicon / Intel), Linux(ARM64 / x64), Windows(x64) 패키지를 제공합니다. 설치 전에 함께 제공되는 SHA-256을 확인하세요.
+
+**소스에서 설치** (현재 안정판 Rust, 개발용)
 
 ```bash
 git clone https://github.com/x0c/subswap
 cd subswap
-cargo install --path crates/cli
+cargo install --locked --path crates/cli
 subswap --help
 ```
 
-Git에서 직접 설치할 수도 있습니다.
+일반 사용에는 Homebrew 또는 Release 패키지를 권장합니다.
+
+</details>
+
+## 처음 사용하기
+
+먼저 지원하는 네이티브 클라이언트를 설치하고 로그인하세요. 자동 전환은 기본적으로 켜져 있습니다. 직접 계정을 선택하려면 수동 모드로 시작하세요.
 
 ```bash
-cargo install --git https://github.com/x0c/subswap --path crates/cli
+subswap autoswap off
+subswap                # 로컬 로그인을 저장하고 계정과 사용량 표시
 ```
 
-이 방법은 검증된 Release가 아니라 저장소 소스를 따릅니다. 일반 사용에서는 Homebrew 또는 [최신 Release](https://github.com/x0c/subswap/releases/latest)를 우선하세요.
+계정 간 전환 전에 다른 계정도 저장하세요. Claude Code와 Codex는 subswap에서 네이티브 로그인 절차를 시작할 수 있습니다.
+
+```bash
+subswap login codex    # 다른 Codex 계정으로 로그인. Claude Code는 claude 지정
+subswap swap 2         # 2를 계정 목록에 표시된 번호로 변경
+```
+
+Kimi Code, Cursor, Command Code는 네이티브 클라이언트에서 다른 계정으로 로그인한 뒤 `subswap login kimi`, `subswap login cursor`, `subswap login commandcode`로 저장합니다. `subswap login opencode`는 공식 Console 계정을 가져오며 필요하면 공식 로그인을 시작합니다. `subswap login opencode-api-key`는 Go API key를 별도 목록으로 가져옵니다.
+
+Codex 전환 후에는 실행 중인 Codex CLI 세션을 다시 시작하거나 IDE 창을 다시 로드하고 새 세션을 여세요. 기존 프로세스는 이전 계정을 유지할 수 있습니다. Cursor 데스크톱이 실행 중이면 계정 전환 시 앱을 닫고 다시 엽니다.
+
+<details>
+<summary>추가 명령</summary>
+
+```bash
+subswap swap alice@example.com
+subswap swap claude/alice@example.com
+
+subswap add-api         # Claude Code 호환 API 엔드포인트 추가
+subswap autoswap on     # 자동 전환 켜기
+subswap autoswap off    # 수동 모드로 돌아가기
+subswap doctor         # 로컬 경로와 클라이언트 설정 확인
+
+subswap run codex bob@example.com -- --version
+subswap shell claude/alice@example.com
+eval "$(subswap env codex/bob@example.com)"
+```
+
+</details>
 
 ## 기능
 
-- **업무용과 개인용을 포함한 다중 계정 전환**: Claude Code, ChatGPT, Codex, Cursor, Kimi Code, OpenCode Go를 로그아웃 없이 바꿉니다.
-- **Claude Code 커스텀 API 엔드포인트**: 인터랙티브 위저드로 DeepSeek, Kimi 등 Anthropic 호환 엔드포인트를 추가하고 일반 Claude 계정처럼 전환할 수 있습니다.
-- **Claude / Codex / Kimi / OpenCode 계정 격리 병렬 환경**: `subswap run`·`shell`·`env`로 사용할 수 있습니다. Cursor는 데스크톱 SQLite 상태 때문에 이 모드를 지원하지 않습니다.
-- **Quota-aware status**: Claude / Kimi / Codex window와 Cursor의 `First-Party Models` / `API` 사용률을 표시합니다.
-- **필요할 때만 자동 전환**: 현재 계정의 한도 도달과 사용 가능한 대상 계정을 모두 확인한 뒤 전환합니다. 잔여량이 있는 계정은 유지합니다. 조회 중, 조회 실패, 오래된 캐시는 전환을 유발하지 않으며 초기화가 빠르다는 이유로 소진된 계정을 선택하지 않습니다.
-- **자동 전환 토글**: `subswap autoswap on/off`로 설정 파일을 건드리지 않고 자동 전환을 켜거나 끌 수 있습니다.
-- **수동 선택 보호**: 수동 전환 후 유지 기간에는 자동 전환을 중지합니다. 불확실한 할당량은 기간과 관계없이 현재 계정을 유지합니다.
-- **네트워크에 의존하지 않는 수동 전환**: quota API 실패, token 만료, 네트워크 장애가 있어도 `subswap swap`은 동작합니다.
-- **Quota 결과 캐시와 stale fallback**: 백그라운드 갱신 중에도 캐시 결과를 반환하여 상태 화면이 항상 응답합니다.
-- **파일 기반 자격 증명 저장**: macOS/Linux에서는 자격 증명 파일을 `0600`으로 강제합니다. Windows에서는 현재 사용자의 앱 데이터 권한을 사용합니다. 기존 keyring 기반 설치는 첫 실행 시 자동 마이그레이션됩니다.
-- **Provider 기반 아키텍처**: Claude, Codex, Kimi, Cursor, OpenCode Go는 각각 별도 crate입니다.
+- **저장된 계정 전환** — `subswap swap <번호>`로 선택하여 전환할 때마다 다시 로그인하는 수고를 줄입니다.
+- **사용량과 초기화 시간 확인** — 지원 클라이언트의 남은 사용량과 함께 Codex reset 잔여 횟수 및 서비스가 제공하는 만료 시간을 표시합니다.
+- **Claude Code 커스텀 API 사용** — `subswap add-api`로 Anthropic 호환 엔드포인트를 추가합니다. 이 계정은 수동으로 선택합니다.
+- **다른 계정 병렬 사용** — 격리를 지원하는 클라이언트에서 `run`, `shell`, `env`를 사용하여 글로벌 활성 로그인을 유지합니다.
+- **자동 전환 켜기** — 설정된 사용량 조건에 도달하면 다른 저장된 계정을 선택합니다.
 
 ## 지원 클라이언트
 
-| Provider | 로컬 클라이언트 | subswap이 관리하는 항목 |
-|---|---|---|
-| Claude / Anthropic | Claude Code (`~/.claude`) | OAuth 자격 증명, 커스텀 API 엔드포인트, 활성 계정 파일, 5h / 7d quota, token keepalive |
-| Codex / ChatGPT | Codex CLI (`~/.codex`) | `auth.json`, 활성 계정, 공식 app-server quota |
-| Kimi / Moonshot | Kimi Code (`~/.kimi-code`) | OAuth 자격 증명, 활성 계정, 5h / 7d 사용량 |
-| Cursor | Cursor desktop (`state.vscdb`) | 계정 전환, First-Party Models / API 사용률, 결제 주기 reset |
-| OpenCode Go | OpenCode (`~/.local/share/opencode/auth.json`) | `opencode-go` API key만 전환(같은 파일의 다른 provider는 유지), 5h / 주 / 월 quota |
-| Command Code | Command Code (`~/.commandcode/auth.json`) | API key, 5h / 주 / `$` credits (`/alpha/billing/credits`) |
+| 클라이언트 / 계정 유형 | 가져오기·전환 | 사용량 | 자동 전환 | 격리 실행 | 참고 |
+|---|---:|---:|---:|---:|---|
+| Claude Code(OAuth) | 지원 | 지원 | 지원 | 지원 | 커스텀 API 엔드포인트는 수동 선택만 지원. |
+| Codex(ChatGPT 로그인) | 지원 | 지원 | 지원 | 지원 | 글로벌 전환 후 기존 Codex 세션을 다시 시작. |
+| Kimi Code | 지원 | 지원 | 지원 | 지원 | 네이티브 클라이언트 로그인 후 가져오기. |
+| Cursor 데스크톱 / CLI | 지원 | 지원 | 지원 | 미지원 | 데스크톱 전환은 앱 재시작을 조정. |
+| OpenCode Console | 지원 | 지원 | 지원 | 미지원 | 공식 Console 계정 사이에서만 자동 전환. |
+| OpenCode Go API key | 지원 | 지원 | 미지원 | V1만 | V2 키 선택은 공식 클라이언트 이용. |
+| Command Code | 지원 | 지원 | 지원 | 지원 | 네이티브 클라이언트 로그인 후 가져오기. |
 
-## 일반적인 사용 사례
+CLI는 macOS, Linux, Windows CI에서 테스트됩니다. 사용할 네이티브 클라이언트를 설치하세요. 같은 계정의 자격 증명을 여러 세션에서 동시에 갱신하면 다시 로그인해야 할 수 있습니다. 병렬 작업에는 가능한 한 서로 다른 저장된 계정을 사용하세요.
 
-- 여러 Claude Pro, Claude Max, ChatGPT Plus, ChatGPT Team seat 사이를 전환합니다.
-- 현재 계정이 사용 한도에 도달했을 때 사용할 예비 AI 구독을 준비해 둡니다.
-- 서로 다른 터미널에서 두 계정을 동시에 간섭 없이 사용합니다.
-- 긴 코딩 세션을 시작하기 전에 계정별 사용량을 확인합니다.
-- Claude, ChatGPT, Kimi, Cursor, OpenCode Go 계정 전환을 하나의 CLI로 통합합니다.
+## 자동 전환
 
-## 상태
+`subswap autoswap off`는 기본 명령과 백그라운드 daemon의 자동 전환을 모두 끕니다. `subswap autoswap on`으로 켭니다. 수동으로 선택한 후에는 설정 가능한 유지 기간 동안 자동 전환이 중지됩니다.
 
-| Milestone | Scope | State |
-|---|---|---|
-| M1 | workspace + core trait/model + minimal CLI | done |
-| M2 | Claude provider: credential-backed swap, 5h/7d quota, best-effort token refresh | done |
-| M3 | Codex provider: opaque auth.json, atomic write, official quota + fallback | done |
-| M4 | `subswapd` daemon: periodic poll + auto-swap + Claude token keepalive + zero-config auto-spawn | done |
-| M5 | 계정 격리 실행 환경, 자동 전환 토글, quota 캐시, 정착 유예 | done |
-| M6 | Kimi / Cursor Provider, Codex 공식 quota 경로, 안전한 token 복구 | done |
-| M7 | OpenCode Go Provider: `auth.json`의 Go 항목만 전환, 5h/주/월 quota, 자동 전환과 격리 실행 | done |
+현재 계정의 사용량을 조회 중이거나, 조회에 실패하거나, 캐시가 오래된 경우 현재 계정을 유지합니다. 일반적으로 설정된 한도에 도달하면 사용 가능한 계정을 선택합니다. 현재 계정의 소진이 확인되고 사용 가능한 대상으로 확인된 계정이 없으면, 소진되었더라도 더 빨리 회복되는 것으로 확인된 계정을 선택할 수 있습니다. 한도와 시간 설정은 [설정 안내](docs/CONFIG.md)를 참고하세요.
 
-## 왜 필요한가
+백그라운드 daemon은 Unix 전용입니다. Linux는 `subswap` 실행 시 자동으로 시작하고 macOS는 `SUBSWAP_AUTO_DAEMON=1`이 필요합니다. Windows는 CLI를 직접 실행합니다. `SUBSWAP_NO_DAEMON=1`은 daemon의 자동 시작만 막습니다. 이미 실행 중인 daemon을 종료하거나 기본 명령 실행 시의 자동 전환을 끄지는 않습니다.
 
-여러 AI 구독을 사용한다면 다음 상황을 겪을 수 있습니다.
+<details>
+<summary>환경 확인 (`subswap doctor`)</summary>
 
-- Claude Pro 사용량을 다 써서 다시 로그인하지 않고 ChatGPT로 전환하고 싶다.
-- ChatGPT seat 두 개를 보유하고 있고, 한 줄 명령으로 활성 계정을 바꾸고 싶다.
-- 두 계정을 서로 다른 터미널에서 간섭 없이 동시에 쓰고 싶다.
-- 계정별 window(5h / 7d)에 남은 사용량을 보고 싶다.
+<p align="center">
+  <img src="docs/images/demo-doctor.gif" width="920" alt="터미널 데모: subswap doctor로 로컬 경로와 클라이언트 자격 증명 확인">
+</p>
 
-subswap은 각 계정 자격 증명을 소유자 전용 파일에 저장하고 각 네이티브 클라이언트의 활성 상태를 트랜잭션으로 갱신합니다. 수동 전환은 quota 조회 때문에 막히지 않습니다.
+</details>
 
-## 빠른 시작
+## 자격 증명
 
-### 먼저 수동 전환부터
+저장된 자격 증명은 계정 메타데이터와 별도로 subswap의 사용자별 앱 데이터 디렉터리에 평문 파일로 보관됩니다. macOS와 Linux의 비공개 자격 증명 및 스냅샷은 `0600` 권한을 사용합니다. Windows는 현재 사용자의 앱 데이터 권한을 사용합니다. 실제 경로는 `subswap doctor`에서 확인할 수 있습니다. 네이티브 클라이언트도 활성 자격 증명을 보관합니다. 커스텀 Claude API 모드는 Claude Code 설정에 API key를 기록하며, OAuth로 돌아가면 API 모드 이전의 관리 대상 설정을 복원합니다.
 
-지원 클라이언트에 로그인하고 위 방법으로 subswap을 설치한 다음 실행하세요.
-
-```bash
-subswap autoswap off  # 처음에는 자동 전환을 끕니다.
-subswap               # 현재 로그인을 가져오고 계정 목록을 봅니다.
-subswap swap 2        # 2를 목록의 계정 번호로 바꾸세요.
-```
-
-```bash
-# default: sync local active accounts, fetch quotas, auto-swap if past threshold,
-# then print a one-screen status. Run this whenever you want to know what's up.
-subswap
-
-# manually swap to a specific account (escape hatch — never depends on the network)
-subswap swap alice@example.com
-# disambiguate when the same id exists under multiple providers:
-subswap swap claude/alice@example.com
-
-# 인터랙티브하게 DeepSeek 등 Claude Code 호환 API 추가
-subswap add-api
-# 커스텀 API 엔드포인트는 수동 전용 — 자동 전환에 참여하지 않음
-subswap swap deepseek
-
-# Kimi, Cursor, OpenCode는 네이티브 클라이언트 로그인 후 명시적으로 가져올 수 있습니다
-subswap login kimi
-subswap login cursor
-subswap login opencode
-subswap login commandcode
-
-# 글로벌 활성 계정을 변경하지 않고 격리 환경에서 계정 사용
-subswap run codex bob@example.com -- --version   # bob 계정으로 codex 격리 실행
-subswap shell alice@example.com                  # alice 계정으로 격리된 서브 셸 열기
-eval "$(subswap env codex/bob@example.com)"      # 현재 셸을 임시로 codex 계정에 지정
-
-# 자동 전환 활성화 / 비활성화
-subswap autoswap on
-subswap autoswap off
-
-# registry와 비공개 자격 증명 저장소에서 계정 삭제
-subswap rm alice@example.com
-
-# 환경 자가 진단 (클라이언트 파일, keyring, 설정 디렉터리)
-subswap doctor
-```
-
-각 네이티브 클라이언트에 한 번 로그인했다면 첫 실행에서 Claude Code, Codex CLI, Kimi Code, Cursor, OpenCode Go의 현재 계정을 자동으로 가져옵니다. 본인이 소유하거나 사용 권한을 받은 계정만 관리하세요. subswap은 자격 증명 공유, 서비스 제한 우회, 또는 상위 서비스 약관 준수를 보장하지 않습니다.
-
-첫 `subswap` 실행은 macOS가 아닌 Unix 플랫폼에서 분리된 백그라운드 daemon(`subswapd`)도 시작합니다. 이 daemon은 quota를 폴링하고 백그라운드에서 자동 전환을 수행하며, Claude OAuth token을 최신 상태로 유지해 오래 쉬던 계정으로 전환하는 순간 401이 발생하는 일을 줄입니다. macOS에서는 분리된 프로세스의 Keychain 접근이 추가 인증 프롬프트를 만들 수 있으므로 명시적인 opt-in이 필요합니다. 자동 시작을 켜려면 `SUBSWAP_AUTO_DAEMON=1`을 export하세요. daemon은 단일 인스턴스(파일 잠금)입니다. 종료해도 안전합니다: `pkill -f 'subswap __daemon'` 또는 `pkill subswapd`. 완전히 비활성화하려면 `SUBSWAP_NO_DAEMON=1`을 export하세요.
-
-## 계정 격리 환경
-
-`subswap run / shell / env`는 글로벌 활성 계정을 변경하지 않고 Claude, Codex, Kimi, OpenCode를 병렬로 사용합니다. Cursor는 SQLite와 앱 재시작을 조정해야 하므로 지원하지 않습니다.
-
-```bash
-subswap run codex 6 -- --version       # 계정 #6으로 격리하여 codex 실행
-subswap run claude alice@x.com         # alice 계정으로 claude 격리 실행
-subswap shell 3                         # 계정 #3으로 격리된 서브 셸 진입
-eval "$(subswap env codex/bob@x.com)"  # 현재 셸을 임시로 codex 계정에 지정
-```
-
-- **동시 사용 절충**: 같은 계정을 여러 격리 세션에서 사용할 수 있지만 동시에 refresh되면 한 세션에서 다시 로그인해야 할 수 있습니다.
-- **글로벌 활성 경고**: 현재 글로벌 활성 계정으로 격리 세션을 시작하면 경고가 표시됩니다 — 비격리 클라이언트가 동시에 사용 중이면 refresh token이 무효화될 수 있습니다.
-
-## 설계 불변 조건
-
-기여 전에 알아둘 핵심 전제입니다.
-
-1. **`swap`은 quota 조회에 의존하지 않습니다.** API가 내려갔거나, keyring에 접근할 수 없거나, token이 만료되어도 수동 전환은 활성 계정 변경을 시도해야 합니다.
-2. **Secret은 레지스트리 메타데이터에 포함되지 않으며 스냅샷은 소유자만 읽을 수 있습니다.** OAuth/API 시크릿은 소유자 전용 자격 증명 저장소에 보관됩니다. 커스텀 API가 활성화된 동안에는 Claude Code도 `~/.claude/settings.json`에 API 키가 필요합니다. subswap은 해당 파일을 원자적으로 보존하고 OAuth로 돌아올 때 복원합니다.
-3. **전환은 원자적이며 rollback 가능합니다.** 각 `activate`는 무엇이든 수정하기 전에 `state_dir/snapshots/<ts>/` 아래에 snapshot을 씁니다. 쓰기 하나라도 실패하면 rollback합니다.
-4. **Provider 추가 = `crates/providers/<id>` crate 추가 + `cli/src/app.rs::AppContext::build()`에 등록.** `core`에는 Provider별 로직을 넣지 않습니다.
-5. **Auto-swap threshold는 중앙에서 관리되고 설정 가능합니다.** 컴파일된 기본값은 `crates/core/src/defaults.rs`에 있으며, runtime config로 덮어쓸 수 있습니다.
-
-자세한 내용: [`docs/`](docs/) (중국어 내부 협업 문서).
-
-## 비교
-
-| 도구 | 초점 | 차이점 |
-|---|---|---|
-| 단일 Provider 계정 전환 도구 | 한 번에 하나의 upstream | subswap은 Claude, Codex / ChatGPT, Kimi, Cursor, OpenCode Go, Command Code를 지원 |
-| quota dashboard | 사용량 표시만 제공 | subswap은 quota window가 가득 찼을 때 다른 로컬 계정을 활성화할 수도 있음 |
-| 수동 로그인/로그아웃 | 한 번에 한 계정 | subswap은 등록 계정을 보관하고 활성 로컬 파일을 원자적으로 전환 |
+본인이 소유하거나 사용 권한이 있는 계정만 관리하세요.
 
 ## FAQ
 
-### `subswap swap`은 quota API를 호출하나요?
+### 수동 전환은 사용량 API에 의존하나요?
 
-아니요. 수동 전환은 escape hatch이며 quota 조회에 의존하지 않습니다. upstream API가 내려갔거나 token이 만료되어도 `subswap swap claude/alice@example.com`은 해당 로컬 계정 활성화를 시도합니다.
+계정 변경 자체는 사용량 조회에 의존하지 않습니다. 전환에 성공한 뒤 사용량 표를 출력하며 캐시가 오래되었으면 네트워크로 조회할 수 있습니다. 사용량 조회가 실패해도 완료된 계정 변경은 취소되지 않습니다. 대상을 지정하지 않은 `subswap swap`은 저장된 계정만 나열하고 사용량을 조회하지 않습니다.
 
-### token은 어디에 저장되나요?
+### ChatGPT 브라우저 로그인도 변경하나요?
 
-token과 refresh token은 앱 데이터 디렉터리의 자격 증명 파일에 저장됩니다. macOS/Linux의 자격 증명과 전환 스냅샷은 `0600`으로 제한됩니다. 커스텀 API가 활성화된 동안에는 Claude Code도 `~/.claude/settings.json`에 API 키가 필요합니다.
+Codex가 사용하는 ChatGPT 로그인을 관리합니다. ChatGPT 브라우저 세션은 별개입니다.
 
-### 커스텀 API는 자동 전환에 참여하나요?
+### Cursor에서 `run`, `shell`, `env`를 사용할 수 있나요?
 
-아니요. 커스텀 API는 `manual_only`입니다. subswap이 자동으로 선택하지 않으며, 활성화된 동안에는 자동 전환도 완전히 비활성화됩니다. OAuth 계정으로 수동 전환하면 API 모드 진입 전의 Claude Code 설정이 복원됩니다.
+Cursor는 데스크톱 또는 CLI 자격 증명으로 가져오기, 전환, 사용량 조회를 지원합니다. 이 격리 실행 명령은 지원하지 않습니다.
 
-### Claude / Codex 전용인가요?
+## 기여와 보안
 
-아니요. Claude / Anthropic, Codex / ChatGPT, Kimi / Moonshot, Cursor, OpenCode Go, Command Code를 지원합니다.
-
-### Windows에서 동작하나요?
-
-지원합니다. CLI와 다섯 Provider는 Windows CI에서 검증되며 위 PowerShell 명령으로 설치할 수 있습니다. daemon만 Unix 전용입니다.
-
-## GitHub topics
-
-공개 후 추천하는 repository topics:
-
-`claude-code`, `codex-cli`, `chatgpt`, `kimi`, `moonshot-ai`, `cursor`, `opencode`, `anthropic`, `openai`, `account-switcher`, `quota-tracker`, `ai-tools`, `rust-cli`, `automation`
-
-## 레이아웃
-
-```
-crates/
-  core/                # data model, Provider trait, CredentialStore, paths
-  cli/                 # `subswap` binary
-  daemon/              # `subswapd` binary
-  providers/
-    claude/            # Claude / Anthropic provider
-    codex/             # Codex / ChatGPT provider
-    kimi/              # Kimi / Moonshot provider
-    cursor/            # Cursor provider
-    opencode/          # OpenCode Go provider
-```
-
-## 기여
-
-Issues와 PR을 환영합니다. 참고:
-
-- `docs/`와 `AGENTS.md`의 내부 문서는 중국어입니다. 코드 주석은 중국어입니다. 사용자가 보는 모든 내용(CLI 텍스트, 오류 메시지, tracing 로그, crate description)은 영어입니다.
-- PR을 열기 전에 `cargo check --workspace`와 `cargo test --workspace`를 실행하세요.
+기여 방법과 로컬 검사는 [CONTRIBUTING.md](CONTRIBUTING.md)를 참고하세요. 공개 Issue에 자격 증명, refresh token, 로그인 파일, 실제 이메일 주소 또는 결제 화면을 올리지 마세요. 비공개 취약점 보고는 [SECURITY.md](SECURITY.md)를 참고하세요.
 
 도움이 되었다면 [star](https://github.com/x0c/subswap)를 남겨 두면 나중에 다시 찾기 쉽습니다.
 
-## License
+## 라이선스
 
-MIT — [`LICENSE`](LICENSE)를 참고하세요.
+MIT — [LICENSE](LICENSE)를 참고하세요.

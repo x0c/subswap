@@ -21,7 +21,7 @@ reqwest.workspace = true
 tracing.workspace = true
 directories.workspace = true
 chrono.workspace = true
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["process", "io-util"] }
 sha2.workspace = true
 fs2.workspace = true
 

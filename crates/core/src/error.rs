@@ -31,6 +31,12 @@ pub enum Error {
     #[error("quota fetch: {0}")]
     QuotaFetch(String),
 
+    #[error("quota fetch: 429 rate limited: {message}")]
+    QuotaRateLimited {
+        message: String,
+        retry_at: Option<chrono::DateTime<chrono::Utc>>,
+    },
+
     #[error("provider: {0}")]
     Provider(String),
 

@@ -4,3 +4,4 @@
 
 | 任务 | 状态 | 影响范围 | 开始 | 最近更新 | 备注 |
 |---|---|---|---|---|---|
+| Fix persistent Claude usage 429 with coordinated native queries | 进行中 | Claude provider, quota settings/defaults, Claude troubleshooting/Provider KB/CONFIG/architecture docs | 10:06 | 2026-10-09 10:12 | User authorized implementation; Rust/native Claude CLI; four source references inspected; no README edits |
