@@ -10,7 +10,7 @@ Two distinct Codex accounts briefly displayed the same 5-hour and 7-day remainin
 
 ## Fix and verification
 
-Require the app-server response `accountId` to match the selected account's `chatgpt_account_id`. Reject missing or mismatched IDs, try a fresh app-server (isolated when Codex is running), and then use the existing compatible-query fallback if needed. Never cache an unverified app-server result under the selected account. Unit tests cover a matching account, a different account, and a response without an account ID. The official [app-server response schema](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/json/v2/GetAccountRateLimitsResponse.json) defines the optional `accountId` field.
+Require the app-server response `accountId` to match the selected account's `chatgpt_account_id`. Reject missing or mismatched IDs and use the compatible read-only query directly. Since 1.14.6 the control socket uses WebSocket and preflights optional `workspaceRouting.chatgptAccountId`, rejecting known stale daemons before querying quota. Never cache an unverified result under the selected account. Tests cover matching, different, and missing IDs, with and without preflight identity. The official [app-server response schema](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/json/v2/GetAccountRateLimitsResponse.json) defines the optional `accountId` field.
 
 The separate issue of an already running Codex CLI continuing to use the previous account is covered by [the restart investigation](2026-09-11-codex-swap-requires-restart.md). Quota display correctness does not change the login held in an existing process.
 

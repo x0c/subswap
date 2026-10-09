@@ -70,8 +70,14 @@ pub fn parse_reset_credits(raw: &serde_json::Value) -> Vec<ResetCredit> {
                     .to_string(),
                 expires_at: c
                     .get("expires_at")
-                    .and_then(|e| e.as_str())
-                    .and_then(parse_rfc3339),
+                    .or_else(|| c.get("expiresAt"))
+                    .and_then(|value| {
+                        value.as_str().and_then(parse_rfc3339).or_else(|| {
+                            value
+                                .as_i64()
+                                .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
+                        })
+                    }),
             })
         })
         .collect()
@@ -129,5 +135,18 @@ mod tests {
     #[test]
     fn empty_without_credits_array() {
         assert!(parse_reset_credits(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn parses_official_camel_case_epoch_expiry_and_nonexpiring_credits() {
+        let raw = serde_json::json!({"credits": [
+            {"id": "a", "status": "available", "expiresAt": 1800000000, "title": null},
+            {"id": "b", "status": "available", "expiresAt": null}
+        ]});
+        let credits = parse_reset_credits(&raw);
+        assert_eq!(credits.len(), 2);
+        assert_eq!(credits[0].expires_at.unwrap().timestamp(), 1800000000);
+        assert_eq!(credits[0].title, "reset");
+        assert!(credits[1].expires_at.is_none());
     }
 }

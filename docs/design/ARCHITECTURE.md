@@ -377,14 +377,13 @@ CLI 与 daemon 共用持久 `quota_cache.json`。新鲜度 < `settings.quota.min
 | `FileBlobRuntime` adapter（纯转发，不新增逻辑） | `runtime.rs::CodexRuntime` |
 | 差异点：`store_field()→"auth_json"` / `dedup_extra_key()→"chatgpt_account_id"`（迁移前存量数据兼容） | `runtime.rs` |
 | legacy 恢复（store/live 都拿不到时从 `~/.codex/accounts/` 找回）+ 隔离物化时拷 `config.toml` | `legacy.rs::recover_legacy_auth_for_account` / `copy_codex_config_best_effort` |
-| active 官方额度查询（control socket / 临时 app-server / 安全刷新一次） | `app_server.rs::fetch_usage` / `AppServerSession::query_rate_limits` |
+| Active official quota query: Unix WebSocket control socket and identity preflight; temporary stdio app-server only when the control channel is unavailable | `control_socket.rs::fetch_usage` / `app_server.rs::fetch_usage` / `AppServerSession::query_rate_limits` |
 | parked 兼容查询 + active 官方通道 fallback + legacy 缓存回退 | `quota.rs::fetch_codex_quota` |
 | usage 解析（字段不稳定，容错） | `openai_usage.rs` |
 | `~/.codex/auth.json` opaque 透传 schema | `codex_files.rs` |
 | 路径 | `paths.rs` |
 
-> `runtime.rs::CodexRuntime::refresh` 仍返回 `Unsupported`，所以共享引擎不会自行刷新 parked 账号；
-> active 的唯一刷新入口是官方 app-server，设计边界见 Provider 知识库「Codex 官方额度通道」。
+> `runtime.rs::CodexRuntime::refresh` delegates parked-account refresh to `oauth::refresh_parked_blob` and the shared engine persists rotated tokens. Active-account refresh remains owned by the official app-server; see the Provider knowledge base for the coordination boundary.
 
 ### 7.5 文件型 OAuth 切换共享引擎（`crates/providers/common/src/`）
 

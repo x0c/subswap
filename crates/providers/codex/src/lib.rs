@@ -7,6 +7,8 @@
 
 mod app_server;
 mod codex_files;
+#[cfg(unix)]
+mod control_socket;
 mod legacy;
 mod oauth;
 mod openai_usage;

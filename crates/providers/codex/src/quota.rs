@@ -31,7 +31,7 @@ pub async fn fetch_codex_quota(access_token: &str, account: &Account) -> Result<
         .to_string();
 
     // 2. 当前账号优先复用官方 app-server 的认证状态。停用号由引擎先经
-    // `CodexRuntime::refresh`（临时 CODEX_HOME + 完整 auth blob）按需刷新，再走本兼容查询。
+    // `CodexRuntime::refresh`（OAuth + 完整 auth blob 回写）按需刷新，再走本兼容查询。
     let raw_resp = if account.active {
         match app_server::fetch_usage(&chatgpt_account_id).await {
             Ok(usage) => usage,
@@ -39,7 +39,7 @@ pub async fn fetch_codex_quota(access_token: &str, account: &Account) -> Result<
                 tracing::debug!(
                     account = %account.id,
                     error = %error,
-                    "Codex 官方额度通道不可用，回退到兼容查询"
+                    "Codex official quota channel unavailable; using compatible query"
                 );
                 openai_usage::fetch_usage_raw(access_token, &chatgpt_account_id).await?
             }
@@ -131,47 +131,72 @@ async fn reset_credit_quota(
     account: &Account,
     raw_resp: &serde_json::Value,
 ) -> Option<Quota> {
+    reset_credit_quota_with_fetch(
+        account,
+        raw_resp,
+        crate::reset_credits::fetch_reset_credits(access_token, chatgpt_account_id),
+        std::time::Duration::from_millis(settings::current().codex.reset_details_timeout_ms),
+    )
+    .await
+}
+
+async fn reset_credit_quota_with_fetch(
+    account: &Account,
+    raw_resp: &serde_json::Value,
+    fetch: impl std::future::Future<Output = Result<Vec<crate::reset_credits::ResetCredit>>>,
+    budget: std::time::Duration,
+) -> Option<Quota> {
     let count = openai_usage::reset_credits_count(raw_resp);
     if count.available == 0 {
         return None;
     }
-    let (available, reset_at, note) =
-        match crate::reset_credits::fetch_reset_credits(access_token, chatgpt_account_id).await {
-            Ok(credits) => {
-                let reset_at = credits.iter().filter_map(|c| c.expires_at).min();
-                let available = credits.len() as u64;
-                let titles: Vec<&str> = credits.iter().map(|c| c.title.as_str()).collect();
-                let mut titles = titles;
-                titles.sort_unstable();
-                titles.dedup();
-                let note = if titles.is_empty() {
-                    format!("{available} available")
-                } else {
-                    format!("{available} available: {}", titles.join("; "))
-                };
-                (available, reset_at, note)
+    let inline = raw_resp
+        .get("rate_limit_reset_credits")
+        .or_else(|| raw_resp.get("rateLimitResetCredits"));
+    let credits = if let Some(node) =
+        inline.filter(|node| node.get("credits").is_some_and(serde_json::Value::is_array))
+    {
+        Some(crate::reset_credits::parse_reset_credits(node))
+    } else if account.active || budget.is_zero() {
+        // 当前号不得为可选明细挡住主额度；官方响应只有数量时立即展示数量。
+        None
+    } else {
+        match tokio::time::timeout(budget, fetch).await {
+            Ok(Ok(credits)) => Some(credits),
+            result => {
+                tracing::debug!(account = %account.id, timed_out = result.is_err(), "Codex reset credit details unavailable; preserving count");
+                None
             }
-            Err(error) => {
-                tracing::debug!(
-                    account = %account.id,
-                    error = %error,
-                    "Codex 重置明细查询失败，仅展示数量"
-                );
-                (
-                    count.available,
-                    None,
-                    format!("{} available (details unavailable)", count.available),
-                )
+        }
+    };
+    let credits = credits.unwrap_or_default();
+    // 官方可能裁剪明细，条目数不能覆盖权威计数，也不能声称未知条目不存在更早到期。
+    let complete = credits.len() as u64 == count.available;
+    let reset_at = complete
+        .then(|| credits.iter().filter_map(|c| c.expires_at).min())
+        .flatten();
+    let mut titles: Vec<&str> = credits.iter().map(|c| c.title.as_str()).collect();
+    titles.sort_unstable();
+    titles.dedup();
+    let note = if titles.is_empty() {
+        format!("{} available (details unavailable)", count.available)
+    } else {
+        format!(
+            "{} available: {}{}",
+            count.available,
+            titles.join("; "),
+            if complete {
+                ""
+            } else {
+                " (details incomplete)"
             }
-        };
-    if available == 0 {
-        return None;
-    }
+        )
+    };
     Some(Quota {
         provider: PROVIDER_ID.into(),
         account_id: account.id.clone(),
         window: QuotaWindow::ResetCredits,
-        used: available,
+        used: count.available,
         limit: 0,
         reset_at,
         status: QuotaStatus::Ok,
@@ -192,6 +217,119 @@ fn quota_window_for_usage_window(minutes: Option<u64>, seconds: Option<u64>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn account(active: bool) -> Account {
+        serde_json::from_value(serde_json::json!({
+            "provider": "codex", "id": "test", "label": "user@example.com", "active": active,
+            "created_at": "2026-10-09T00:00:00Z", "last_used_at": null, "extra": {}
+        }))
+        .unwrap()
+    }
+
+    async fn must_not_fetch() -> Result<Vec<crate::reset_credits::ResetCredit>> {
+        panic!("optional HTTP request must not be polled")
+    }
+
+    #[tokio::test]
+    async fn active_count_only_response_never_waits_for_an_extra_request() {
+        let raw = serde_json::json!({"rate_limit_reset_credits": {"available_count": 1}});
+        let quota = reset_credit_quota_with_fetch(
+            &account(true),
+            &raw,
+            must_not_fetch(),
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(quota.used, 1);
+        assert!(quota.reset_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn inline_details_are_reused_and_capped_rows_do_not_reduce_the_count() {
+        for (count, known_expiry) in [(1, true), (2, false)] {
+            let raw = serde_json::json!({"rate_limit_reset_credits": {
+                "available_count": count,
+                "credits": [{"id": "reset", "status": "available", "expiresAt": 1800000000, "title": "Reset"}]
+            }});
+            let quota = reset_credit_quota_with_fetch(
+                &account(false),
+                &raw,
+                must_not_fetch(),
+                std::time::Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+            assert_eq!(quota.used, count);
+            assert_eq!(quota.reset_at.is_some(), known_expiry);
+            if known_expiry {
+                assert_eq!(quota.reset_at.unwrap().timestamp(), 1800000000);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_inline_rows_preserve_nonzero_count_without_fetching_again() {
+        let raw =
+            serde_json::json!({"rate_limit_reset_credits": {"available_count": 2, "credits": []}});
+        let quota = reset_credit_quota_with_fetch(
+            &account(false),
+            &raw,
+            must_not_fetch(),
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(quota.used, 2);
+        assert!(quota.reset_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn zero_count_never_fetches_details() {
+        let quota = reset_credit_quota_with_fetch(
+            &account(false),
+            &serde_json::json!({}),
+            must_not_fetch(),
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+        assert!(quota.is_none());
+    }
+
+    #[tokio::test]
+    async fn stalled_parked_details_return_count_within_their_budget() {
+        let raw = serde_json::json!({"rate_limit_reset_credits": {"available_count": 3}});
+        let quota = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            reset_credit_quota_with_fetch(
+                &account(false),
+                &raw,
+                std::future::pending(),
+                std::time::Duration::from_millis(20),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(quota.used, 3);
+        assert!(quota.reset_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_parked_details_do_not_hide_resets() {
+        let raw = serde_json::json!({"rate_limit_reset_credits": {"available_count": 2}});
+        let fetch = async { Err(Error::QuotaFetch("HTTP 429 rate limited".into())) };
+        let quota = reset_credit_quota_with_fetch(
+            &account(false),
+            &raw,
+            fetch,
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(quota.used, 2);
+        assert!(quota.reset_at.is_none());
+    }
 
     #[test]
     fn epoch_seconds_vs_millis() {
