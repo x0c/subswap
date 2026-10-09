@@ -196,6 +196,23 @@ pub async fn refresh_access_token(
 mod tests {
     use super::*;
 
+    #[test]
+    fn retry_after_accepts_both_forms_without_overflow_or_zero_retry() {
+        let now = Utc::now();
+        assert_eq!(
+            retry_after("7200", now),
+            Some(now + chrono::Duration::hours(2))
+        );
+        let future = now + chrono::Duration::hours(3);
+        assert_eq!(
+            retry_after(&future.to_rfc2822(), now).unwrap().timestamp(),
+            future.timestamp()
+        );
+        for value in ["0", "-1", "garbage", "9223372036854775807"] {
+            assert!(retry_after(value, now).is_none());
+        }
+    }
+
     /// 2026-07 线上真实响应片段：`used_credits` 是小数、多出一批未知窗口字段。
     /// 旧的 `Option<u64>` 会在这里解崩，导致整份响应 parse 失败、额度永远查不出。
     #[test]

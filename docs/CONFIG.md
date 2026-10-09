@@ -53,6 +53,8 @@ Windows: %APPDATA%\subswap\subswap\config\config.toml
 | `daemon.idle_poll_interval_ms` | `900000` | 毫秒 | 空闲时轮询间隔 |
 | `codex.usage_cache_max_age_ms` | `600000` | 毫秒 | wham/usage 字段漂移时，允许使用本地 last_usage 缓存的最大年龄 |
 | `codex.reset_details_timeout_ms` | `1000` | ms | Maximum wait for optional parked-account reset-credit details; `0` skips the extra request. Active accounts only reuse inline official details, so optional HTTP requests never delay their main quotas. |
+| `claude.usage_min_refresh_interval_ms` | `180000` | ms | Minimum interval between Claude network usage queries, also bounded by `quota.min_refresh_interval_ms`. A per-account persistent reservation coordinates CLI and daemon; fresh official snapshots add no request. |
+| `claude.usage_rate_limit_backoff_ms` | `1800000` | ms | Conservative minimum wait after Claude 429 or a native usage response with no limits. A later server `Retry-After` deadline wins, even beyond the generic 15-minute cap. |
 
 ## 示例：放慢 daemon
 
@@ -68,7 +70,7 @@ idle_poll_interval_ms = 1800000     # 空闲 30 分钟一轮
 - `auto_swap.threshold` 设过低（如 0.5）→ 容易飘出 `Degraded`（两个号都过阈值，policy 不再切，需要手动 swap）。
 - `quota.fetch_retries` 最大按 5 次生效；401/403/429 不重试，其余失败按 `quota.fetch_retry_delay_ms` 指数退避。
 - `quota.fetch_timeout_ms` 不要压到 Codex app-server / Kimi 自愈完成时间以下，否则会误报 `timeout after N attempts`。
-- `quota.min_refresh_interval_ms` / `quota.failure_backoff_max_ms` 调小 → Anthropic usage 端点（实测每账号约每分钟仅放行 1 次）更容易被打爆返回 429，且失败账号会持续重打。除非确认端点限流放宽，否则不要下调。
+- Reducing quota or Claude-specific intervals increases contention with native clients. Historical per-minute observations are not a guaranteed Anthropic allowance; account-specific and hour-scale limits have been reported. Claude's durable retry deadline remains authoritative even if the shared cache is overwritten by another process.
 - `daemon.poll_interval_ms` 设过短（< 30s）→ wham/usage 高频请求可能触风控。
 - `daemon.idle_*` 的初衷是「用户真没在用 AI 时别打 quota 请求」，**不要**通过缩小 `idle_threshold_ms` 把空闲化掉。
 

@@ -342,6 +342,15 @@ pub fn compact_error(err: &str) -> String {
     if lower.contains("re-login") || lower.contains("invalid_grant") {
         return "needs re-login".into();
     }
+    if lower.contains("credential expired") {
+        return "credentials expired; open native client".into();
+    }
+    if lower.contains("usage unavailable") {
+        return "usage unavailable".into();
+    }
+    if lower.contains("quota query already in progress") {
+        return "usage refresh in progress".into();
+    }
     if lower.contains("401")
         || lower.contains("unauthorized")
         || lower.contains("authentication")
@@ -666,6 +675,24 @@ mod tests {
         assert_eq!(
             compact_error("refresh returned 400 Bad Request: {\"error\":\"invalid_grant\"}"),
             "needs re-login"
+        );
+    }
+
+    #[test]
+    fn compact_error_distinguishes_expiry_unknown_and_throttling() {
+        assert_eq!(
+            compact_error("quota fetch: Claude credential expired; official usage unavailable"),
+            "credentials expired; open native client"
+        );
+        assert_eq!(
+            compact_error(
+                "quota fetch: Claude usage unavailable; native client returned no limits"
+            ),
+            "usage unavailable"
+        );
+        assert_eq!(
+            compact_error("quota fetch: 429 rate limited: usage endpoint throttled"),
+            "429 rate limited"
         );
     }
 

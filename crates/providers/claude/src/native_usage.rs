@@ -184,4 +184,29 @@ mod tests {
         assert!(!supported_version("2.1.168 (Claude Code)"));
         assert!(!supported_version("unknown"));
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn control_session_initializes_and_sends_only_usage_without_history_scan() {
+        let script = r#"
+import sys,json
+a=json.loads(sys.stdin.readline())
+assert a['request']['subtype']=='initialize'
+print(json.dumps({'type':'control_response','response':{'subtype':'success','request_id':a['request_id'],'response':{}}}),flush=True)
+b=json.loads(sys.stdin.readline())
+assert b['type']=='control_request' and b['request']=={'subtype':'get_usage','skip_behaviors':True}
+print(json.dumps({'type':'control_response','response':{'subtype':'success','request_id':b['request_id'],'response':{'rate_limits_available':True,'rate_limits':{'five_hour':{'utilization':23}}}}}),flush=True)
+"#;
+        let mut child = Command::new("python3")
+            .args(["-u", "-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let usage = query(&mut child).await.unwrap();
+        assert_eq!(usage.five_hour.unwrap().utilization, Some(23.0));
+        assert!(child.wait().await.unwrap().success());
+    }
 }
