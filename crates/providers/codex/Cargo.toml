@@ -25,3 +25,7 @@ chrono.workspace = true
 sha2.workspace = true
 tokio = { workspace = true, features = ["io-util", "process", "net", "macros", "rt"] }
 tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }

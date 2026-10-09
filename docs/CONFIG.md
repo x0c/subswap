@@ -52,6 +52,7 @@ Windows: %APPDATA%\subswap\subswap\config\config.toml
 | `daemon.idle_threshold_ms` | `1800000` | 毫秒 | provider probe 文件 mtime 距今超过此值视为「用户没在用」 |
 | `daemon.idle_poll_interval_ms` | `900000` | 毫秒 | 空闲时轮询间隔 |
 | `codex.usage_cache_max_age_ms` | `600000` | 毫秒 | wham/usage 字段漂移时，允许使用本地 last_usage 缓存的最大年龄 |
+| `codex.reset_details_timeout_ms` | `1000` | ms | Maximum wait for optional parked-account reset-credit details; `0` skips the extra request. Active accounts only reuse inline official details, so optional HTTP requests never delay their main quotas. |
 
 ## 示例：放慢 daemon
 

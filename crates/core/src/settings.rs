@@ -105,6 +105,8 @@ pub struct Daemon {
 pub struct Codex {
     /// 旧版 Codex 本地 last_usage 缓存允许使用的最大年龄。仅作字段漂移兜底。
     pub usage_cache_max_age_ms: i64,
+    /// 停用账号可选重置明细的查询预算；当前号只复用官方同次响应。
+    pub reset_details_timeout_ms: u64,
 }
 
 impl Default for AutoSwap {
@@ -155,6 +157,7 @@ impl Default for Codex {
     fn default() -> Self {
         Self {
             usage_cache_max_age_ms: defaults::CODEX_USAGE_CACHE_MAX_AGE_MS,
+            reset_details_timeout_ms: defaults::CODEX_RESET_DETAILS_TIMEOUT_MS,
         }
     }
 }
@@ -267,6 +270,19 @@ mod tests {
         let path = tmp.path().join("config.toml");
         let s = load_from(&path).unwrap();
         assert_eq!(*s, Settings::default());
+    }
+
+    #[test]
+    fn codex_reset_detail_budget_is_optional_and_can_be_disabled() {
+        let old: Settings = toml::from_str("[codex]\nusage_cache_max_age_ms = 1234\n").unwrap();
+        assert_eq!(old.codex.usage_cache_max_age_ms, 1234);
+        assert_eq!(old.codex.reset_details_timeout_ms, 1000);
+        let disabled: Settings = toml::from_str("[codex]\nreset_details_timeout_ms = 0\n").unwrap();
+        assert_eq!(disabled.codex.reset_details_timeout_ms, 0);
+        assert_eq!(
+            disabled.codex.usage_cache_max_age_ms,
+            defaults::CODEX_USAGE_CACHE_MAX_AGE_MS
+        );
     }
 
     #[test]

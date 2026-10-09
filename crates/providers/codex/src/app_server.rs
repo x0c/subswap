@@ -1,6 +1,6 @@
 //! 通过官方 Codex app-server 查询**当前号**额度。
 //!
-//! 优先代理到现有控制通道，共享官方客户端进程内的最新认证状态；没有控制通道时也会短暂
+//! 优先通过 WebSocket 连接现有控制通道，共享官方客户端进程内的最新认证状态；没有控制通道时也会短暂
 //! 启动独立 app-server。若普通 Codex 正在运行，只调用官方额度查询，不再额外发起强制刷新；
 //! 明确没有并发客户端时，认证失败才允许显式刷新并重试。
 //!
@@ -32,22 +32,15 @@ pub async fn fetch_usage(expected_account_id: &str) -> Result<Value> {
     let binary = codex_binary();
 
     if tokio::fs::metadata(&socket).await.is_ok() {
-        match query_command(
-            &binary,
-            &["app-server", "proxy", "--sock"],
-            Some(&socket),
-            &home,
-            true,
-            expected_account_id,
-        )
-        .await
-        {
+        match query_control_socket(&socket, expected_account_id).await {
             Ok(usage) => return Ok(usage),
+            // 旧 daemon 的登录态不能代表 live，直接让调用方用当前 access 做只读兼容查询。
+            Err(error) if error.is::<AccountMismatch>() => return Err(error),
             Err(error) if !allows_compat_fallback(&error) => return Err(error),
             Err(error) => tracing::debug!(
                 socket = %socket.display(),
                 error = %error,
-                "Codex 控制通道查询失败"
+                "Codex control socket query failed"
             ),
         }
     }
@@ -74,6 +67,18 @@ pub async fn fetch_usage(expected_account_id: &str) -> Result<Value> {
         )
         .await
     }
+}
+
+#[cfg(unix)]
+async fn query_control_socket(socket: &Path, expected_account_id: &str) -> Result<Value> {
+    crate::control_socket::fetch_usage(socket, expected_account_id).await
+}
+
+#[cfg(not(unix))]
+async fn query_control_socket(_socket: &Path, _expected_account_id: &str) -> Result<Value> {
+    Err(anyhow!(
+        "Codex Unix control socket unavailable on this platform"
+    ))
 }
 
 /// 只有通道不可用、认证失败或协议不兼容时才允许兼容回退；限流及其他官方服务错误原样返回。
@@ -347,20 +352,20 @@ fn executable_file_busy(_error: &std::io::Error) -> bool {
 type RpcResult<T> = std::result::Result<T, RpcFailure>;
 
 #[derive(Debug)]
-struct RpcFailure {
+pub(super) struct RpcFailure {
     message: String,
     remote: bool,
 }
 
 impl RpcFailure {
-    fn transport(error: anyhow::Error) -> Self {
+    pub(super) fn transport(error: anyhow::Error) -> Self {
         Self {
             message: error.to_string(),
             remote: false,
         }
     }
 
-    fn remote(error: Value) -> Self {
+    pub(super) fn remote(error: Value) -> Self {
         Self {
             message: error.to_string(),
             remote: true,
@@ -377,7 +382,7 @@ impl RpcFailure {
             .any(|needle| message.contains(needle))
     }
 
-    fn is_method_unsupported(&self) -> bool {
+    pub(super) fn is_method_unsupported(&self) -> bool {
         if !self.remote {
             return false;
         }
@@ -406,6 +411,7 @@ struct RateLimitsResponse {
 #[serde(rename_all = "camelCase")]
 struct RateLimitResetCredits {
     available_count: Option<u64>,
+    credits: Option<Vec<Value>>,
 }
 
 #[derive(Deserialize)]
@@ -422,14 +428,23 @@ struct RateLimitWindow {
     resets_at: Option<i64>,
 }
 
-fn rate_limits_to_usage(result: Value, expected_account_id: &str) -> Result<Value> {
+#[derive(Debug)]
+pub(super) struct AccountMismatch;
+
+impl std::fmt::Display for AccountMismatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Codex app-server usage account does not match active account")
+    }
+}
+
+impl std::error::Error for AccountMismatch {}
+
+pub(super) fn rate_limits_to_usage(result: Value, expected_account_id: &str) -> Result<Value> {
     let response: RateLimitsResponse = serde_json::from_value(result)
         .context("Codex rate-limit response has an unsupported shape")?;
     // 常驻 app-server 可能仍持有切号前的登录态；缺归属也不能贴当前账号标签。
     if response.account_id.as_deref() != Some(expected_account_id) {
-        return Err(anyhow!(
-            "Codex app-server usage account does not match active account"
-        ));
+        return Err(AccountMismatch.into());
     }
     let mut usage = serde_json::Map::new();
     if let Some(primary) = response.rate_limits.primary {
@@ -438,14 +453,11 @@ fn rate_limits_to_usage(result: Value, expected_account_id: &str) -> Result<Valu
     if let Some(secondary) = response.rate_limits.secondary {
         usage.insert("secondary".into(), window_to_usage(secondary));
     }
-    // 重置道具只有计数、无明细，转写成 wham 的 snake_case 键供下游统一解析。
-    if let Some(available) = response
-        .rate_limit_reset_credits
-        .and_then(|credits| credits.available_count)
-    {
+    // 保留官方同次响应的明细，避免为可选展示再串行请求一次。
+    if let Some(credits) = response.rate_limit_reset_credits {
         usage.insert(
             "rate_limit_reset_credits".into(),
-            json!({ "available_count": available }),
+            json!({ "available_count": credits.available_count, "credits": credits.credits }),
         );
     }
     if usage.is_empty() {

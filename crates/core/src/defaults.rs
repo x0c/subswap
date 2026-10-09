@@ -60,6 +60,8 @@ pub const QUOTA_EXHAUSTED_PCT: f64 = 100.0;
 ///
 /// 仅作为兼容兜底；过期缓存不参与展示/自动切换，避免 stale quota 误导策略。
 pub const CODEX_USAGE_CACHE_MAX_AGE_MS: i64 = 10 * 60 * 1000;
+/// 停用 Codex 账号可选重置明细的最大等待时间。
+pub const CODEX_RESET_DETAILS_TIMEOUT_MS: u64 = 1_000;
 
 /// 单次 quota 查询 attempt 的超时（毫秒）。
 ///

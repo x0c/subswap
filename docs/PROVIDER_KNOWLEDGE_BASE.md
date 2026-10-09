@@ -201,7 +201,7 @@ JSON（`subswap list --json`）序列化：`"flat"` / `"metered"` / `"unlimited"
 
 active **不首选**兼容 HTTP：先经官方 `codex app-server` JSONL 调 `account/rateLimits/read`，优先复用 `<CODEX_HOME>/app-server-control/app-server-control.sock`。parked 无法安全物化完整官方认证 → 仍走 `wham/usage`。
 
-The app-server response is usable only when its `accountId` matches the registry account's `chatgpt_account_id`. A control socket may belong to a Codex process that started before a swap and still holds the previous login. A missing or different `accountId` makes subswap try a fresh app-server (isolated when Codex is running), then the compatible usage query if needed; it must never cache that response under the new account. See [the cloned-quota investigation](troubleshooting/2026-09-25-codex-quota-cloned-after-swap.md).
+The app-server response is usable only when its `accountId` matches the registry account's `chatgpt_account_id`. A control socket may belong to a Codex process that started before a swap and still holds the previous login. Connect with WebSocket directly, initialize with the official handshake, and preflight `account/read {refreshToken:false}` using optional `workspaceRouting.chatgptAccountId`. Reject a known stale identity before requesting quota; always verify the final quota `accountId`. Missing or different response identity goes directly to the compatible read-only query using the selected account's access token, without spawning another process or refreshing the stale account. See [the cloned-quota investigation](troubleshooting/2026-09-25-codex-quota-cloned-after-swap.md) and [active-query latency](troubleshooting/2026-10-09-codex-active-quota-loading.md).
 
 ### Usage 响应字段（不稳定）
 
@@ -225,10 +225,10 @@ subswap 只读展示数量与最早过期，不代为消耗。
 
 - 请求头与 usage 相同：`Authorization: Bearer <access_token>` + `ChatGPT-Account-Id` + 浏览器风格 `User-Agent`。
 - 计数零请求：`wham/usage` 的 `rate_limit_reset_credits.{available_count, applicable_available_count}`
-  （app-server `account/rateLimits/read` 为 camelCase `rateLimitResetCredits.availableCount`，只有计数）。
+  （app-server `account/rateLimits/read` 为 camelCase `rateLimitResetCredits.availableCount`，可同时带 `credits` 明细）。
   `available_count == 0` 或缺失 → 不发明细请求、不显示 reset 列。
-- 明细（仅 `available_count > 0` 时发）：`credits[]` 每项取 `id / status / reset_type / granted_at / expires_at / title`；
-  只认 `status == "available"` 的，`reset_at` 取最早 `expires_at`。
+- Details first reuse inline `credits[]` from the quota response. Active accounts never make an extra detail HTTP request; missing details show the known count with unknown expiration. Parked accounts may query the detail endpoint only when the count is positive and inline rows are absent, bounded by `codex.reset_details_timeout_ms` (default 1000 ms; zero skips).
+- Only `status == "available"` rows are used. Parse snake_case RFC3339 `expires_at` and official camelCase epoch-second `expiresAt`. Preserve the authoritative count if rows are capped, empty, or invalid; only display earliest expiration when all available rows are present.
 - 映射：`available > 0` 时多一个 `QuotaWindow::ResetCredits` 窗口（`used` = 可用数，`limit` = 0，
   `reset_at` = 最早过期，`note` = 标题与过期摘要）；`0` 时整列隐藏（多数账号无 reset，避免噪音）。
   默认入口标签 `RS`（如 `RS [1 reset exp in 29d]`）；`subswap --json` 的 quotas 数组带同字段。
@@ -271,7 +271,7 @@ subswap 只读展示数量与最早过期，不代为消耗。
 
 subswap **不实现 OpenAI OAuth 去抢刷当前号（active）**。active 刷新只委托官方 app-server：
 
-1. 控制 socket 存在 → `codex app-server proxy --sock <socket>` 复用运行中认证状态。
+1. Control socket present: connect directly with WebSocket, initialize, preflight optional workspace identity without forced refresh, then read quotas and verify `accountId`. An account mismatch immediately uses the compatible read-only HTTP query; do not ask a stale daemon to refresh. `codex app-server proxy` only relays raw bytes and cannot turn JSONL into WebSocket.
 2. 无 socket、确认无普通 Codex 进程 → 可短暂 `codex app-server --stdio`；先读额度；仅官方认证失败时 `account/read {refreshToken:true}` 强刷一次再重试额度一次。
 3. 无 socket、但普通 Codex 在跑 → 仍可启临时 app-server，用 `0600` 临时 `CODEX_HOME`，只复制 live `auth.json` **并清空 refresh token**（能用现有 access，绝不与运行中 Codex 抢刷）。
 4. 官方不可用/认证失败/方法不支持 → 回退 `wham/usage`；官方 429 与其它服务错误**原样返回，禁止二次回退再打**。

@@ -2,6 +2,7 @@
 
 | 文档 | 何时该读 |
 |---|---|
+| [Active Codex quota stays loading](2026-10-09-codex-active-quota-loading.md) | Codex Unix WebSocket protocol mismatch, stale daemon identity, and reset-credit detail requests delaying the active account. |
 | [2026-09-29 OpenCode 换号/切模型后 `encrypted_content was not issued to this caller`](2026-09-29-opencode-reasoning-encrypted-content-caller.md) | OpenCode（含 Muse Spark 经 Zen）多轮报 400 `encrypted_content was not issued to this caller`、重试必现；或 `subswap swap` 切 `opencode-go` 号后沿用旧 OpenCode 会话前必读 |
 | [2026-09-29 Healthy-account automatic swaps across providers](2026-09-29-codex-auto-swap-with-healthy-accounts.md) | Healthy Codex/OpenCode swaps caused by quota completion order; v1.11.1 correction requires confirmed need and a usable target across all providers, including failure/stale/unknown boundaries. |
 | [2026-09-11 Codex 已切换但对话仍用旧号 / 以为没自动切号](2026-09-11-codex-swap-requires-restart.md) | Codex 手动或自动切号后客户端仍是旧号、误以为「没做 Codex 自动切」、或排查「能不能热切不重启 / 要不要装热补丁」前必读 |

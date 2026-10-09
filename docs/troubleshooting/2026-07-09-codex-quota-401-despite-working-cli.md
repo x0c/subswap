@@ -10,7 +10,7 @@
 
 ## 当前修复（active）
 
-1. `<CODEX_HOME>/app-server-control/app-server-control.sock` 存在 → `codex app-server proxy --sock <socket>`，JSONL RPC `account/rateLimits/read`。
+1. `<CODEX_HOME>/app-server-control/app-server-control.sock` 存在 → 直接通过 WebSocket 连接，初始化后调用 `account/rateLimits/read`。旧的 `proxy` + JSONL 路径与 Codex 0.161.0 不兼容，会固定等待 8 秒；身份不符直接走所选账号的只读兼容查询。见 [active-query latency](2026-10-09-codex-active-quota-loading.md)。
 2. 无 socket 且无普通 Codex 进程 → 短暂 `codex app-server --stdio`；认证明确失败时 `account/read {refreshToken:true}` 强刷一次再重试。
 3. 无 socket 但普通 Codex 在跑 → 临时 app-server + `0600` 临时 `CODEX_HOME`：复制 live `auth.json` 后**清空 refresh**（可试现有 access，不可能抢刷）。
 4. 官方通道不可用时才回退 `wham/usage`；官方 429/服务错误**直接返回，不再 fallback 第二条请求**。
