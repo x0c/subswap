@@ -76,18 +76,18 @@ Token 刷新体：`{"grant_type":"refresh_token","refresh_token":"...","client_i
 
 **429 是 usage 端点真实极严限流**（有效 token 间隔约 4s 仍 `200→429→429` + `retry-after`），不是鉴权伪装。完整排查：[troubleshooting/2026-06-14](troubleshooting/2026-06-14-claude-quota-unqueryable-429-vs-invalid-grant.md)。
 
-Research update (2026-10-09): the historical one-request-per-minute observation is not an official allowance. Upstream reports include hour-scale blocks, busy-account 429 across fresh tokens/request identities, and optional official statusline readings that add no usage request. An expired active credential can coexist with a cached 429; 429 does not validate the credential. Current code also drops `Retry-After`. Evidence, limitations, and proposed alternatives: [persistent Claude usage 429](troubleshooting/2026-10-09-claude-persistent-usage-429.md). The research does not enable a new query or refresh path.
+Research and implementation update (2026-10-09): the historical one-request-per-minute observation is not an official allowance. An expired active credential can coexist with a cached 429; 429 does not validate the credential. Active queries now prefer a fresh, UUID-matched official snapshot, then use Claude Code's initialized structured usage channel (2.1.169+). The native client owns credential recovery. A null native reading is unavailable, not fabricated 429 or zero quota, and never triggers a direct HTTP fallback. Parked queries check expiry before usage and retain guarded refresh. Per-account persistent reservations/results coordinate CLI and daemon, with a three-minute default interval and 30-minute minimum wait after 429 or native empty readings. Direct responses retain seconds/date `Retry-After`; a later server deadline overrides the generic cap. Evidence and remaining boundaries: [persistent Claude usage 429](troubleshooting/2026-10-09-claude-persistent-usage-429.md).
 
 | 信号 | 端点/状态 | 含义 | 处理 |
 |---|---|---|---|
-| `429 rate_limit_error` | usage 429 + `retry-after` | 约**每账号每分钟 1 次** | 缓存节流，**不是**重登 |
+| `429 rate_limit_error` | usage 429 + `retry-after` | Usage collection throttled; no fixed published allowance | Persist deadline and coordinate collectors; 429 alone does not require login |
 | `invalid_grant` | refresh `/v1/oauth/token` 400 | parked refresh 已死 | 死 token 守卫 + 重登 |
 | `401` | usage 401 | active live 过期、Claude Code 未刷 | 开一次 Claude Code；subswap 不刷 active；失败退避最多保留 90s |
 | `bad response` | usage **200** 但 parse 失败 | 响应结构漂移 | 补宽容解析；能走到 parse = 鉴权/限流 OK |
 | 空 access token | 本地凭据 | 登录/切换中间态回灌不完整 | 不发 usage，显示 `needs re-login`；回灌保留 store 完整副本 |
 
 **缓存节流**（`crates/cli/src/cmd/default.rs` + `crates/daemon/src/unix.rs::build_snapshots`）：
-daemon 与 CLI **共用** `quota_cache.json`；`QuotaCache::fresh()` 比 `settings.quota.min_refresh_interval_ms`（默认 90s，> daemon 60s 轮询）新则复用、不打端点 → 每账号 ~90s 一次。
+daemon 与 CLI **共用** `quota_cache.json`；`QuotaCache::fresh()` 比 `settings.quota.min_refresh_interval_ms`（默认 90s）新则复用。Claude additionally coordinates network queries and deadlines through `<cache_dir>/claude-usage/<account-hash>.json` and file locks; its default network floor is three minutes. A pending reservation survives cancellation/process exit. Fresh native snapshots require both matching email/UUID and a valid observation time/reset boundary.
 
 **失败退避**（`QuotaCache::record_failure` / `in_failure_backoff`）：
 成功缓存不覆盖失败路径。失败记 `failures`，退避 `min_refresh × 2^(连续失败-1)`，封顶 `settings.quota.failure_backoff_max_ms`（默认 15 分钟）；成功清零。

@@ -37,6 +37,22 @@ pub struct Lease {
     min_interval_ms: u64,
 }
 
+/// 停用号凭据轮换与查询共用同一账号边界；不适用于 active 账号。
+pub fn refresh_lock(root: &Path, id: &str) -> Result<File> {
+    std::fs::create_dir_all(root)?;
+    let key = format!("{:x}", Sha256::digest(id.as_bytes()));
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(root.join(format!("{key}.refresh.lock")))?;
+    fs2::FileExt::try_lock_exclusive(&lock).map_err(|_| {
+        Error::QuotaFetch("Claude parked credential refresh already in progress".into())
+    })?;
+    Ok(lock)
+}
+
 fn after(now: DateTime<Utc>, ms: u64) -> DateTime<Utc> {
     now.checked_add_signed(Duration::milliseconds(ms.min(i64::MAX as u64) as i64))
         .unwrap_or(DateTime::<Utc>::MAX_UTC)

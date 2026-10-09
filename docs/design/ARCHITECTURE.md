@@ -348,7 +348,9 @@ CLI 与 daemon 共用持久 `quota_cache.json`。新鲜度 < `settings.quota.min
 
 | 职责 | 函数 / 文件 |
 |---|---|
-| 拉 quota（401 时进程内 best-effort 刷新并重试一次） | `lib.rs::ClaudeProvider::query_quota` |
+| Claude quota orchestration, passive native cache and parked expiry preflight | `lib.rs::ClaudeProvider::query_quota` / `query_usage` / `cached_native_usage` |
+| Active official structured usage, initialized control session; no model messages or HTTP fallback | `native_usage.rs::fetch` |
+| Account-scoped reservations, shared results and retry deadlines; parked refresh lock | `usage_poll.rs::begin` / `Lease::finish` / `refresh_lock` |
 | 手动切换（阶段1 best-effort 预刷新，失败只 warn 不阻塞） | `lib.rs::activate` + `lib.rs::best_effort_pre_refresh` |
 | daemon 保活：仅临近过期才刷 | `lib.rs::refresh_if_near_expiry` |
 | 显式无条件刷新 | `lib.rs::refresh_account` |
