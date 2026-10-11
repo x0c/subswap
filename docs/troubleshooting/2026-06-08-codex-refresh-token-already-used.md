@@ -26,6 +26,8 @@ Refresh token **一次性轮换**。旧 subswap 与原生客户端各自独立�
 
 Codex 无后台刷新，只需机制 1。
 
+Shared snapshot-coordination rules now live in the agent CLI integration guide ([Third-party CLI credential coordination](~/.config/agentsync/docs/AGENT_TOOL_CLI_INTEGRATION_GUIDE.md#third-party-cli-credential-coordination-optional-snapshot-coordination-design-only)): native owns active, capture-on-leave with snapshot-first and rollback, terminal-grant-errors stop only that copy. Provider mechanics and recovery steps stay here.
+
 ## 用户侧恢复
 
 原生客户端重登一次（`codex login` / Claude Code），subswap 再 import。

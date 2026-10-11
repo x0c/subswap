@@ -309,6 +309,8 @@ parked 查额度前由引擎调 `runtime.refresh()`：`CodexRuntime::refresh` �
 
 改 `activate` / keepalive / `query_quota` 自愈时须维持：不在后台刷 active、不把陈旧 token 写回 live。
 
+Portable subset: [Third-party CLI credential coordination](~/.config/agentsync/docs/AGENT_TOOL_CLI_INTEGRATION_GUIDE.md#third-party-cli-credential-coordination-optional-snapshot-coordination-design-only).
+
 ### auth.json schema 不稳定（透传策略）
 
 不绑定具体 schema（经历过 v2→v3→v4）：

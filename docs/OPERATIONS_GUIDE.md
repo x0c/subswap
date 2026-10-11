@@ -172,6 +172,8 @@ Windows release 只有 CLI，文档和安装脚本都不得暗示包含后台 da
 - 改配置字段或默认值：同步 `docs/CONFIG.md`；确认默认值只从 `crates/core/src/defaults.rs` 或 settings 入口读取。
 - 改 release 产物或版本：跑 locked release build，安装到本机，验证版本与哈希，再走 tag 和 GitHub Release；发布前确认每个 README 承诺平台都有资产与校验和、Windows draft 安装验收通过、Release notes 可供用户阅读。
 
+Shared optional acceptance procedures now live in the agent-friendly-cli skill ([Optional acceptance procedures](~/.config/agentsync/skills/agent-friendly-cli/references/verification.md#optional-acceptance-procedures-observed-contracts-not-mandates)): hermetic helper, fake-scope honesty, handshake checks, binary-path verification, eval sets. Product routine stays here.
+
 ## 未确认项
 
 - 本次 doc-init 未真实执行 release 构建、本机覆盖安装或 daemon 冒烟；本次文档改动已用文档 lint、`cargo check --workspace` 和 `cargo test --workspace` 验证。

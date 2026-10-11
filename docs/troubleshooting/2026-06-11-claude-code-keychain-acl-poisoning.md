@@ -35,6 +35,8 @@ Keychain item ACL 只信任「创建/写入它的那个应用」。
 
 > **永远不要用 `keyring` crate 写 `Claude Code-credentials`。** 必须 fork `/usr/bin/security`，保证创建者与 Claude Code 读取方一致。
 
+Shared owner-flow fidelity now lives in the agent CLI integration guide ([Third-party CLI credential coordination](~/.config/agentsync/docs/AGENT_TOOL_CLI_INTEGRATION_GUIDE.md#third-party-cli-credential-coordination-optional-snapshot-coordination-design-only)): follow the owner documented flow with its least-destructive policy. Keychain commands, item names and fix transcripts stay here.
+
 ## 验证
 
 ```bash
