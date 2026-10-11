@@ -33,6 +33,8 @@ live 缺 refresh 而 store 有非空 refresh → 跳过用更差快照覆盖。
 
 机制见 PROVIDER_KB「Refresh token 轮换与 capture-on-leave」。
 
+Shared monotonic capture-back now lives in the agent CLI integration guide ([Third-party CLI credential coordination](~/.config/agentsync/docs/AGENT_TOOL_CLI_INTEGRATION_GUIDE.md#third-party-cli-credential-coordination-optional-snapshot-coordination-design-only)): complete stored copies are never overwritten by less-complete snapshots within one verified epoch. Key layout, tables and backoff constants stay here.
+
 ## 关联
 
 - [2026-06-08](2026-06-08-codex-refresh-token-already-used.md)：不能抢刷 active。

@@ -27,6 +27,6 @@ if let Some(parent) = home.parent() {
 
 ## 通用经验
 
-跨目录路径函数：不能默认 home 是 `~/.claude`、不能默认上级可写；自定义目录优先就近。
+See [desktop config locations](~/.config/agentsync/docs/DESKTOP_APP_CONFIG_LOCATION_GUIDE.md) rule 必须-6 for the portable effective-root rule; the paths.rs algorithm, unit test and smoke evidence stay local.
 
 <!-- 该文档整理/压缩于 2026-09-05 -->

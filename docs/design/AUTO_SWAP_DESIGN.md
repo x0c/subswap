@@ -175,4 +175,6 @@ poll_interval_ms = 60000
 - Nested stacked windows (2026-10-08): active `5h Ok + 7d Exhausted` vs candidate `5h Ok + 7d Exhausted` → effective recovery is the blocking `7d` reset (`max`, not `min` over all windows), so the candidate with the sooner `7d` reset wins even when the active `5h` resets sooner; any blocking window missing `reset_at` means unknown recovery and excludes that account from the pool. Cursor parallel pools keep `min` semantics.
 - 端到端：双账号 + mock HTTP，跑 `subswap` 看 keyring 与 client_targets 同步。
 
+Shared optional orchestration patterns now live in the agent-friendly-cli skill ([Optional orchestration honesty patterns](~/.config/agentsync/skills/agent-friendly-cli/references/implementation-workflow.md#optional-orchestration-honesty-patterns-observed-contracts-not-mandates)): uncertain-measurement preservation, three-layer success, retry/fallback/cooldown, display-only signals — observed contracts, not mandates. Policy, thresholds and rankings stay here.
+
 <!-- 该文档整理/压缩于 2026-09-05 -->

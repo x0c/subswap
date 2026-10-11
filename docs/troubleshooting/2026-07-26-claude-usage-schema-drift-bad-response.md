@@ -39,6 +39,8 @@
 - usage **任何新字段必须走宽容解析**；`Option<T>` 只容忍缺失，不容忍类型变化。
 - **失败也要节流**；新增 quota 查询路径须同时接失败退避。
 
+Unversioned-JSON discipline (Go services): see [Go standards HTTP 与网络](~/Codes/_standards/go.md#http-与网络); endpoints and hypotheses here are this incident only.
+
 ## 关联
 
 - [2026-06-14](2026-06-14-claude-quota-unqueryable-429-vs-invalid-grant.md)：成功路径节流留下的失败退避缺口。
