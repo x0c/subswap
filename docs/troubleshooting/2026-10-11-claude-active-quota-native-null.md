@@ -33,4 +33,8 @@ The exact upstream response for the two native failures was not captured, so 429
 - Account identity is checked before and after the request; a swap in between discards the reading.
 - `native_usage.rs` and the "native empty reading" backoff branch were removed.
 
-Verification: see the 1.15.1 delivery notes in the commit and the installed default-list check recorded below.
+## Verification (2026-10-11)
+
+- macOS ARM64: formatting, clippy `-D warnings`, full workspace tests, debug build and locked release build passed with no compiler or lint warnings. The new `cli_surface` test runs the default list with an expired active credential and a fake `claude` on `PATH`; it asserts the expired message, an untouched isolated keychain, and that the fake client never starts.
+- v1.15.1 Release run passed CI on all three platforms, the Windows draft installer check, publication and the Homebrew formula update. Both Linux packages report a maximum of `GLIBC_2.28`.
+- After the old 30-minute retry deadline passed, the installed 1.15.1 default list showed the active account's 5h and 7d readings from one direct usage response, with no `claude -p` process. The poll record stored the success with the three-minute floor. The re-login account still correctly showed `needs re-login`.
