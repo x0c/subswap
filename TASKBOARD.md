@@ -4,4 +4,6 @@
 
 | 任务 | 状态 | 影响范围 | 开始 | 最近更新 | 备注 |
 |---|---|---|---|---|---|
-| Fix persistent Claude usage 429 with coordinated native queries | 验证中 | Claude provider, quota settings/defaults, CLI error summaries, Claude troubleshooting/Provider KB/CONFIG/architecture docs | 10:06 | 2026-10-09 10:24 | Full tests passed; final build and real-account verification; no README edits |
+| Recover affected Claude login after native-query failure | 恢复未完成 | Native credential preservation; Claude troubleshooting record | 10:06 | 2026-10-09 22:43 | Original credentials preserved; restoration failed real model request; daemon stopped; awaiting evidence of another authenticated device |
+| Fix Linux glibc floor + rm never refuses | 验证中 | release.yml Linux zigbuild/glibc guard; rm.rs; Claude disconnect API teardown; cli_surface rm test; CLI/README/OPERATIONS/troubleshooting | 11:13 | 2026-10-09 11:23 | Product: rm never blocked; soft official disconnect; 11:23 cli_surface deepseek rm ok |
+| Active Claude quota: direct read-only query, drop native client | 进行中 | Claude provider query_usage/native_usage/usage_poll; CONFIG/Provider KB/ARCHITECTURE/troubleshooting | 10:30 | 2026-10-11 10:30 | Ships with pending 1.15.1 glibc/rm work |

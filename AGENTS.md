@@ -29,6 +29,8 @@
 - 手动 `subswap swap` 永远不依赖 quota 查询；网络坏、quota API 坏、token 过期时也要能切走。
 - Claude 自定义 API 账号必须标记 `manual_only`：只能手动切入，active 时禁用自动换号，也不能成为自动候选；
   切回 OAuth 时必须恢复进入 API 模式前的 `settings.json.env` 受管字段。
+- `subswap rm` **永不因 active / `manual_only` /「请先 swap」拒绝**：删当前 Claude 自定义 API 须先退出 API 模式（恢复受管 env、清 `.subswap-api.json`）再清本地；原生客户端登出失败只警告，仍删本地记录（客户端仍登录时下次入口可能再导入）。
+- Linux Release 预编译包用 `cargo zigbuild` 钉 **GLIBC 2.28** 地板（见 `release.yml` 的 `objdump` 守卫）；禁止在较新 Ubuntu runner 上直接 `cargo build` 发布 Linux 产物，否则会在 22.04 类主机出现 `GLIBC_2.39` 警告/起不来。
 - macOS 上读写 Claude Code 的 `Claude Code-credentials`、以及 Cursor 命令行的
   `cursor-access-token` / `cursor-refresh-token` keychain item **只能 fork `/usr/bin/security`**，
   禁止用 `keyring` crate（security-framework 原生 API）：keyring 写会把 item ACL 重置成「仅 subswap」，

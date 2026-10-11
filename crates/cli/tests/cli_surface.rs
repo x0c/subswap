@@ -333,30 +333,16 @@ emailAddress = "oauth@example.com"
     assert_eq!(active["env"]["KEEP"], "yes");
     assert!(claude.join(".subswap-api.json").exists());
 
-    let remove_active = isolated_subswap(&tmp)
-        .args(["rm", "deepseek"])
-        .output()
-        .unwrap();
-    assert!(!remove_active.status.success());
-    assert!(
-        String::from_utf8_lossy(&remove_active.stderr).contains("swap away first"),
-        "{}",
-        String::from_utf8_lossy(&remove_active.stderr)
-    );
-
-    // API active 时运行默认入口，manual_only 语义必须阻止自动切回 OAuth。
-    write(
-        &app_config_dir(&tmp).join("config.toml"),
-        "[quota]\nfetch_timeout_ms = 1\nfetch_retries = 0\n",
-    );
-    assert_success(isolated_subswap(&tmp).output().unwrap());
-    assert!(claude.join(".subswap-api.json").exists());
-
-    assert_success(
+    // active manual_only 也可直接删：退出 API 模式并清本地，不再要求先 swap。
+    let remove_stdout = assert_success(
         isolated_subswap(&tmp)
-            .args(["swap", "oauth@example.com"])
+            .args(["rm", "deepseek"])
             .output()
             .unwrap(),
+    );
+    assert!(
+        remove_stdout.contains("removed claude/deepseek"),
+        "{remove_stdout}"
     );
     let restored: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(claude.join("settings.json")).unwrap()).unwrap();
@@ -366,6 +352,11 @@ emailAddress = "oauth@example.com"
     assert!(restored["env"].get("ANTHROPIC_AUTH_TOKEN").is_none());
     assert_eq!(restored["permissions"]["allow"][0], "Read");
     assert!(!claude.join(".subswap-api.json").exists());
+    let registry_after = fs::read_to_string(&registry).unwrap();
+    assert!(
+        !registry_after.contains("deepseek"),
+        "API account should be gone from registry: {registry_after}"
+    );
 
     teardown_test_keychain(&tmp);
 }
@@ -429,6 +420,65 @@ emailAddress = "active@example.com"
         stale
     );
 
+    teardown_test_keychain(&tmp);
+}
+
+/// active Claude 号凭据过期时不发 usage 请求，也不拉起官方客户端代查（其 usage 请求会轮换 refresh token）。
+#[cfg(unix)]
+#[test]
+fn expired_active_claude_quota_never_starts_native_client() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    setup_test_keychain(&tmp);
+    let claude = tmp.path().join("claude");
+    let expired = r#"{"claudeAiOauth":{"accessToken":"expired-access","refreshToken":"live-refresh","expiresAt":1000}}"#;
+    write(
+        &app_config_dir(&tmp).join("registry.toml"),
+        r#"[[accounts]]
+provider = "claude"
+id = "active@example.com"
+label = "Active"
+active = true
+created_at = "2026-06-12T00:00:00Z"
+priority = 100
+"#,
+    );
+    write(
+        &app_data_dir(&tmp).join("credentials.json"),
+        &serde_json::json!({ "claude:active@example.com:credentials_json": expired }).to_string(),
+    );
+    write(
+        &claude.join(".claude.json"),
+        r#"{"oauthAccount":{"emailAddress":"active@example.com"}}"#,
+    );
+    write(&claude.join(".credentials.json"), expired);
+    #[cfg(target_os = "macos")]
+    write_test_keychain_credentials(&tmp, expired);
+
+    let bin = tmp.path().join("bin");
+    let marker = tmp.path().join("native-started");
+    let fake = bin.join("claude");
+    write(
+        &fake,
+        &format!("#!/bin/sh\ntouch '{}'\necho 9.9.9\n", marker.display()),
+    );
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let stdout = assert_success(isolated_subswap(&tmp).env("PATH", path).output().unwrap());
+
+    assert!(
+        stdout.contains("credentials expired; open native client"),
+        "{stdout}"
+    );
+    assert!(!marker.exists(), "quota query must not start Claude Code");
+    #[cfg(target_os = "macos")]
+    assert_eq!(read_test_keychain_credentials(&tmp), expired);
     teardown_test_keychain(&tmp);
 }
 

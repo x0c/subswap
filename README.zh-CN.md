@@ -26,7 +26,7 @@
 
 在 **macOS 或 Linux，且已安装 Homebrew** 时：
 
-Linux 预编译包需要 glibc 2.39 或更新版本；较旧系统请从源码构建。
+Linux 预编译包需要 glibc 2.28 或更新（Ubuntu 20.04+、Debian 10+、RHEL 8+）。
 
 ```bash
 brew install x0c/tap/subswap

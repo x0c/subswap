@@ -2,7 +2,10 @@
 
 | 文档 | 何时该读 |
 |---|---|
-| [Persistent Claude usage 429](2026-10-09-claude-persistent-usage-429.md) | Active-account 429 with expired credentials, cached error versus fresh request, conflicting upstream limiter reports, and official statusline/native-query versus polling alternatives. |
+| [Active Claude quota `usage unavailable` (native query)](2026-10-11-claude-active-quota-native-null.md) | Active Claude account shows `usage unavailable` / `native client returned no limits` while its login works; or before letting subswap start Claude Code to read quota. |
+| [Linux prebuilt GLIBC_2.39](2026-10-09-linux-glibc-2.39-prebuilt.md) | Installed Linux `subswap` prints `GLIBC_2.39` not found / weak version, or Release binaries fail on Ubuntu 22.04-class hosts; change Linux release linking / glibc floor before shipping. |
+| [`rm` active manual-only refused](2026-10-09-rm-active-manual-only.md) | `rm` asks to swap away from an active Claude custom API / `manual_only` account, or deleting the current API profile leaves API env in `settings.json`. |
+| [Persistent Claude usage 429 and login recovery failure](2026-10-09-claude-persistent-usage-429.md) | Cached versus fresh 429, native-query alternatives and login-clearing side effects; preserved credentials, failed real-request recovery, and inaccessible-email support boundaries. |
 | [Active Codex quota stays loading](2026-10-09-codex-active-quota-loading.md) | Codex Unix WebSocket protocol mismatch, stale daemon identity, and reset-credit detail requests delaying the active account. |
 | [2026-09-29 OpenCode 换号/切模型后 `encrypted_content was not issued to this caller`](2026-09-29-opencode-reasoning-encrypted-content-caller.md) | OpenCode（含 Muse Spark 经 Zen）多轮报 400 `encrypted_content was not issued to this caller`、重试必现；或 `subswap swap` 切 `opencode-go` 号后沿用旧 OpenCode 会话前必读 |
 | [2026-09-29 Healthy-account automatic swaps across providers](2026-09-29-codex-auto-swap-with-healthy-accounts.md) | Healthy Codex/OpenCode swaps caused by quota completion order; v1.11.1 correction requires confirmed need and a usable target across all providers, including failure/stale/unknown boundaries. |
