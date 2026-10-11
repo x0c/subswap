@@ -26,7 +26,7 @@
 
 **Homebrew がインストールされた macOS または Linux**：
 
-Linux のビルド済みパッケージには glibc 2.39 以降が必要です。古い環境ではソースからビルドしてください。
+Linux のビルド済みパッケージには glibc 2.28 以降が必要です（Ubuntu 20.04+、Debian 10+、RHEL 8+）。
 
 ```bash
 brew install x0c/tap/subswap

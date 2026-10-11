@@ -138,15 +138,11 @@ impl Lease {
                     .saturating_mul(1_u64 << self.record.failures.saturating_sub(1).min(16))
                     .min(cfg.quota.failure_backoff_max_ms.max(self.min_interval_ms));
                 let text = error.to_string();
-                let uncertain_native = text.contains("native client returned no limits");
                 let (delay, server_deadline) = match error {
                     Error::QuotaRateLimited { retry_at, .. } => (
                         generic.max(cfg.claude.usage_rate_limit_backoff_ms),
                         *retry_at,
                     ),
-                    _ if uncertain_native => {
-                        (generic.max(cfg.claude.usage_rate_limit_backoff_ms), None)
-                    }
                     _ => (generic, None),
                 };
                 let deadline = after(now, delay).max(server_deadline.unwrap_or(now));

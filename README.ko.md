@@ -26,7 +26,7 @@
 
 **Homebrew가 설치된 macOS 또는 Linux**:
 
-Linux 사전 빌드 패키지는 glibc 2.39 이상이 필요합니다. 이전 시스템에서는 소스에서 빌드하세요.
+Linux 사전 빌드 패키지는 glibc 2.28 이상이 필요합니다(Ubuntu 20.04+, Debian 10+, RHEL 8+).
 
 ```bash
 brew install x0c/tap/subswap

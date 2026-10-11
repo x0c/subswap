@@ -54,7 +54,7 @@ Windows: %APPDATA%\subswap\subswap\config\config.toml
 | `codex.usage_cache_max_age_ms` | `600000` | 毫秒 | wham/usage 字段漂移时，允许使用本地 last_usage 缓存的最大年龄 |
 | `codex.reset_details_timeout_ms` | `1000` | ms | Maximum wait for optional parked-account reset-credit details; `0` skips the extra request. Active accounts only reuse inline official details, so optional HTTP requests never delay their main quotas. |
 | `claude.usage_min_refresh_interval_ms` | `180000` | ms | Minimum interval between Claude network usage queries, also bounded by `quota.min_refresh_interval_ms`. A per-account persistent reservation coordinates CLI and daemon; fresh official snapshots add no request. |
-| `claude.usage_rate_limit_backoff_ms` | `1800000` | ms | Conservative minimum wait after Claude 429 or a native usage response with no limits. A later server `Retry-After` deadline wins, even beyond the generic 15-minute cap. |
+| `claude.usage_rate_limit_backoff_ms` | `1800000` | ms | Conservative minimum wait after Claude 429. A later server `Retry-After` deadline wins, even beyond the generic 15-minute cap. |
 
 ## 示例：放慢 daemon
 

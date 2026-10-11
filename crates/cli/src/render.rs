@@ -681,13 +681,11 @@ mod tests {
     #[test]
     fn compact_error_distinguishes_expiry_unknown_and_throttling() {
         assert_eq!(
-            compact_error("quota fetch: Claude credential expired; official usage unavailable"),
+            compact_error("quota fetch: Claude credential expired; open Claude Code to renew"),
             "credentials expired; open native client"
         );
         assert_eq!(
-            compact_error(
-                "quota fetch: Claude usage unavailable; native client returned no limits"
-            ),
+            compact_error("quota fetch: Claude usage unavailable; no valid quota windows"),
             "usage unavailable"
         );
         assert_eq!(

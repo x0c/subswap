@@ -26,7 +26,7 @@
 
 On **macOS or Linux with Homebrew**:
 
-Linux prebuilt packages require glibc 2.39 or newer; build from source on older systems.
+Linux prebuilt packages require glibc 2.28 or newer (Ubuntu 20.04+, Debian 10+, RHEL 8+).
 
 ```bash
 brew install x0c/tap/subswap

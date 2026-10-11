@@ -1,10 +1,10 @@
 //! `subswap rm <id|N>`：从 registry 与 keyring 删除账号，并从原生客户端登出/断开。
 //!
 //! 引用形式与 `subswap swap` 一致：数字编号 / id / label / `provider/id`，详见 [`crate::cmd::resolve_account`]。
-//! 删的是某 provider 当前原生登录账号时先断原生（否则下次同步导回）；原生断失败
-//! 直接报错退出、不清本地。删 parked 账号只清本地。
+//! **永不因 active / manual_only 拒绝。** 删的是某 provider 当前原生登录账号时尽力断原生；
+//! 原生断失败只警告、仍清本地（客户端仍登录时下次入口可能再导入）。删 parked 账号只清本地。
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use subswap_core::{AuditEvent, OfficialDisconnect};
 
 use crate::app::AppContext;
@@ -13,24 +13,29 @@ use crate::cmd::resolve_account;
 
 pub async fn run(ctx: &AppContext, id_input: &str, json: bool) -> Result<()> {
     let acc = resolve_account(ctx, id_input)?;
-    if acc.provider == "claude" && acc.active && acc.manual_only() {
-        bail!(
-            "cannot remove active manual-only account {}/{}; swap away first",
-            acc.provider,
-            acc.id
-        );
-    }
 
-    // 原生是各 provider 登录的权威源：删 live 账号不断原生，下次同步必然导回。
-    // 原生断失败直接报错退出、不清本地，避免“删了又回来”的假成功。
+    // 原生是各 provider 登录的权威源：尽力断原生，失败不挡本地删除。
     let official = match acc.provider.as_str() {
-        "claude" => Some(ctx.claude.disconnect_official(&acc.id).await?),
-        "codex" => Some(ctx.codex.disconnect_official(&acc).await?),
-        "kimi" => Some(ctx.kimi.disconnect_official(&acc).await?),
-        "cursor" => Some(ctx.cursor.disconnect_official(&acc.id).await?),
-        "commandcode" => Some(ctx.commandcode.disconnect_official(&acc).await?),
-        "opencode-api-key" => Some(ctx.opencode_api_key.disconnect_official(&acc.id).await?),
-        "opencode" => Some(ctx.opencode.disconnect_official_console(&acc).await?),
+        "claude" => {
+            try_official_disconnect("claude", ctx.claude.disconnect_official(&acc.id).await)
+        }
+        "codex" => try_official_disconnect("codex", ctx.codex.disconnect_official(&acc).await),
+        "kimi" => try_official_disconnect("kimi", ctx.kimi.disconnect_official(&acc).await),
+        "cursor" => {
+            try_official_disconnect("cursor", ctx.cursor.disconnect_official(&acc.id).await)
+        }
+        "commandcode" => try_official_disconnect(
+            "commandcode",
+            ctx.commandcode.disconnect_official(&acc).await,
+        ),
+        "opencode-api-key" => try_official_disconnect(
+            "opencode-api-key",
+            ctx.opencode_api_key.disconnect_official(&acc.id).await,
+        ),
+        "opencode" => try_official_disconnect(
+            "opencode",
+            ctx.opencode.disconnect_official_console(&acc).await,
+        ),
         _ => None,
     };
 
@@ -94,4 +99,18 @@ pub async fn run(ctx: &AppContext, id_input: &str, json: bool) -> Result<()> {
         print_status_overview(ctx).await?;
     }
     Ok(())
+}
+
+fn try_official_disconnect(
+    provider: &str,
+    result: Result<OfficialDisconnect, impl std::fmt::Display>,
+) -> Option<OfficialDisconnect> {
+    match result {
+        Ok(status) => Some(status),
+        Err(e) => {
+            tracing::warn!(err = %e, provider, "official disconnect failed; continuing local rm");
+            eprintln!("warning: could not sign out {provider} in the native client ({e}); local record removed anyway");
+            None
+        }
+    }
 }

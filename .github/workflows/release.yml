@@ -78,12 +78,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux: cargo-zigbuild pins the glibc symbol floor independent of the
+          # runner. Floor 2.28 covers Ubuntu 20.04+, Debian 10+, RHEL 8+.
+          # Do NOT replace with a plain cargo build on ubuntu-latest (glibc 2.39):
+          # that ships GLIBC_2.39 and breaks older LTS hosts with a weak-version warning or abort.
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            zig_target: x86_64-unknown-linux-gnu.2.28
+            glibc_floor: "2.28"
             archive: tar.gz
             include_daemon: true
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            zig_target: aarch64-unknown-linux-gnu.2.28
+            glibc_floor: "2.28"
             archive: tar.gz
             include_daemon: true
           - os: macos-14
@@ -115,7 +123,7 @@ jobs:
           set -euo pipefail
 
           for attempt in 1 2 3; do
-            if sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config; then
+            if sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config binutils; then
               exit 0
             fi
 
@@ -131,12 +139,76 @@ jobs:
             sleep "${delay}"
           done
 
+      - name: install zig
+        if: runner.os == 'Linux'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+
+      - name: install cargo-zigbuild
+        if: runner.os == 'Linux'
+        shell: bash
+        run: cargo install --locked cargo-zigbuild
+
       - name: build cli
-        run: cargo build --locked --release -p subswap-cli --target ${{ matrix.target }}
+        shell: bash
+        env:
+          ZIG_TARGET: ${{ matrix.zig_target }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${ZIG_TARGET:-}" ]]; then
+            cargo zigbuild --locked --release -p subswap-cli --target "${ZIG_TARGET}"
+          else
+            cargo build --locked --release -p subswap-cli --target "${TARGET}"
+          fi
 
       - name: build daemon
         if: matrix.include_daemon
-        run: cargo build --locked --release -p subswap-daemon --target ${{ matrix.target }}
+        shell: bash
+        env:
+          ZIG_TARGET: ${{ matrix.zig_target }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${ZIG_TARGET:-}" ]]; then
+            cargo zigbuild --locked --release -p subswap-daemon --target "${ZIG_TARGET}"
+          else
+            cargo build --locked --release -p subswap-daemon --target "${TARGET}"
+          fi
+
+      - name: verify linux glibc floor
+        if: runner.os == 'Linux'
+        env:
+          TARGET: ${{ matrix.target }}
+          FLOOR: ${{ matrix.glibc_floor }}
+          INCLUDE_DAEMON: ${{ matrix.include_daemon }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Version-sort GLIBC_* symbols; fail if any binary needs above the floor.
+          check_bin() {
+            local path="$1"
+            local max
+            max="$(objdump -T "$path" \
+              | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' \
+              | sed 's/GLIBC_//' \
+              | sort -V \
+              | tail -n1 || true)"
+            echo "${path}: max GLIBC_${max:-none}"
+            if [[ -z "${max}" ]]; then
+              echo "::error::no GLIBC version symbols in ${path}" >&2
+              return 1
+            fi
+            if [[ "$(printf '%s\n%s\n' "$max" "$FLOOR" | sort -V | tail -n1)" != "$FLOOR" ]]; then
+              echo "::error::${path} requires GLIBC_${max}, above floor ${FLOOR}" >&2
+              return 1
+            fi
+          }
+          check_bin "target/${TARGET}/release/subswap"
+          if [[ "${INCLUDE_DAEMON}" == "true" ]]; then
+            check_bin "target/${TARGET}/release/subswapd"
+          fi
 
       - name: package unix
         if: runner.os != 'Windows'

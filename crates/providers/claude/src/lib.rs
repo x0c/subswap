@@ -8,7 +8,6 @@
 //! - 敏感数据：credentials.json 整段写 keyring；registry.toml 只存元数据。
 
 mod claude_files;
-mod native_usage;
 mod oauth;
 mod paths;
 mod usage_poll;
@@ -631,23 +630,25 @@ impl ClaudeProvider {
     }
 }
 
-/// `rm` 原生登出（阻塞版）：删的是当前 live OAuth 账号时清掉原生凭证，
+/// `rm` 原生登出（阻塞版）：删的是当前 live OAuth 账号时清掉原生凭证；
+/// 删的是当前激活的自定义 API 账号时退出 API 模式（恢复 settings 并清哨兵）。
 /// 否则返回 `AlreadyGone` 由调用方直接清本地。
 ///
-/// 顺序：先清凭证（钥匙串/file），最后摘 `oauthAccount`。若中途硬失败，
-/// 调用方不清本地，重试 `rm` 可自愈（已清掉的部分都容忍缺失）。
+/// 顺序：先清凭证（钥匙串/file），最后摘 `oauthAccount`。调用方对失败只警告、
+/// 仍清本地（`rm` 永不因原生断失败而拒绝）。
 fn disconnect_oauth_live(
     claude_home: &Path,
     registry: &AccountRegistry,
     id: &AccountId,
 ) -> Result<OfficialDisconnect> {
-    // 自定义 API 账号没有 live 常驻：live 永远是 OAuth 或另一个 API，直接不动。
+    // 自定义 API：无 OAuth live 常驻；若正是当前 API 模式账号，必须先退出 API 模式，
+    // 否则删号后 settings.json 仍挂着 API Key/Base URL。
     if registry
         .find(PROVIDER_ID, id)?
         .as_ref()
         .is_some_and(is_api_account)
     {
-        return Ok(OfficialDisconnect::AlreadyGone);
+        return exit_api_mode_for_account(claude_home, id);
     }
     // 归属判定：只有 live 仍是被删账号才动原生；别人的登录绝不碰。
     let live_matches = read_oauth_account(&global_config_path(claude_home))?
@@ -689,6 +690,23 @@ fn disconnect_oauth_live(
         ));
     }
     Ok(OfficialDisconnect::Disconnected)
+}
+
+/// 删除自定义 API 账号时退出 API 模式：恢复受管 env，清 `.subswap-api.json`。
+///
+/// 仅当哨兵指向被删账号时动手；删停泊 API 号则不动 live。
+/// 成功退出后返回 `AlreadyGone`（不是 OAuth 登出），避免 CLI 打印「signed out」。
+fn exit_api_mode_for_account(claude_home: &Path, id: &AccountId) -> Result<OfficialDisconnect> {
+    let state_path = api_state_path(claude_home);
+    let settings = settings_path(claude_home);
+    match read_api_state(&state_path)? {
+        Some(state) if state.account_id == id.0 => {
+            restore_oauth_env_in_settings(&settings, &state.restore_env)?;
+            remove_api_state(&state_path)?;
+            Ok(OfficialDisconnect::AlreadyGone)
+        }
+        Some(_) | None => Ok(OfficialDisconnect::AlreadyGone),
+    }
 }
 
 #[async_trait]
@@ -1281,16 +1299,14 @@ impl ClaudeProvider {
                     "Claude account changed before usage query".into(),
                 ));
             }
-            // 官方通道失败后不再换 HTTP 渠道；官方进程独占 active 凭据刷新。
-            let usage = match native_usage::fetch(&home).await {
-                Ok(Some(usage)) => Ok(usage),
-                // 尚未发送 usage 请求时才允许旧客户端兼容路径；不得把过期 token 发上游。
-                Ok(None) if is_expired_or_soon(&creds, 0) => Err(Error::QuotaFetch(
-                    "Claude credential expired; compatible native client unavailable".into(),
-                )),
-                Ok(None) => oauth::fetch_usage(&creds.oauth.access_token).await,
-                Err(error) => Err(error),
-            };
+            // active 凭据只读不刷，由官方客户端在下次使用时续期；过期 token 不发上游。
+            // 不能拉起官方客户端代查：其 usage 请求会轮换共享 refresh token，失败时也不给原因。
+            if is_expired_or_soon(&creds, 0) {
+                return Err(Error::QuotaFetch(
+                    "Claude credential expired; open Claude Code to renew".into(),
+                ));
+            }
+            let usage = oauth::fetch_usage(&creds.oauth.access_token).await;
             let after = read_oauth_account_async(home).await?;
             if before.as_ref().map(|a| (&a.email_address, &a.account_uuid))
                 != after.as_ref().map(|a| (&a.email_address, &a.account_uuid))
@@ -1299,28 +1315,7 @@ impl ClaudeProvider {
                     "Claude account changed during usage query".into(),
                 ));
             }
-            self.reconcile_active_from_live().await?;
-            match usage {
-                Err(error) if is_expired_or_soon(&creds, 0) => {
-                    let provider = self.clone();
-                    let still_expired = tokio::task::spawn_blocking(move || {
-                        provider
-                            .read_live_credentials()
-                            .map(|c| is_expired_or_soon(&c, 0))
-                    })
-                    .await
-                    .map_err(|e| {
-                        Error::Provider(format!("check Claude credential recovery: {e}"))
-                    })??;
-                    if still_expired {
-                        return Err(Error::QuotaFetch(format!(
-                            "Claude credential expired; official usage unavailable; {error}"
-                        )));
-                    }
-                    return Err(error);
-                }
-                result => result?,
-            }
+            usage?
         } else {
             // usage 限流可能先于鉴权判定返回；不能拿已知过期 token 再去碰 usage。
             if is_expired_or_soon(&creds, 0) {
