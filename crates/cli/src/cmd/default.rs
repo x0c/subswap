@@ -738,7 +738,7 @@ mod tests {
     fn auto_swap_success_text_uses_friendly_label() {
         let snap = snap_with_account(
             "c1311d9b-47d1-4b8b-95e9-3401f967abd6",
-            "stromandanika707621@gmail.com",
+            "user@example.com",
         );
 
         assert_eq!(
@@ -747,7 +747,7 @@ mod tests {
                 &AccountId("c1311d9b-47d1-4b8b-95e9-3401f967abd6".into()),
                 Some("Restart running Codex CLI sessions to use this account."),
             ),
-            "auto: swapped to stromandanika707621@gmail.com; Restart running Codex CLI sessions to use this account."
+            "auto: swapped to user@example.com; Restart running Codex CLI sessions to use this account."
         );
         assert_eq!(
             auto_swap_success_text(
@@ -755,7 +755,7 @@ mod tests {
                 &AccountId("c1311d9b-47d1-4b8b-95e9-3401f967abd6".into()),
                 None,
             ),
-            "auto: swapped to stromandanika707621@gmail.com"
+            "auto: swapped to user@example.com"
         );
     }
 
