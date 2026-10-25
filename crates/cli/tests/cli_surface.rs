@@ -55,6 +55,12 @@ fn isolated_subswap(tmp: &tempfile::TempDir) -> Command {
         // （否则集成测试会弹授权框并污染本机凭证）。
         .env("SUBSWAP_CLAUDE_KEYCHAIN_PATH", test_keychain_path(tmp))
         .env("SUBSWAP_CURSOR_KEYCHAIN_PATH", test_keychain_path(tmp))
+        // 每个测试独占 metrics 文件，避免外部 `SUBSWAP_REQUEST_METRICS_PATH`
+        // 把 provider 单测遥测混进当前任务或真实用户统计。
+        .env(
+            "SUBSWAP_REQUEST_METRICS_PATH",
+            tmp.path().join("request_metrics.json"),
+        )
         .env("SUBSWAP_NO_DAEMON", "1");
     command
 }

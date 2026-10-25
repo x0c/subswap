@@ -220,7 +220,8 @@ Shared optional acceptance procedures now live in the agent-friendly-cli skill (
 
 ## Release notes
 
-- [v1.16.0](releases/v1.16.0.md): shared quota collection, adaptive/reset scheduling, read-only snapshots and request metrics; bilingual changes, verification boundaries and upgrade instructions.
+- [v1.16.1](releases/v1.16.1.md): shared quota collection, adaptive/reset scheduling, read-only snapshots, request metrics and the Windows strict-build correction; bilingual changes, verification boundaries and upgrade instructions.
+- [v1.16.0 draft](releases/v1.16.0.md): original quota-collection notes; not publicly published because Windows validation rejected a Unix-only import. The corrected public delivery is v1.16.1.
 
 ## CI and Release failure badges
 

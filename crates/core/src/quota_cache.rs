@@ -12,7 +12,7 @@
 //! 更新的测量结果、失败退避或 `rm` 墓碑。只读加载的缓存 `save` 不会重写文件。
 
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -542,7 +542,7 @@ fn write_atomic(path: &Path, cache: &QuotaCache) -> std::io::Result<()> {
     // 目录项也 fsync 一次，保证 rename 在崩溃后仍然可见（失败不阻塞缓存写入）。
     #[cfg(unix)]
     if let Some(parent) = parent {
-        if let Ok(dir) = File::open(parent) {
+        if let Ok(dir) = std::fs::File::open(parent) {
             let _ = dir.sync_all();
         }
     }

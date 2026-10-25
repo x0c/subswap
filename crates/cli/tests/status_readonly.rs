@@ -54,6 +54,9 @@ fn isolated_subswap(tmp: &tempfile::TempDir) -> Command {
         // macOS：Claude / Cursor 的钥匙串读写必须指向一次性 keychain。
         .env("SUBSWAP_CLAUDE_KEYCHAIN_PATH", test_keychain_path(tmp))
         .env("SUBSWAP_CURSOR_KEYCHAIN_PATH", test_keychain_path(tmp))
+        // 显式覆盖 metrics 路径，防止外部测试运行器注入的
+        // `SUBSWAP_REQUEST_METRICS_PATH` 把计数写到别的任务文件。
+        .env("SUBSWAP_REQUEST_METRICS_PATH", metrics_path(tmp))
         .env("SUBSWAP_NO_DAEMON", "1");
     command
 }
