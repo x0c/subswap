@@ -4,6 +4,7 @@
 //! 超过 `stale` 未刷新视为死锁可被回收。subswap 复用同一约定才能与官方刷新互斥，
 //! 不自创一套互不相认的锁。
 
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -25,6 +26,9 @@ type Identity = (u64, u64);
 /// 持有者若被判 stale 回收、别人同名重建，旧持有者既不续租也不删除新目录，只标记失锁。
 pub struct ProperLock {
     path: PathBuf,
+    /// 创建时打开的目录句柄。持有它会让 Unix inode / Windows file ID 在锁被删除后
+    /// 仍然保持分配，防止同名重建的目录复用旧身份。
+    held: Option<Arc<File>>,
     identity: Option<Identity>,
     lost: Arc<AtomicBool>,
     stop_heartbeat: Option<Sender<()>>,
@@ -39,7 +43,7 @@ impl ProperLock {
 
     /// 锁目录是否仍是本次创建的那一个。
     pub fn still_held(&self) -> bool {
-        !self.lost.load(Ordering::SeqCst) && owns(&self.path, self.identity)
+        !self.lost.load(Ordering::SeqCst) && owns(&self.path, self.held.as_deref(), self.identity)
     }
 }
 
@@ -51,20 +55,20 @@ impl Drop for ProperLock {
         if let Some(heartbeat) = self.heartbeat.take() {
             let _ = heartbeat.join();
         }
-        if owns(&self.path, self.identity) {
+        if owns(&self.path, self.held.as_deref(), self.identity) {
             let _ = std::fs::remove_dir(&self.path);
         }
     }
 }
 
-fn identity_of(path: &Path) -> Option<Identity> {
-    let metadata = std::fs::metadata(path).ok()?;
+#[cfg(not(windows))]
+fn identity_of_metadata(metadata: &std::fs::Metadata) -> Option<Identity> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         Some((metadata.dev(), metadata.ino()))
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let created = metadata
             .created()
@@ -75,11 +79,132 @@ fn identity_of(path: &Path) -> Option<Identity> {
     }
 }
 
+/// `BY_HANDLE_FILE_INFORMATION` 的稳定子集：卷序列号 + 文件索引。
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Default)]
+struct ByHandleFileInformation {
+    file_attributes: u32,
+    creation_time: [u32; 2],
+    last_access_time: [u32; 2],
+    last_write_time: [u32; 2],
+    volume_serial_number: u32,
+    file_size_high: u32,
+    file_size_low: u32,
+    number_of_links: u32,
+    file_index_high: u32,
+    file_index_low: u32,
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    #[link_name = "GetFileInformationByHandle"]
+    fn get_file_information_by_handle(
+        file: *mut std::ffi::c_void,
+        info: *mut ByHandleFileInformation,
+    ) -> i32;
+}
+
+#[cfg(windows)]
+fn identity_of_handle(file: &File) -> Option<Identity> {
+    use std::os::windows::io::AsRawHandle;
+    let mut info = ByHandleFileInformation::default();
+    let ok = unsafe {
+        get_file_information_by_handle(file.as_raw_handle() as *mut std::ffi::c_void, &mut info)
+    };
+    (ok != 0).then(|| {
+        (
+            u64::from(info.volume_serial_number),
+            (u64::from(info.file_index_high) << 32) | u64::from(info.file_index_low),
+        )
+    })
+}
+
+#[cfg(unix)]
+fn identity_of_handle(file: &File) -> Option<Identity> {
+    identity_of_metadata(&file.metadata().ok()?)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn identity_of_handle(file: &File) -> Option<Identity> {
+    identity_of_metadata(&file.metadata().ok()?)
+}
+
+fn identity_of_path(path: &Path) -> Option<Identity> {
+    #[cfg(windows)]
+    {
+        // 用同一个目录句柄读取 file index，避免 metadata 与句柄身份口径不一致。
+        identity_of_handle(&open_dir_handle(path).ok()?)
+    }
+    #[cfg(not(windows))]
+    {
+        identity_of_metadata(&std::fs::metadata(path).ok()?)
+    }
+}
+
+/// 打开目录句柄。Unix 上普通 `File::open` 即可；Windows 目录必须带
+/// `FILE_FLAG_BACKUP_SEMANTICS`，并允许共享删除，避免破坏官方客户端的 rmdir 协议。
+fn open_dir_handle(path: &Path) -> std::io::Result<File> {
+    #[cfg(unix)]
+    {
+        File::open(path)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x1;
+        const FILE_SHARE_WRITE: u32 = 0x2;
+        const FILE_SHARE_DELETE: u32 = 0x4;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = path;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "directory handles unavailable",
+        ))
+    }
+}
+
+/// 持有目录句柄；不支持的平台返回 None，退回旧的身份检查。
+fn hold_directory(path: &Path) -> std::io::Result<Option<Arc<File>>> {
+    #[cfg(any(unix, windows))]
+    {
+        Ok(Some(Arc::new(open_dir_handle(path)?)))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = path;
+        Ok(None)
+    }
+}
+
 /// 身份未知（平台不提供）时无法区分重建目录，退回按路径持有。
-fn owns(path: &Path, identity: Option<Identity>) -> bool {
-    match identity {
-        Some(expected) => identity_of(path) == Some(expected),
-        None => path.exists(),
+///
+/// 支持目录句柄的平台必须同时满足：句柄自身仍是原 inode/file ID，且当前路径仍是
+/// 同一身份。句柄阻止身份被复用，因此 Linux 上 `unlink` 后同 inode 复用不会误判。
+fn owns(path: &Path, held: Option<&File>, identity: Option<Identity>) -> bool {
+    let Some(expected) = identity else {
+        return path.exists();
+    };
+    #[cfg(any(unix, windows))]
+    {
+        let Some(held) = held else {
+            return false;
+        };
+        identity_of_handle(held) == Some(expected) && identity_of_path(path) == Some(expected)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = held;
+        identity_of_path(path) == Some(expected)
     }
 }
 
@@ -113,11 +238,27 @@ pub fn acquire(
             Err(error) => return Err(error.into()),
         }
     }
-    let identity = identity_of(lock_dir);
+    let held = match hold_directory(lock_dir) {
+        Ok(held) => held,
+        Err(error) => {
+            let _ = std::fs::remove_dir(lock_dir);
+            return Err(error.into());
+        }
+    };
+    let identity = held
+        .as_deref()
+        .and_then(identity_of_handle)
+        .or_else(|| identity_of_path(lock_dir));
+    if held.is_some() && identity.is_none() {
+        let _ = std::fs::remove_dir(lock_dir);
+        return Err(std::io::Error::other("cannot prove lock directory identity").into());
+    }
     let lost = Arc::new(AtomicBool::new(false));
-    let (stop, heartbeat) = start_heartbeat(lock_dir.to_path_buf(), identity, lost.clone());
+    let (stop, heartbeat) =
+        start_heartbeat(lock_dir.to_path_buf(), held.clone(), identity, lost.clone());
     Ok(Some(ProperLock {
         path: lock_dir.to_path_buf(),
+        held,
         identity,
         lost,
         stop_heartbeat: Some(stop),
@@ -192,6 +333,7 @@ fn try_reap_stale(
 
 fn start_heartbeat(
     path: PathBuf,
+    held: Option<Arc<File>>,
     identity: Option<Identity>,
     lost: Arc<AtomicBool>,
 ) -> (Sender<()>, JoinHandle<()>) {
@@ -200,7 +342,7 @@ fn start_heartbeat(
         match receiver.recv_timeout(HEARTBEAT_INTERVAL) {
             Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if !owns(&path, identity) {
+                if !owns(&path, held.as_deref(), identity) {
                     lost.store(true, Ordering::SeqCst);
                     break;
                 }
@@ -260,6 +402,31 @@ mod tests {
         )
         .unwrap()
         .is_none());
+    }
+
+    #[test]
+    fn replacement_lock_survives_old_holder_heartbeat_and_drop() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join(".lock");
+        let first = acquire(&dir, Duration::from_secs(60), Duration::ZERO)
+            .unwrap()
+            .unwrap();
+        // 模拟旧锁被回收后，另一个真实持有者立即同名重建。
+        std::fs::remove_dir(&dir).unwrap();
+        let second = acquire(&dir, Duration::from_secs(60), Duration::ZERO)
+            .unwrap()
+            .unwrap();
+
+        std::thread::sleep(HEARTBEAT_INTERVAL + Duration::from_millis(300));
+        assert!(!first.still_held());
+        assert!(second.still_held());
+
+        drop(first);
+        assert!(dir.exists(), "old holder deleted the replacement lock");
+        assert!(second.still_held());
+
+        drop(second);
+        assert!(!dir.exists(), "current holder did not release its lock");
     }
 
     #[test]

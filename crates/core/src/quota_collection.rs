@@ -702,6 +702,15 @@ struct SlotGuard {
     _files: Vec<File>,
 }
 
+/// fs2 官方用 `lock_contended_error()` 表示 try-lock 的“已被占用”错误。
+///
+/// Windows 原生错误是 `ERROR_LOCK_VIOLATION`，其 `ErrorKind` 不一定映射成
+/// `WouldBlock`；因此同时比较 raw OS error 与 kind，不靠猜测。
+fn is_lock_contended(error: &std::io::Error) -> bool {
+    let contended = fs2::lock_contended_error();
+    error.raw_os_error() == contended.raw_os_error() || error.kind() == contended.kind()
+}
+
 async fn try_account_lock(dir: PathBuf, stem: String) -> Result<Option<AccountLock>> {
     tokio::task::spawn_blocking(move || try_account_lock_sync(&dir, &stem))
         .await
@@ -722,7 +731,7 @@ fn try_account_lock_sync(dir: &Path, stem: &str) -> Result<Option<AccountLock>> 
             _file: file,
             record_path: record_path(dir, stem),
         })),
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+        Err(error) if is_lock_contended(&error) => Ok(None),
         Err(error) => Err(Error::Io(error)),
     }
 }
@@ -764,7 +773,7 @@ fn try_lock_any(dir: &Path, prefix: &str, count: usize) -> std::io::Result<Optio
             .open(path)?;
         match FileExt::try_lock_exclusive(&file) {
             Ok(()) => return Ok(Some(file)),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(error) if is_lock_contended(&error) => continue,
             Err(error) => return Err(error),
         }
     }
@@ -1181,6 +1190,31 @@ mod tests {
         assert_eq!(provider.calls(), 1);
         assert_eq!(first.observed_at, second.observed_at);
         assert_eq!(second.quotas[0].used, 42);
+    }
+
+    #[test]
+    fn fs2_contended_lock_error_is_classified_portably() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("contended.lock");
+        let first = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        FileExt::lock_exclusive(&first).unwrap();
+        let second = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let error = FileExt::try_lock_exclusive(&second).unwrap_err();
+        assert!(is_lock_contended(&error), "{error:?}");
+        assert!(!is_lock_contended(&std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "not contention"
+        )));
     }
 
     /// 两个独立文件句柄模拟两个进程：fs2 flock 在进程内不同 open file description 之间

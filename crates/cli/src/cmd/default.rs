@@ -6,12 +6,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, IsTerminal};
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use chrono::Utc;
 use futures::future::join_all;
+use futures::FutureExt;
 use subswap_core::quota_schedule::{fetch_state_for_observation, ScheduleConfig};
 use subswap_core::{
     auto_decide, collect_quota, collect_quota_at, is_authentication_failure, paths::AppPaths,
@@ -37,9 +39,14 @@ pub async fn run(ctx: &AppContext, json: bool) -> Result<()> {
         renderer.render(&snapshots, &auto_lines)?;
     }
     let cfg = PolicyConfig::default();
+    let cache_path = quota_cache_path();
     fill_quotas_progressively(
-        &ctx.providers,
-        &ctx.audit,
+        &QuotaFillContext {
+            registry: &ctx.providers,
+            audit: &ctx.audit,
+            cache_path: &cache_path,
+            observer: None,
+        },
         &mut snapshots,
         Some(&cfg),
         &mut auto_lines,
@@ -48,7 +55,6 @@ pub async fn run(ctx: &AppContext, json: bool) -> Result<()> {
         } else {
             None
         },
-        &quota_cache_path(),
     )
     .await?;
 
@@ -80,9 +86,14 @@ pub async fn print_status_overview(ctx: &AppContext) -> Result<()> {
     if interactive {
         renderer.render(&snapshots, &auto_lines)?;
     }
+    let cache_path = quota_cache_path();
     fill_quotas_progressively(
-        &ctx.providers,
-        &ctx.audit,
+        &QuotaFillContext {
+            registry: &ctx.providers,
+            audit: &ctx.audit,
+            cache_path: &cache_path,
+            observer: None,
+        },
         &mut snapshots,
         None,
         &mut auto_lines,
@@ -91,7 +102,6 @@ pub async fn print_status_overview(ctx: &AppContext) -> Result<()> {
         } else {
             None
         },
-        &quota_cache_path(),
     )
     .await?;
     renderer.render(&snapshots, &auto_lines)?;
@@ -436,6 +446,22 @@ struct QuotaUpdate {
     result: std::result::Result<QuotaReading, String>,
 }
 
+/// 单个账号结果已应用到内存快照（并完成该 provider 的自动切换重判）后的测试观测。
+///
+/// 生产路径不订阅；测试用它作为确定性屏障，避免用固定 sleep 猜测「active/escape 是否已落地」。
+/// 元组字段：`(provider, account_id, fetch_state, quota_windows)`。
+type AppliedQuotaState = (String, String, QuotaFetchState, usize);
+
+/// 渐进式额度填充的共享只读依赖。
+///
+/// 收在一起避免参数数量随观测钩子增长；生产路径 `observer` 为 `None`。
+struct QuotaFillContext<'a> {
+    registry: &'a ProviderRegistry,
+    audit: &'a AuditLog,
+    cache_path: &'a std::path::Path,
+    observer: Option<&'a tokio::sync::mpsc::UnboundedSender<AppliedQuotaState>>,
+}
+
 /// 渐进式自动切换的运行内状态:额度是边查边回的,不能查到第一份就把决策锁死。
 #[derive(Default)]
 struct AutoSwapProgress {
@@ -446,14 +472,15 @@ struct AutoSwapProgress {
 }
 
 async fn fill_quotas_progressively(
-    registry: &ProviderRegistry,
-    audit: &AuditLog,
+    ctx: &QuotaFillContext<'_>,
     snapshots: &mut [ProviderSnapshot],
     auto_swap: Option<&PolicyConfig>,
     auto_lines: &mut Vec<AutoLine>,
     mut renderer: Option<&mut InlineRenderer>,
-    cache_path: &std::path::Path,
 ) -> Result<()> {
+    let registry = ctx.registry;
+    let audit = ctx.audit;
+    let cache_path = ctx.cache_path;
     let total: usize = snapshots.iter().map(|snap| snap.accounts.len()).sum();
     if total == 0 {
         return Ok(());
@@ -510,41 +537,66 @@ async fn fill_quotas_progressively(
     let production_cache = AppPaths::resolve()
         .ok()
         .is_some_and(|paths| paths.quota_cache_file() == cache_path);
-    // 前台仍然并发，但遵守共享采集器的全局并发上限，避免一次拉起整池请求。
+    // 前台仍然并发（跨 Provider），但同一 Provider 的账号串行处理：采集协调器默认
+    // 每 Provider 只允许一个真实请求，串行顺序也让渐进结果与测试闸门可确定复现。
     let permits = Arc::new(tokio::sync::Semaphore::new(
         schedule_cfg.max_concurrent_fetches.max(1),
     ));
+    let mut jobs_by_provider: HashMap<String, Vec<AccountId>> = HashMap::new();
     for (provider, account_id) in jobs {
+        jobs_by_provider
+            .entry(provider)
+            .or_default()
+            .push(account_id);
+    }
+    for (provider, account_ids) in jobs_by_provider {
         let p = registry.get(&provider)?;
         let tx = tx.clone();
-        let permit = permits
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|e| anyhow::anyhow!("quota collection semaphore closed: {e}"))?;
+        let permits = permits.clone();
         let cache_path = cache_path.to_path_buf();
         let settings = all_settings.clone();
         tokio::spawn(async move {
-            let _permit = permit;
-            let result = if production_cache {
-                collect_quota(p.as_ref(), &account_id).await
-            } else {
-                collect_quota_at(p.as_ref(), &account_id, &cache_path, &settings).await
-            }
-            .map_err(|e| e.to_string());
-            let _ = tx
-                .send(QuotaUpdate {
-                    provider,
-                    account_id,
-                    result,
+            for account_id in account_ids {
+                let permit = match permits.clone().acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => break,
+                };
+                let provider_for_update = provider.clone();
+                let account_for_update = account_id.clone();
+                // 采集器 panic 不能静默丢掉这个账号的结果（否则接收端会在没有 update 的
+                // 情况下结束，调用方误以为「本来就不需要它」）。收敛成该账号的失败结果。
+                let result = AssertUnwindSafe(async {
+                    if production_cache {
+                        collect_quota(p.as_ref(), &account_id).await
+                    } else {
+                        collect_quota_at(p.as_ref(), &account_id, &cache_path, &settings).await
+                    }
                 })
-                .await;
+                .catch_unwind()
+                .await
+                .map_err(|payload| {
+                    format!(
+                        "quota collection task panicked: {}",
+                        panic_payload_message(payload.as_ref())
+                    )
+                })
+                .and_then(|inner| inner.map_err(|e| e.to_string()));
+                drop(permit);
+                let _ = tx
+                    .send(QuotaUpdate {
+                        provider: provider_for_update,
+                        account_id: account_for_update,
+                        result,
+                    })
+                    .await;
+            }
         });
     }
     drop(tx);
 
     while let Some(update) = rx.recv().await {
         let provider = update.provider.clone();
+        let account_id = update.account_id.clone();
         // 协调器可能刚写了本轮真实结果；按账号重读缓存用于失败回退与更新事件比较。
         let cache = load_quota_cache(cache_path).await;
         apply_quota_update(snapshots, update, &cache, &schedule_cfg);
@@ -560,11 +612,40 @@ async fn fill_quotas_progressively(
             )
             .await?;
         }
+        if let Some(observer) = ctx.observer {
+            if let Some(account) = snapshots
+                .iter()
+                .find(|snap| snap.provider == provider)
+                .and_then(|snap| {
+                    snap.accounts
+                        .iter()
+                        .find(|account| account.account.id == account_id)
+                })
+            {
+                let _ = observer.send((
+                    provider.clone(),
+                    account_id.0.clone(),
+                    account.fetch_state.clone(),
+                    account.quotas.len(),
+                ));
+            }
+        }
         if let Some(renderer) = renderer.as_deref_mut() {
             renderer.render(snapshots, auto_lines)?;
         }
     }
     Ok(())
+}
+
+/// 把 `catch_unwind` 的 panic payload 转成可记录的一行文本。
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
 }
 
 /// 把磁盘上最近一次确认结果并回内存快照。
@@ -908,12 +989,32 @@ mod tests {
         );
     }
 
+    /// 单个账号查询的确定性闸门：`started` 表示查询已进入，`release` 放行返回。
+    ///
+    /// 测试用 `started` 做「查询已在途」屏障，用 `release` 放行，而不是 sleep 猜时序。
+    #[derive(Default)]
+    struct QueryGate {
+        started: Notify,
+        release: Notify,
+    }
+
+    impl QueryGate {
+        async fn enter(&self) {
+            // notify_one 会保存 permit，即使测试尚未 await started 也不会丢信号。
+            self.started.notify_one();
+            self.release.notified().await;
+        }
+
+        fn release(&self) {
+            self.release.notify_one();
+        }
+    }
+
     struct MockProvider {
         id: &'static str,
         accounts: Vec<Account>,
         quotas: HashMap<String, Vec<Quota>>,
-        wait_for_quota: Option<Arc<Notify>>,
-        wait_by_account: HashMap<String, Arc<Notify>>,
+        gates: HashMap<String, Arc<QueryGate>>,
         // 这些账号的 quota 查询返回 Err,模拟拉取失败 → fetch_state=Failed。
         fail_accounts: HashSet<String>,
         activated: mpsc::UnboundedSender<(String, String)>,
@@ -943,10 +1044,8 @@ mod tests {
         }
 
         async fn query_quota(&self, id: &AccountId) -> subswap_core::Result<Vec<Quota>> {
-            if let Some(wait_for_quota) = self.wait_by_account.get(&id.0) {
-                wait_for_quota.notified().await;
-            } else if let Some(wait_for_quota) = &self.wait_for_quota {
-                wait_for_quota.notified().await;
+            if let Some(gate) = self.gates.get(&id.0) {
+                gate.enter().await;
             }
             if self.fail_accounts.contains(&id.0) {
                 // 用非重试错误(429),让失败快速落地为 Failed,不被 query_quota_with_retry
@@ -988,7 +1087,7 @@ mod tests {
     #[tokio::test]
     async fn ready_provider_auto_swaps_and_never_reports_isolated_session_skip() {
         let (activated_tx, mut activated_rx) = mpsc::unbounded_channel();
-        let slow_claude = Arc::new(Notify::new());
+        let claude_gate = Arc::new(QueryGate::default());
 
         let mut codex_quotas = HashMap::new();
         codex_quotas.insert(
@@ -1005,8 +1104,7 @@ mod tests {
             id: "claude",
             accounts: vec![account("claude", "claude-active", true)],
             quotas: HashMap::new(),
-            wait_for_quota: Some(slow_claude.clone()),
-            wait_by_account: HashMap::new(),
+            gates: HashMap::from([("claude-active".to_string(), claude_gate.clone())]),
             fail_accounts: HashSet::new(),
             activated: activated_tx.clone(),
         }));
@@ -1017,8 +1115,7 @@ mod tests {
                 account("codex", "codex-candidate", false),
             ],
             quotas: codex_quotas,
-            wait_for_quota: None,
-            wait_by_account: HashMap::new(),
+            gates: HashMap::new(),
             fail_accounts: HashSet::new(),
             activated: activated_tx,
         }));
@@ -1038,31 +1135,38 @@ mod tests {
         let handle = tokio::spawn(async move {
             let cache_path = tmp.path().join("quota_cache.json");
             let _tmp = tmp;
-            fill_quotas_progressively(
-                &registry,
-                &audit,
-                &mut snapshots,
-                Some(&cfg),
-                &mut auto_lines,
-                None,
-                &cache_path,
-            )
-            .await
-            .unwrap();
+            let fill_ctx = QuotaFillContext {
+                registry: &registry,
+                audit: &audit,
+                cache_path: &cache_path,
+                observer: None,
+            };
+            fill_quotas_progressively(&fill_ctx, &mut snapshots, Some(&cfg), &mut auto_lines, None)
+                .await
+                .unwrap();
             (snapshots, auto_lines)
         });
 
-        let activated = tokio::time::timeout(Duration::from_millis(300), activated_rx.recv())
+        // 先等 Claude 查询真正进入（gate 已持有），再要求 codex 在 Claude 未返回前完成切换。
+        // 10s 只是死锁保护，不是语义时序；Claude 未 release 前 fill 不会结束。
+        tokio::time::timeout(Duration::from_secs(10), claude_gate.started.notified())
             .await
-            .expect("codex should activate before claude quota finishes")
+            .expect("claude quota query should start");
+        let activated = tokio::time::timeout(Duration::from_secs(10), activated_rx.recv())
+            .await
+            .expect("codex should activate while claude quota is gated")
             .expect("activation channel should stay open");
         assert_eq!(
             activated,
             ("codex".to_string(), "codex-candidate".to_string())
         );
 
-        slow_claude.notify_waiters();
-        let (snapshots, auto_lines) = handle.await.unwrap();
+        claude_gate.release();
+        let (snapshots, auto_lines) =
+            tokio::time::timeout(Duration::from_secs(10), handle)
+                .await
+                .expect("fill task should finish after releasing claude")
+                .unwrap();
         let codex = snapshots
             .iter()
             .find(|snap| snap.provider == "codex")
@@ -1101,8 +1205,7 @@ mod tests {
                 account("codex", "codex-candidate", false),
             ],
             quotas,
-            wait_for_quota: None,
-            wait_by_account: HashMap::new(),
+            gates: HashMap::new(),
             fail_accounts: HashSet::new(),
             activated: activated_tx,
         }));
@@ -1112,17 +1215,15 @@ mod tests {
         let audit = AuditLog::new(tmp.path().join("audit.log"));
         let mut auto_lines = Vec::new();
         let cache_path = tmp.path().join("quota_cache.json");
-        fill_quotas_progressively(
-            &registry,
-            &audit,
-            &mut snapshots,
-            None,
-            &mut auto_lines,
-            None,
-            &cache_path,
-        )
-        .await
-        .unwrap();
+        let fill_ctx = QuotaFillContext {
+            registry: &registry,
+            audit: &audit,
+            cache_path: &cache_path,
+            observer: None,
+        };
+        fill_quotas_progressively(&fill_ctx, &mut snapshots, None, &mut auto_lines, None)
+            .await
+            .unwrap();
 
         assert!(
             activated_rx.try_recv().is_err(),
@@ -1142,8 +1243,6 @@ mod tests {
     #[tokio::test]
     async fn healthy_active_waits_for_its_own_quota_without_swapping() {
         let (activated_tx, mut activated_rx) = mpsc::unbounded_channel();
-        let slow_active = Arc::new(Notify::new());
-
         let mut quotas = HashMap::new();
         quotas.insert(
             "active".into(),
@@ -1154,8 +1253,9 @@ mod tests {
             vec![quota("opencode", "candidate", 0, QuotaStatus::Ok)],
         );
 
-        let mut wait_by_account = HashMap::new();
-        wait_by_account.insert("active".into(), slow_active.clone());
+        let active_gate = Arc::new(QueryGate::default());
+        let mut gates = HashMap::new();
+        gates.insert("active".to_string(), active_gate.clone());
 
         let mut registry = ProviderRegistry::new();
         registry.register(Arc::new(MockProvider {
@@ -1165,8 +1265,7 @@ mod tests {
                 account("opencode", "candidate", false),
             ],
             quotas,
-            wait_for_quota: None,
-            wait_by_account,
+            gates,
             fail_accounts: HashSet::new(),
             activated: activated_tx,
         }));
@@ -1186,28 +1285,31 @@ mod tests {
         let handle = tokio::spawn(async move {
             let cache_path = tmp.path().join("quota_cache.json");
             let _tmp = tmp;
-            fill_quotas_progressively(
-                &registry,
-                &audit,
-                &mut snapshots,
-                Some(&cfg),
-                &mut auto_lines,
-                None,
-                &cache_path,
-            )
-            .await
-            .unwrap();
+            let fill_ctx = QuotaFillContext {
+                registry: &registry,
+                audit: &audit,
+                cache_path: &cache_path,
+                observer: None,
+            };
+            fill_quotas_progressively(&fill_ctx, &mut snapshots, Some(&cfg), &mut auto_lines, None)
+                .await
+                .unwrap();
             (snapshots, auto_lines)
         });
 
+        tokio::time::timeout(Duration::from_secs(10), active_gate.started.notified())
+            .await
+            .expect("active quota query should start");
         assert!(
-            tokio::time::timeout(Duration::from_millis(100), activated_rx.recv())
-                .await
-                .is_err(),
+            activated_rx.try_recv().is_err(),
             "healthy candidate must not replace a loading active account"
         );
-        slow_active.notify_one();
-        let (snapshots, auto_lines) = handle.await.unwrap();
+        active_gate.release();
+        let (snapshots, auto_lines) =
+            tokio::time::timeout(Duration::from_secs(10), handle)
+                .await
+                .expect("fill task should finish after releasing active")
+                .unwrap();
         let opencode = snapshots
             .iter()
             .find(|snap| snap.provider == "opencode")
@@ -1225,8 +1327,6 @@ mod tests {
     async fn waits_for_usable_candidate_without_intermediate_failed_swap() {
         let (activated_tx, mut activated_rx) = mpsc::unbounded_channel();
         // 放慢可用候选，确保先收到耗尽与失败结果。
-        let slow_better = Arc::new(Notify::new());
-
         let mut quotas = HashMap::new();
         // active 已耗尽，但没有可用候选前应保持原号。
         quotas.insert(
@@ -1239,8 +1339,9 @@ mod tests {
             vec![quota("claude", "better", 0, QuotaStatus::Ok)],
         );
         // 查询失败的账号不能成为自动候选。
-        let mut wait_by_account = HashMap::new();
-        wait_by_account.insert("better".into(), slow_better.clone());
+        let better_gate = Arc::new(QueryGate::default());
+        let mut gates = HashMap::new();
+        gates.insert("better".to_string(), better_gate.clone());
         let mut fail_accounts = HashSet::new();
         fail_accounts.insert("escape".to_string());
 
@@ -1253,8 +1354,7 @@ mod tests {
                 account("claude", "better", false),
             ],
             quotas,
-            wait_for_quota: None,
-            wait_by_account,
+            gates,
             fail_accounts,
             activated: activated_tx,
         }));
@@ -1270,39 +1370,77 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let audit = AuditLog::new(tmp.path().join("audit.log"));
         let mut auto_lines = Vec::new();
+        let (applied_tx, mut applied_rx) = mpsc::unbounded_channel();
 
         let handle = tokio::spawn(async move {
             let cache_path = tmp.path().join("quota_cache.json");
             let _tmp = tmp;
-            fill_quotas_progressively(
-                &registry,
-                &audit,
-                &mut snapshots,
-                Some(&cfg),
-                &mut auto_lines,
-                None,
-                &cache_path,
-            )
-            .await
-            .unwrap();
+            let fill_ctx = QuotaFillContext {
+                registry: &registry,
+                audit: &audit,
+                cache_path: &cache_path,
+                observer: Some(&applied_tx),
+            };
+            fill_quotas_progressively(&fill_ctx, &mut snapshots, Some(&cfg), &mut auto_lines, None)
+                .await
+                .unwrap();
             (snapshots, auto_lines)
         });
 
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), activated_rx.recv())
+        // 等 active（耗尽）与 escape（查询失败）两个结果都真正应用到快照后再放行 better。
+        // 这样「没有中间失败切换」不依赖 100ms 文件 IO/调度时序。
+        let mut applied = Vec::new();
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(10), applied_rx.recv())
                 .await
-                .is_err(),
-            "must not switch to an unconfirmed fallback"
+                .expect("active and escape outcomes should be applied")
+                .expect("applied observer channel should stay open");
+            applied.push(event);
+            if applied.iter().any(|event| event.1 == "active")
+                && applied.iter().any(|event| event.1 == "escape")
+            {
+                break;
+            }
+        }
+        let active_state = applied
+            .iter()
+            .find(|event| event.1 == "active")
+            .map(|event| event.2.clone());
+        let escape_state = applied
+            .iter()
+            .find(|event| event.1 == "escape")
+            .map(|event| event.2.clone());
+        assert!(
+            matches!(active_state, Some(QuotaFetchState::Ready)),
+            "active quota must be a completed reading; applied={applied:?}"
+        );
+        assert!(
+            matches!(escape_state, Some(QuotaFetchState::Failed(_))),
+            "escape must be a failed reading, not a candidate; applied={applied:?}"
+        );
+        assert!(
+            activated_rx.try_recv().is_err(),
+            "must not switch to an unconfirmed fallback; applied={applied:?}"
         );
 
-        slow_better.notify_one();
-        let selected = tokio::time::timeout(Duration::from_millis(300), activated_rx.recv())
-            .await
-            .expect("should switch once a usable candidate arrives")
-            .expect("activation channel open");
+        better_gate.release();
+        let selected =
+            match tokio::time::timeout(Duration::from_secs(10), activated_rx.recv()).await {
+                Ok(Some(selected)) => selected,
+                Ok(None) => {
+                    panic!("activation channel closed before usable candidate; applied={applied:?}")
+                }
+                Err(_) => {
+                    panic!("timed out waiting for usable candidate activation; applied={applied:?}")
+                }
+            };
         assert_eq!(selected, ("claude".to_string(), "better".to_string()));
 
-        let (snapshots, auto_lines) = handle.await.unwrap();
+        let (snapshots, auto_lines) =
+            tokio::time::timeout(Duration::from_secs(10), handle)
+                .await
+                .expect("fill task should finish after better activation")
+                .unwrap();
         let claude = snapshots
             .iter()
             .find(|snap| snap.provider == "claude")
