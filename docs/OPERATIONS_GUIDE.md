@@ -211,6 +211,15 @@ Windows release 只有 CLI，文档和安装脚本都不得暗示包含后台 da
 - **工具链一致性**：本机可能同时存在 Homebrew Rust 与 rustup。`cargo fmt` / `clippy` 默认走 PATH 里的那一个，而 CI 用 rustup stable；rustfmt 小版本会改变换行，导致本地通过、CI 失败。发版前用 `PATH="$HOME/.cargo/bin:$PATH" cargo --version` 对齐 CI，再跑 `cargo fmt --all --check` 与 `cargo clippy --workspace --all-targets -- -D warnings`。
 - **失败的 tag 不移动**：tag 已推送而 release CI 失败时，不要 `git tag -f` 或强推；修复后提升 patch 版本重新发版，旧 tag 与 draft 保留为失败历史。发布 CI 通过后仍要下载实际资产核验。
 
+### 额度窗口时长契约（2026-10-25）
+
+窗口顺序与标签由真实时长决定，不再依赖 `five_hour` / `seven_day` / `month` 名单；完整契约见 [CLI.md](CLI.md)「额度窗口排序与标签」。
+
+- `QuotaWindow::Timed(<秒>)` 序列化成时长 token（`20d` / `3h` / `90m` / `45s`）；Codex、Kimi 的上游窗口长度经 `QuotaWindow::from_seconds` 映射，新增长度不会退化成 `custom`。
+- 验证：`cargo test --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo fmt --all --check` 全绿；release 安装到 `~/.local/bin` 后 daemon 已重启，默认入口仍是 5h → 7d → mo。
+- 用 `SUBSWAP_HOME` 临时 home 构造含 `20d` / `3h` 的 `quota_cache.json`：`subswap status` 与 `subswap status --json` 分别输出 `3h · five_hour · seven_day · 20d · month · first_party_models` 与对应 token，证明非标准长度按秒插入而不是排在最后。Apple 端消费该快照的实际画面见 SubswapApple `docs/OPERATIONS_GUIDE.md`。
+- 新增 Provider 时：上游给了窗口长度就必须走 `QuotaWindow::from_seconds`；只有完全拿不到长度才允许 `Custom`，否则客户端无法排序或标注。
+
 ### 发布后资产核验
 
 - 下载全部 `.sha256` 与对应资产，逐个校验；不要只看 workflow 绿色。
