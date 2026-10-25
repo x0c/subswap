@@ -205,12 +205,10 @@ async fn reset_credit_quota_with_fetch(
 }
 
 fn quota_window_for_usage_window(minutes: Option<u64>, seconds: Option<u64>) -> QuotaWindow {
-    match minutes.or_else(|| seconds.map(|value| value / 60)) {
-        Some(300) => QuotaWindow::FiveHour,
-        Some(10_080) => QuotaWindow::SevenDay,
-        // 官方 / 实测月度窗口常见 28–31 天（分钟），例如 43200 / 43800。
-        Some(m) if (28 * 1_440..=31 * 1_440).contains(&m) => QuotaWindow::Month,
-        _ => QuotaWindow::Custom,
+    // 上游给的是真实长度：统一按秒映射，厂商新增窗口（如 20 天）也能排序与标注。
+    match minutes.map(|value| value.saturating_mul(60)).or(seconds) {
+        Some(seconds) => QuotaWindow::from_seconds(seconds),
+        None => QuotaWindow::Custom,
     }
 }
 
@@ -360,7 +358,11 @@ mod tests {
         );
         assert_eq!(
             quota_window_for_usage_window(Some(60), None),
-            QuotaWindow::Custom
+            QuotaWindow::Timed(3_600)
+        );
+        assert_eq!(
+            quota_window_for_usage_window(Some(20 * 1_440), None),
+            QuotaWindow::Timed(20 * 86_400)
         );
         assert_eq!(
             quota_window_for_usage_window(None, None),

@@ -1,5 +1,6 @@
 //! Kimi usage 查询：GET {base}/usages。数值为字符串、reset 为 ISO8601。
-//! usage → 7d 窗口；limits[].window(duration+timeUnit) 换算分钟：300→5h、10080→7d、其余 Custom。
+//! usage → 7d 窗口；limits[].window(duration+timeUnit) 换算分钟：300→5h、10080→7d、
+//! 其余按真实时长落到 `Timed(<秒>)`（如 20 天 → `20d`），只有时长不可解析才落 Custom。
 
 use chrono::{DateTime, Utc};
 use subswap_core::error::{Error, Result};
@@ -28,11 +29,7 @@ fn reset_at(detail: &serde_json::Value) -> Option<DateTime<Utc>> {
 }
 
 fn window_from_minutes(minutes: u64) -> QuotaWindow {
-    match minutes {
-        300 => QuotaWindow::FiveHour,
-        10_080 => QuotaWindow::SevenDay,
-        _ => QuotaWindow::Custom,
-    }
+    QuotaWindow::from_seconds(minutes.saturating_mul(60))
 }
 
 fn minutes_of(window: &serde_json::Value) -> Option<u64> {

@@ -611,6 +611,8 @@ fn window_ttl(window: QuotaWindow) -> Duration {
     match window {
         QuotaWindow::FiveHour | QuotaWindow::Custom => Duration::hours(5),
         QuotaWindow::SevenDay => Duration::days(7),
+        // 非标准时长按真实长度兜底，避免把 20 天窗口当 5h 反复重查。
+        QuotaWindow::Timed(seconds) => Duration::seconds(seconds as i64),
         QuotaWindow::Month
         | QuotaWindow::FirstPartyModels
         | QuotaWindow::Api

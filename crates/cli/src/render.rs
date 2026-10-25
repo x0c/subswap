@@ -391,17 +391,20 @@ fn attempt_count(err: &str) -> Option<&str> {
 
 pub fn format_quota_compact(q: &Quota, color: bool) -> String {
     let w_label = match q.window {
-        QuotaWindow::FiveHour => "5h",
-        QuotaWindow::SevenDay => "7d",
-        QuotaWindow::Month => "mo",
+        QuotaWindow::FiveHour => "5h".to_string(),
+        QuotaWindow::SevenDay => "7d".to_string(),
+        QuotaWindow::Month => "mo".to_string(),
         // Cursor 官方模型窗口；必须短标签，否则默认入口一行会被撑爆。
-        QuotaWindow::FirstPartyModels => "1st",
-        QuotaWindow::Api => "API",
+        QuotaWindow::FirstPartyModels => "1st".to_string(),
+        QuotaWindow::Api => "API".to_string(),
         // Cursor 套餐 Credits；`$` 短标签，余量按分→美元展示。
-        QuotaWindow::Credits => "$",
+        QuotaWindow::Credits => "$".to_string(),
         // Codex 重置道具；`RS` 短标签，展示可用张数（`used`）而非百分比。
-        QuotaWindow::ResetCredits => "RS",
-        QuotaWindow::Custom => "--",
+        QuotaWindow::ResetCredits => "RS".to_string(),
+        // 无时长信息：不猜长度，避免把未知窗口画成某个已知窗口。
+        QuotaWindow::Custom => "--".to_string(),
+        // 时长 token 本身就是标签（如 `20d` / `3h`），不新增枚举。
+        QuotaWindow::Timed(seconds) => QuotaWindow::duration_token(seconds),
     };
     // 重置道具：`used` 存可用张数（`limit` 固定 0，不参与百分比语义）。
     // 时间是道具过期（不是额度重置），用 `exp` 与 5h/7d 的 `reset` 区分。
@@ -467,20 +470,28 @@ pub fn quota_has_display_value(q: &Quota) -> bool {
     q.limit > 0 || q.reset_at.is_some() || !matches!(q.status, QuotaStatus::Unknown)
 }
 
-/// 窗口的展示顺序：与 provider 返回顺序无关，保证不同 provider 的行在视觉上一致
-/// （例如 Kimi 的 `/usages` 先给 7d 再给 5h，若不排序会跟 Claude 的 5h/7d 顺序相反）。
-fn window_display_order(window: QuotaWindow) -> u8 {
-    match window {
-        QuotaWindow::FiveHour => 0,
-        QuotaWindow::SevenDay => 1,
-        QuotaWindow::Month => 2,
-        QuotaWindow::FirstPartyModels => 3,
-        QuotaWindow::Api => 4,
-        // Credits 追加在 1st / API 之后；重置道具挂最后（Custom 之前）。
-        QuotaWindow::Credits => 5,
-        QuotaWindow::ResetCredits => 6,
-        QuotaWindow::Custom => 7,
+/// 窗口的展示顺序：时间窗口按**真实时长**从短到长，非时间池排在其后。
+///
+/// 不依赖窗口名单：厂商新增窗口长度（如 20 天）一定落在 7d 与月之间，
+/// 而不是像枚举写法那样掉到所有已知窗口之后。
+pub(crate) fn window_display_order(window: QuotaWindow) -> (u8, u64, u8) {
+    if let Some(seconds) = window.duration_seconds() {
+        return (0, seconds, 0);
     }
+    let pool = match window {
+        QuotaWindow::FirstPartyModels => 0,
+        QuotaWindow::Api => 1,
+        // Credits 追加在 1st / API 之后；重置道具挂最后（Custom 之前）。
+        QuotaWindow::Credits => 2,
+        QuotaWindow::ResetCredits => 3,
+        QuotaWindow::Custom => 4,
+        // 时间窗口在函数开头已返回；这里只为满足穷尽匹配。
+        QuotaWindow::FiveHour
+        | QuotaWindow::SevenDay
+        | QuotaWindow::Month
+        | QuotaWindow::Timed(_) => 5,
+    };
+    (1, 0, pool)
 }
 
 fn render_quota_parts(quotas: &[Quota], quota_width: usize, color: bool) -> String {
@@ -776,6 +787,47 @@ mod tests {
         let pos_5h = rendered.find("5h").expect("5h label present");
         let pos_7d = rendered.find("7d").expect("7d label present");
         assert!(pos_5h < pos_7d, "expected 5h before 7d, got: {rendered}");
+    }
+
+    /// 厂商新增非标准窗口（20d）必须按时长插入 7d 与月之间，而不是排在所有已知窗口之后。
+    #[test]
+    fn quota_parts_order_timed_windows_by_duration_not_by_name() {
+        let quotas = vec![
+            quota(QuotaWindow::Month, 10, 100, QuotaStatus::Ok),
+            quota(QuotaWindow::FirstPartyModels, 10, 100, QuotaStatus::Ok),
+            quota(
+                QuotaWindow::from_seconds(20 * 86_400),
+                10,
+                100,
+                QuotaStatus::Ok,
+            ),
+            quota(QuotaWindow::SevenDay, 10, 100, QuotaStatus::Ok),
+            quota(
+                QuotaWindow::from_seconds(3 * 3_600),
+                10,
+                100,
+                QuotaStatus::Ok,
+            ),
+            quota(QuotaWindow::FiveHour, 10, 100, QuotaStatus::Ok),
+            quota(QuotaWindow::Custom, 0, 0, QuotaStatus::Unknown),
+        ];
+        let rendered = render_quota_parts(&quotas, 0, false);
+        let order = ["3h", "5h", "7d", "20d", "mo", "1st", "--"];
+        let positions: Vec<usize> = order
+            .iter()
+            .map(|label| {
+                rendered
+                    .find(label)
+                    .unwrap_or_else(|| panic!("{label} missing: {rendered}"))
+            })
+            .collect();
+        assert!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "unexpected order: {rendered}"
+        );
+        // 3h 比 5h 短，必须排在它前面；20d 必须落在 7d 与 30d 之间。
+        assert!(rendered.contains("3h"));
+        assert!(rendered.contains("20d"));
     }
 
     #[test]

@@ -231,7 +231,7 @@ The app-server response is usable only when its `accountId` matches the registry
 
 - 顶层与 `usage / quota / limits` 嵌套都尝试；`primary / secondary` 与 `rate_limit.primary_window / secondary_window` 任意层级递归识别
 - **禁止**递归进入 `additional_rate_limits` / `code_review_rate_limit` / `model_usage`（会多出第二个 `7d`、误判周额度耗尽）。见 [2026-09-05 Codex 两个 7d](troubleshooting/2026-09-05-codex-duplicate-7d-from-additional-rate-limits.md)
-- 窗口分钟：`300` → 5h，`10_080` → 7d，`28*1440..=31*1440`（如 43200/43800）→ `mo`，其余 → `Custom`
+- 窗口分钟：`300` → 5h，`10_080` → 7d，`28*1440..=31*1440`（如 43200/43800）→ `mo`，其余 → 时长 token（`QuotaWindow::Timed(<秒数>)`，如 20 天 → `20d`）；只有完全拿不到长度才落 `Custom`
 - 候选字段：`used_percent / percent / used / limit / resets_at / reset_at / window_minutes / limit_window_seconds`
 - 全不可解析 → `Quota { status: Unknown }` 而非 `Err`
 - 实时成功但字段不可识别且有新鲜 `last_usage` → 本地缓存兜底；有效期见 `defaults::CODEX_USAGE_CACHE_MAX_AGE_MS`
@@ -410,7 +410,7 @@ API-key 型 `auth.json` 示例：
 - `Authorization: Bearer <access_token>`
 - 数值字段常为**字符串**（`kimi_usage.rs::to_u64` 兼数字）；`used` 缺失 → `limit - remaining`
 - `reset_at` ← `resetTime`（ISO8601 RFC3339）
-- 窗口：顶层 `usage` → `QuotaWindow::SevenDay`；`limits[]` 按 `window.duration` + `window.timeUnit`（`MINUTE`/`HOUR`/`DAY`）→ 分钟；`duration:300, TIME_UNIT_MINUTE` → `FiveHour`；`10_080` 分钟 → 7d；其余 → `Custom`
+- 窗口：顶层 `usage` → `QuotaWindow::SevenDay`；`limits[]` 按 `window.duration` + `window.timeUnit`（`MINUTE`/`HOUR`/`DAY`）→ 分钟；`duration:300, TIME_UNIT_MINUTE` → `FiveHour`；`10_080` 分钟 → 7d；其余 → 时长 token（`QuotaWindow::Timed(<秒数>)`），只有时长不可解析才落 `Custom`
 - 实现：`kimi_usage.rs::fetch_quota_with_active_recovery`（底层 `fetch_quota_at` / `parse_usages` / `window_from_minutes` / `minutes_of`）
 
 ### active 401 的官方锁协调

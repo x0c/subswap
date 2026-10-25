@@ -118,8 +118,13 @@ impl std::str::FromStr for BillingKind {
 }
 
 /// 额度统计窗口。
+///
+/// 窗口顺序与标签由**真实时长**决定（`duration_seconds`），不依赖枚举名单：
+/// 已知 5h / 7d / 月保持稳定 token，其它已知时长的窗口落到 [`QuotaWindow::Timed`]，
+/// 用 `<n>d|h|m|s` 形式的 token 表达（例如厂商新增 20 天窗口 → `20d`）。
+/// 只有完全拿不到时长时才用 [`QuotaWindow::Custom`]；客户端无法为它排序或标注长度。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(into = "String", from = "String")]
 pub enum QuotaWindow {
     /// Claude 的 5 小时窗口。
     FiveHour,
@@ -136,8 +141,111 @@ pub enum QuotaWindow {
     /// Codex 限额重置道具（banked reset）：`used` = 可用数，`limit` = 0（不参与百分比与自动切换判定），
     /// `reset_at` = 最早过期时间。`0` 时不产生该窗口。
     ResetCredits,
-    /// 其他自定义窗口。
+    /// 其他自定义窗口（没有时长信息）。
     Custom,
+    /// 非标准时长的滚动窗口：厂商新增的窗口长度（秒）。用于排序、标签与 JSON 身份。
+    Timed(u64),
+}
+
+impl QuotaWindow {
+    /// 把上游时长（秒）映射成窗口：标准长度归入已知窗口，其余保留真实时长。
+    ///
+    /// Provider 拿到窗口长度后必须走这里，禁止直接落 `Custom`——否则客户端失去排序依据。
+    pub fn from_seconds(seconds: u64) -> Self {
+        match seconds {
+            // 上游偶尔有秒级取整误差，标准窗口给一分钟容差。
+            s if (17_940..=18_060).contains(&s) => Self::FiveHour,
+            s if (604_740..=604_860).contains(&s) => Self::SevenDay,
+            // 官方 / 实测月度窗口常见 28–31 天。
+            s if (28 * 86_400..=31 * 86_400).contains(&s) => Self::Month,
+            s => Self::Timed(s),
+        }
+    }
+
+    /// 该窗口的时长（秒）；非时间池与未知窗口返回 `None`。
+    pub fn duration_seconds(self) -> Option<u64> {
+        match self {
+            Self::FiveHour => Some(18_000),
+            Self::SevenDay => Some(604_800),
+            Self::Month => Some(30 * 86_400),
+            Self::Timed(seconds) => Some(seconds),
+            Self::FirstPartyModels
+            | Self::Api
+            | Self::Credits
+            | Self::ResetCredits
+            | Self::Custom => None,
+        }
+    }
+
+    /// 写入 JSON / 缓存时使用的稳定 token。客户端依赖该 token 的字符串本身携带时长。
+    pub fn token(self) -> String {
+        match self {
+            Self::FiveHour => "five_hour".into(),
+            Self::SevenDay => "seven_day".into(),
+            Self::Month => "month".into(),
+            Self::FirstPartyModels => "first_party_models".into(),
+            Self::Api => "api".into(),
+            Self::Credits => "credits".into(),
+            Self::ResetCredits => "reset_credits".into(),
+            Self::Custom => "custom".into(),
+            Self::Timed(seconds) => Self::duration_token(seconds),
+        }
+    }
+
+    /// 时长 token：优先整天 / 整小时 / 整分钟，最小到秒。
+    pub fn duration_token(seconds: u64) -> String {
+        if seconds % 86_400 == 0 {
+            format!("{}d", seconds / 86_400)
+        } else if seconds % 3_600 == 0 {
+            format!("{}h", seconds / 3_600)
+        } else if seconds % 60 == 0 {
+            format!("{}m", seconds / 60)
+        } else {
+            format!("{seconds}s")
+        }
+    }
+
+    /// 解析 token；未知 token 保守落 `Custom`，保证旧缓存与旧快照仍可读。
+    fn from_token(token: &str) -> Self {
+        match token {
+            "five_hour" => return Self::FiveHour,
+            "seven_day" => return Self::SevenDay,
+            "month" => return Self::Month,
+            "first_party_models" => return Self::FirstPartyModels,
+            "api" => return Self::Api,
+            "credits" => return Self::Credits,
+            "reset_credits" => return Self::ResetCredits,
+            "custom" => return Self::Custom,
+            _ => {}
+        }
+        parse_duration_token(token).map_or(Self::Custom, Self::from_seconds)
+    }
+}
+
+/// 解析 `<n>d` / `<n>h` / `<n>m` / `<n>s` 形态的时长 token。
+fn parse_duration_token(token: &str) -> Option<u64> {
+    let (digits, unit) = token.split_at(token.char_indices().last()?.0);
+    let value: u64 = digits.parse().ok()?;
+    let seconds = match unit {
+        "d" => value.checked_mul(86_400)?,
+        "h" => value.checked_mul(3_600)?,
+        "m" => value.checked_mul(60)?,
+        "s" => value,
+        _ => return None,
+    };
+    (value > 0).then_some(seconds)
+}
+
+impl From<QuotaWindow> for String {
+    fn from(window: QuotaWindow) -> Self {
+        window.token()
+    }
+}
+
+impl From<String> for QuotaWindow {
+    fn from(value: String) -> Self {
+        Self::from_token(&value)
+    }
 }
 
 /// 额度状态。
@@ -242,4 +350,81 @@ pub struct ClientTarget {
     pub display_name: String,
     /// 该客户端的根目录或主配置文件，doctor 用来探测是否存在。
     pub probe_path: std::path::PathBuf,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 标准长度归入已知窗口；非标准长度必须保留真实秒数，不能落 Custom。
+    #[test]
+    fn window_from_seconds_keeps_unknown_lengths() {
+        assert_eq!(QuotaWindow::from_seconds(18_000), QuotaWindow::FiveHour);
+        assert_eq!(QuotaWindow::from_seconds(18_037), QuotaWindow::FiveHour);
+        assert_eq!(QuotaWindow::from_seconds(604_800), QuotaWindow::SevenDay);
+        assert_eq!(QuotaWindow::from_seconds(30 * 86_400), QuotaWindow::Month);
+        assert_eq!(QuotaWindow::from_seconds(28 * 86_400), QuotaWindow::Month);
+        assert_eq!(
+            QuotaWindow::from_seconds(20 * 86_400),
+            QuotaWindow::Timed(1_728_000)
+        );
+        assert_eq!(
+            QuotaWindow::from_seconds(3 * 3_600),
+            QuotaWindow::Timed(10_800)
+        );
+    }
+
+    /// 时长 token 必须可读、可回读，并在 JSON 里自带长度。
+    #[test]
+    fn duration_tokens_round_trip_through_json() {
+        for (seconds, token) in [
+            (20 * 86_400, "20d"),
+            (3 * 3_600, "3h"),
+            (90 * 60, "90m"),
+            (45, "45s"),
+        ] {
+            let window = QuotaWindow::from_seconds(seconds);
+            assert_eq!(window.token(), token);
+            let encoded = serde_json::to_string(&window).unwrap();
+            assert_eq!(encoded, format!("\"{token}\""));
+            assert_eq!(
+                serde_json::from_str::<QuotaWindow>(&encoded).unwrap(),
+                window
+            );
+        }
+        assert_eq!(QuotaWindow::FiveHour.token(), "five_hour");
+        assert_eq!(QuotaWindow::SevenDay.token(), "seven_day");
+        assert_eq!(QuotaWindow::Month.token(), "month");
+        assert_eq!(QuotaWindow::Credits.token(), "credits");
+        // 未知 / 没有时长信息的 token 仍可读，只是失去排序依据。
+        assert_eq!(
+            serde_json::from_str::<QuotaWindow>("\"custom\"").unwrap(),
+            QuotaWindow::Custom
+        );
+        assert_eq!(
+            serde_json::from_str::<QuotaWindow>("\"week\"").unwrap(),
+            QuotaWindow::Custom
+        );
+        assert_eq!(QuotaWindow::Custom.duration_seconds(), None);
+        assert_eq!(QuotaWindow::Credits.duration_seconds(), None);
+    }
+
+    /// 完整 Quota 序列化保留时长 token，缓存可原样回读。
+    #[test]
+    fn quota_round_trip_keeps_timed_window() {
+        let quota = Quota {
+            provider: "codex".into(),
+            account_id: AccountId("user@example.com".into()),
+            window: QuotaWindow::from_seconds(20 * 86_400),
+            used: 10,
+            limit: 100,
+            reset_at: None,
+            status: QuotaStatus::Ok,
+            note: None,
+        };
+        let json = serde_json::to_string(&quota).unwrap();
+        assert!(json.contains("\"window\":\"20d\""), "{json}");
+        let decoded: Quota = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.window, QuotaWindow::Timed(1_728_000));
+    }
 }

@@ -372,16 +372,17 @@ fn print_human(snapshot: &StatusSnapshot) {
                 other => other.to_string(),
             }
         } else {
-            account
-                .quotas
-                .iter()
+            let mut quotas: Vec<&Quota> = account.quotas.iter().collect();
+            quotas.sort_by_key(|q| crate::render::window_display_order(q.window));
+            quotas
+                .into_iter()
                 .map(|q| {
                     let used = if q.limit == 0 {
                         format!("{}", q.used)
                     } else {
                         format!("{:.0}%", q.used as f64 / q.limit as f64 * 100.0)
                     };
-                    format!("{:?} {}", q.window, used)
+                    format!("{} {}", q.window.token(), used)
                 })
                 .collect::<Vec<_>>()
                 .join(" · ")

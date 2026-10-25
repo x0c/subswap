@@ -50,6 +50,15 @@ GUI/小组件按秒级重绘轮询时应加 `--no-metrics`：计数器会随 60 
 
 不带 `--json` 时输出同一份数据的紧凑人读视图，仍然只读。
 
+### 额度窗口排序与标签
+
+窗口顺序由**真实时长**决定，不靠枚举名字：默认入口、`status`（人读与 JSON 消费方）以及 Apple 客户端都按同一规则展示，避免某家厂商新增窗口后排在更长的窗口后面。
+
+- 时间窗口按秒数从短到长：5h（`five_hour`）→ 7d（`seven_day`）→ 30d（`month`）。
+- 非标准时长用**时长 token** 表示：`<n>d` / `<n>h` / `<n>m` / `<n>s`（例如厂商新增 20 天窗口 → `20d`）。这些 token 在 JSON 的 `window` 字段里同样稳定，客户端自行解析秒数；token 本身就是列标签，不再需要逐个补枚举。
+- 非时间池（`first_party_models` / `api` / `credits` / `reset_credits`）排在所有时间窗口之后，按各自固定顺序展示；无法识别时长的窗口保留源顺序，排在最后。
+- Provider 只要知道上游窗口长度，就必须走 `QuotaWindow::from_seconds` 映射（5h/7d/28–31 天自动归入标准 token，其余落到时长 token），**不要**再落到 `QuotaWindow::Custom`（`custom` 无时长，客户端只能把它排在最后且显示 `--`）。
+
 后台采集节奏由默认入口与 `subswapd` 执行，`status` 不参与：激活账号约每 3 分钟、停放/已确认耗尽账号约每 15 分钟；同账号真实请求仍受 90 秒最小间隔与 Provider 更严下限约束。调度只增加最多 10% 的正向抖动，不会提前；已知 reset 后延迟约 2 秒再显式采集。数据超过 5 分钟（`decision_max_age_ms`）只用于展示，不能作为自动切换依据。具体默认值以 [CONFIG.md](CONFIG.md) 为准。
 
 ### Automatic swap safety
