@@ -619,11 +619,18 @@ async fn collect_snapshots(
         for account in accounts {
             let entry = cache.get(&provider_id, &account.id.0);
             let quotas = entry.as_ref().map(|e| e.quotas.clone()).unwrap_or_default();
-            let observed_at = entry.as_ref().map(|e| e.cached_at);
+            let mut observed_at = entry.as_ref().map(|e| e.cached_at);
             let account_key = (provider_id.clone(), account.id.0.clone());
             match quota_collection::read_status_async(cache_path, &provider_id, &account.id.0).await
             {
                 Ok(Some(status)) => {
+                    // 成功但额度为空（例如自定义 API 账号）不会进入缓存条目；仍要沿用协调器
+                    // 记录的观测时间，否则会被当成「从未观测」而每 90 秒重采一次。
+                    if observed_at.is_none()
+                        && matches!(status.state, quota_collection::CollectionState::Success)
+                    {
+                        observed_at = status.observed_at;
+                    }
                     deadlines.insert(account.id.0.clone(), status.next_attempt_at);
                     if !status.quotas.is_empty() {
                         reset_quotas.insert(account.id.0.clone(), status.quotas);
@@ -1867,6 +1874,57 @@ mod tests {
             assert_eq!(account.quotas.len(), 2, "real returned windows only");
             assert_eq!(account.quotas[0].usage_ratio(), Some(0.0));
         }
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    /// 成功但无额度窗口的账号（自定义 API）也要保留观测时间，不能按 90 秒请求地板反复重采。
+    #[tokio::test]
+    async fn empty_success_keeps_parked_cadence() {
+        let tmp = temp_dir("empty-success");
+        let cache_path = tmp.join("quota_cache.json");
+        let provider = Arc::new(TestProvider::new(
+            vec![account("api", false, true)],
+            HashMap::new(),
+        ));
+        let settings = subswap_core::settings::Settings {
+            quota: subswap_core::settings::Quota {
+                refresh_jitter_pct: 0.0,
+                min_refresh_interval_ms: 0,
+                candidate_refresh_limit: 0,
+                ..subswap_core::settings::Quota::default()
+            },
+            ..subswap_core::settings::Settings::default()
+        };
+        let id = AccountId("api".into());
+        let reading = subswap_core::quota_collection::collect_quota_at(
+            provider.as_ref(),
+            &id,
+            &cache_path,
+            &settings,
+        )
+        .await
+        .unwrap();
+        assert!(reading.quotas.is_empty());
+        assert_eq!(provider.calls(), vec!["api"]);
+
+        let mut registry = ProviderRegistry::new();
+        registry.register(provider.clone());
+        let account_registry = AccountRegistry::new(tmp.join("registry.toml"));
+        let mut adaptive = AdaptiveState::new();
+        let _ = collect_snapshots(
+            &registry,
+            &account_registry,
+            &mut adaptive,
+            &cache_path,
+            &settings,
+            0.99,
+        )
+        .await;
+        assert_eq!(
+            provider.calls(),
+            vec!["api"],
+            "empty successful reading must keep the parked cadence instead of the request floor"
+        );
         let _ = std::fs::remove_dir_all(tmp);
     }
 
