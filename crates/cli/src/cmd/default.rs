@@ -1162,11 +1162,10 @@ mod tests {
         );
 
         claude_gate.release();
-        let (snapshots, auto_lines) =
-            tokio::time::timeout(Duration::from_secs(10), handle)
-                .await
-                .expect("fill task should finish after releasing claude")
-                .unwrap();
+        let (snapshots, auto_lines) = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("fill task should finish after releasing claude")
+            .unwrap();
         let codex = snapshots
             .iter()
             .find(|snap| snap.provider == "codex")
@@ -1305,11 +1304,10 @@ mod tests {
             "healthy candidate must not replace a loading active account"
         );
         active_gate.release();
-        let (snapshots, auto_lines) =
-            tokio::time::timeout(Duration::from_secs(10), handle)
-                .await
-                .expect("fill task should finish after releasing active")
-                .unwrap();
+        let (snapshots, auto_lines) = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("fill task should finish after releasing active")
+            .unwrap();
         let opencode = snapshots
             .iter()
             .find(|snap| snap.provider == "opencode")
@@ -1436,11 +1434,10 @@ mod tests {
             };
         assert_eq!(selected, ("claude".to_string(), "better".to_string()));
 
-        let (snapshots, auto_lines) =
-            tokio::time::timeout(Duration::from_secs(10), handle)
-                .await
-                .expect("fill task should finish after better activation")
-                .unwrap();
+        let (snapshots, auto_lines) = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("fill task should finish after better activation")
+            .unwrap();
         let claude = snapshots
             .iter()
             .find(|snap| snap.provider == "claude")

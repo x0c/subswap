@@ -220,9 +220,10 @@ Shared optional acceptance procedures now live in the agent-friendly-cli skill (
 
 ## Release notes
 
-- [v1.16.2](releases/v1.16.2.md): Linux quota-refresh lock safety, Windows test determinism and portable lock-contention classification, plus the complete shared quota collection, adaptive scheduling, read-only snapshots and request metrics delivered across the v1.16.0/v1.16.1 drafts.
-- [v1.16.1 draft](releases/v1.16.1.md): Windows strict-build correction and the original quota-collection notes; not publicly published because release CI found Linux lock safety and Windows test-timing defects fixed in v1.16.2.
-- [v1.16.0 draft](releases/v1.16.0.md): original quota-collection notes; not publicly published because Windows validation rejected a Unix-only import. The corrected public delivery is v1.16.2.
+- [v1.16.3](releases/v1.16.3.md): Linux quota-refresh lock safety, Windows test determinism, portable lock-contention classification, and the complete shared quota collection, adaptive scheduling, read-only snapshots and request metrics delivered across the v1.16.0–v1.16.2 drafts.
+- [v1.16.2 draft](releases/v1.16.2.md): same behavior as v1.16.3; not publicly published because release CI rejected the committed formatting under the current stable rustfmt.
+- [v1.16.1 draft](releases/v1.16.1.md): Windows strict-build correction and the original quota-collection notes; not publicly published because release CI found Linux lock safety and Windows test-timing defects fixed in v1.16.3.
+- [v1.16.0 draft](releases/v1.16.0.md): original quota-collection notes; not publicly published because Windows validation rejected a Unix-only import. The corrected public delivery is v1.16.3.
 
 ## CI and Release failure badges
 
