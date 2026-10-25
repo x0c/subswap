@@ -41,7 +41,9 @@ struct StatusSnapshot {
     accounts: Vec<StatusAccount>,
     /// 本机直接请求/采集计数器的只读快照；缺失时仍是稳定结构（`available=false`）。
     /// 计数不包含官方客户端自身发出的、subswap 不可见的 HTTP 流量。
-    request_metrics: serde_json::Value,
+    /// `--no-metrics` 时整个字段省略，避免高频消费者搬运随分钟桶增长的诊断数据。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_metrics: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -85,9 +87,9 @@ struct RawCachedEntry {
     cached_at: DateTime<Utc>,
 }
 
-pub async fn run(json: bool) -> Result<()> {
+pub async fn run(json: bool, include_metrics: bool) -> Result<()> {
     // 只做本地文件读取与序列化；放进 blocking 线程避免文件 IO 阻塞 async runtime。
-    let snapshot = tokio::task::spawn_blocking(build_snapshot).await??;
+    let snapshot = tokio::task::spawn_blocking(move || build_snapshot(include_metrics)).await??;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&snapshot)?);
@@ -97,7 +99,7 @@ pub async fn run(json: bool) -> Result<()> {
     Ok(())
 }
 
-fn build_snapshot() -> Result<StatusSnapshot> {
+fn build_snapshot(include_metrics: bool) -> Result<StatusSnapshot> {
     // 只读入口：不触发目录创建。全新 home 也必须返回空快照。
     let paths = AppPaths::resolve_readonly()?;
     let registry = AccountRegistry::new(paths.registry_file());
@@ -150,7 +152,7 @@ fn build_snapshot() -> Result<StatusSnapshot> {
         exhausted_pct: current.quota.exhausted_pct,
         provider_order: grouped.into_keys().collect(),
         accounts,
-        request_metrics: request_metrics::snapshot(),
+        request_metrics: include_metrics.then(request_metrics::snapshot),
     })
 }
 

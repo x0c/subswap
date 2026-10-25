@@ -853,3 +853,71 @@ fn non_json_output_stays_human_readable_and_never_fetches() {
 
     teardown_test_keychain(&tmp);
 }
+
+/// `--no-metrics` 供 GUI/小组件高频轮询：省掉随分钟桶增长的诊断计数器，
+/// 且不能改变其余字段的只读语义。完整接口仍保留 `request_metrics`。
+#[test]
+fn status_no_metrics_omits_request_counters_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    setup_test_keychain(&tmp);
+    write_registry(
+        &tmp,
+        &[account_toml(
+            "claude",
+            "alice@example.com",
+            "alice@example.com",
+            true,
+            None,
+        )],
+    );
+    write_metrics(&tmp, 7, 4);
+
+    let before = tree_snapshot(&app_root(&tmp));
+    let Output {
+        status,
+        stdout,
+        stderr,
+    } = isolated_subswap(&tmp)
+        .args(["status", "--json", "--no-metrics"])
+        .output()
+        .unwrap();
+    assert!(
+        status.success(),
+        "status --no-metrics failed\nstderr:\n{}",
+        String::from_utf8_lossy(&stderr)
+    );
+    let compact = String::from_utf8(stdout).unwrap();
+    let snapshot: Value = serde_json::from_str(&compact).unwrap();
+
+    assert!(snapshot.get("request_metrics").is_none());
+    for key in [
+        "schema_version",
+        "generated_at",
+        "daemon_running",
+        "stale_after_ms",
+        "auto_swap",
+        "warn_pct",
+        "exhausted_pct",
+        "provider_order",
+        "accounts",
+    ] {
+        assert!(
+            snapshot.get(key).is_some(),
+            "missing snapshot field {key}: {snapshot}"
+        );
+    }
+    assert_eq!(snapshot["accounts"][0]["id"], json!("alice@example.com"));
+
+    // 默认接口保持不变，消费者仍可取到计数器。
+    let (full, full_raw) = run_status_json(&mut isolated_subswap(&tmp));
+    assert_eq!(full["request_metrics"]["available"], json!(true));
+    assert_eq!(
+        full["request_metrics"]["totals"]["requests"]["http_start"],
+        json!(7)
+    );
+    assert!(full_raw.len() > compact.len());
+
+    assert_eq!(before, tree_snapshot(&app_root(&tmp)));
+    assert!(!data_dir(&tmp).join("request_metrics.json.lock").exists());
+    teardown_test_keychain(&tmp);
+}

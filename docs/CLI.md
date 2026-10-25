@@ -14,7 +14,7 @@
 | `subswap shell <id>` | 起一个导出好隔离环境变量的子 shell，交互里连跑多条命令；provider 从账号推断；退出时吸收凭证 |
 | `subswap env <id>` | 打印 `export` 行供 `eval`。**注意**：eval 模式不持锁、退出后不吸收凭证，仅供临时短用 |
 | `subswap doctor` | 环境自检 |
-| `subswap status [--json]` | **只读快照**：导出账号、有效 quota 窗口与原始观测时间、daemon 状态与本机请求指标；不 sync active、不查额度、不自动切换、不拉 daemon、不写任何状态。供 GUI / widget / 脚本反复调用 |
+| `subswap status [--json] [--no-metrics]` | **只读快照**：导出账号、有效 quota 窗口与原始观测时间、daemon 状态与本机请求指标；不 sync active、不查额度、不自动切换、不拉 daemon、不写任何状态。供 GUI / widget / 脚本反复调用 |
 
 `add-api` / `login` / `swap <目标>` / `rm` 成功后的 status-after-action 见下节。
 
@@ -45,6 +45,8 @@ reset 已过的窗口不会伪装成当前额度；账号本身及其原始 `cac
 `status` 在全新的空 home 上同样只返回空快照：不创建 `config` / `data` / `state` / `cache` 目录，也不写任何文件。只读路径解析与写入路径解析共用同一套平台规则，但只读入口不会 `create_dir_all`。
 
 `request_metrics` 只统计 **subswap 自己实际发起** 的直接 HTTP 请求、原生 RPC 调用与采集/缓存/合并/推迟事件。它看不到官方客户端（如 Claude Code、Codex CLI）内部自行发出的、subswap 未经过的 HTTP 流量；`native_rpc_*` 与 `http_*` 分开计数。账号维度只保存 SHA-256 短键，不包含邮箱、URL 或令牌。
+
+GUI/小组件按秒级重绘轮询时应加 `--no-metrics`：计数器会随 60 分钟桶和账号维度增长（实测完整输出已超过 160 KiB），而图形界面只用账号与额度字段。该开关只省略 `request_metrics`，其他字段、只读语义与退出码不变；默认输出仍保留计数器供诊断。私有 Subswap Apple 客户端已改为优先请求精简输出，并在旧版 CLI 不认识该开关时回退到完整输出。
 
 不带 `--json` 时输出同一份数据的紧凑人读视图，仍然只读。
 

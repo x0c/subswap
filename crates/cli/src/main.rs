@@ -180,7 +180,11 @@ enum Cmd {
     Doctor,
 
     /// Read-only account and quota snapshot for GUI consumers; never swaps or fetches quota.
-    Status,
+    Status {
+        /// Omit diagnostic request counters for small, frequently polled payloads.
+        #[arg(long)]
+        no_metrics: bool,
+    },
 
     /// Import local data from legacy account stores.
     #[command(hide = true)]
@@ -207,8 +211,8 @@ async fn main() -> Result<()> {
     // `reload_from_file` 会调用 `AppPaths::resolve` 创建目录；AppContext 还会构造 Provider
     // （Cursor 可能读取原生钥匙串）并 best-effort 迁移旧 OpenCode API Key。GUI/widget
     // 高频重绘不能触发这些副作用，status 自己用只读路径加载配置。
-    if matches!(cli.cmd, Some(Cmd::Status)) {
-        return cmd::status::run(cli.json).await;
+    if let Some(Cmd::Status { no_metrics }) = cli.cmd {
+        return cmd::status::run(cli.json, !no_metrics).await;
     }
 
     // 启动时加载 config.toml（缺失 / 解析失败时沿用默认值 + warn）。
@@ -272,7 +276,7 @@ async fn main() -> Result<()> {
         Some(Cmd::Rm { id }) => cmd::rm::run(&ctx, &id, cli.json).await,
         Some(Cmd::Autoswap { toggle }) => cmd::autoswap::run(toggle.as_deref()),
         Some(Cmd::Doctor) => cmd::doctor::run(&ctx).await,
-        Some(Cmd::Status) => unreachable!("handled before CLI context initialization"),
+        Some(Cmd::Status { .. }) => unreachable!("handled before CLI context initialization"),
         Some(Cmd::MigrateLocal) => cmd::migrate::run(&ctx).await,
         Some(Cmd::InternalDaemon) => unreachable!("handled before CLI context initialization"),
     }

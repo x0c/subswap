@@ -6,3 +6,4 @@
 |---|---|---|---|---|---|
 | Recover affected Claude login after native-query failure | 恢复未完成 | Native credential preservation; Claude troubleshooting record | 10:06 | 2026-10-09 22:43 | Original credentials preserved; restoration failed real model request; daemon stopped; awaiting evidence of another authenticated device |
 | Fix Linux glibc floor + rm never refuses | 验证中 | release.yml Linux zigbuild/glibc guard; rm.rs; Claude disconnect API teardown; cli_surface rm test; CLI/README/OPERATIONS/troubleshooting | 11:13 | 2026-10-09 11:23 | Product: rm never blocked; soft official disconnect; 11:23 cli_surface deepseek rm ok |
+| Fix frozen GUI quota (pipe deadlock) | 验证中 | `status --no-metrics`, CLI/OPERATIONS/release notes, client SubswapCLI reader | 14:05 | 2026-10-25 14:05 | CLI adds opt-in lean snapshot; companion app drains to files with timeout |
