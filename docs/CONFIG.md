@@ -71,6 +71,7 @@ Windows: %APPDATA%\subswap\subswap\config\config.toml
 `subswapd` 不再对所有账号每轮同频查询，而是按账号状态与真实观测时间调度：
 
 - **节奏**：当前激活账号约 3 分钟，停放与已确认耗尽账号约 15 分钟；在基础间隔上叠加 `0~refresh_jitter_pct` 的**正向**抖动，避免多账号同一秒打向端点。抖动只会延后，不会提前，也不会绕开 `min_refresh_interval_ms`、Provider 专属下限（如 Claude 三分钟）或协调器记录的 `next_attempt_at` / 服务端 `Retry-After`。
+- **空成功读数**：Provider 成功返回空额度列表时（例如自定义 API 账号），协调器记录的 `observed_at` 仍参与调度。即使缓存里没有窗口可存，也不会被当成「从未观测」按请求地板反复重采；账号按自身的活跃/停放节奏等待，之后返回的真实余额会立即替换空状态。
 - **前台不降级**：无参 `subswap`、写操作后的状态面仍可主动检查；它们只是复用同一个共享协调器，真实请求仍服从最小间隔、并发槽位与服务端截止时间。GUI/`status --json` 保持只读，不触发采集。
 - **新鲜度**：只有不晚于 `decision_max_age_ms` 的真实观测才能作为自动切换依据。超过年龄的旧数据仍可展示，但状态是 `stale`，不会因为「本轮调度没查」变成 `ready`。
 - **近阈值候选**：激活账号进入「`auto_swap.threshold` - `candidate_refresh_margin_pct`」区间（或已确认耗尽）时，最多提前确认 `candidate_refresh_limit` 个非 `manual_only`、且缺少新鲜数据的候选；不会整池刷新。已有新鲜数据的候选不重复请求。

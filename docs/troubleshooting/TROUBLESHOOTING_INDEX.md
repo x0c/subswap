@@ -2,7 +2,7 @@
 
 | 文档 | 何时该读 |
 |---|---|
-| [Active Claude quota `credentials expired` after idle](2026-10-25-claude-active-quota-expired-while-idle.md) | Active Claude account shows `credentials expired; open native client` / `renew` while Claude Code works, especially after hours or days of not using it; or before changing active credential renewal, the official refresh lock, or per-credential usage backoff. |
+| [Active Claude quota `credentials expired` after idle](2026-10-25-claude-active-quota-expired-while-idle.md) | Active Claude account shows `credentials expired; open native client` / `renew` while Claude Code works, especially after hours or days of not using it; before changing active credential renewal, the official refresh lock, or per-credential usage backoff; or when a reaped `proper-lockfile` holder refreshes/deletes a same-named replacement lock (Linux inode reuse). |
 | [Active Claude quota `usage unavailable` (native query)](2026-10-11-claude-active-quota-native-null.md) | Active Claude account shows `usage unavailable` / `native client returned no limits` while its login works; or before letting subswap start Claude Code to read quota. |
 | [Linux prebuilt GLIBC_2.39](2026-10-09-linux-glibc-2.39-prebuilt.md) | Installed Linux `subswap` prints `GLIBC_2.39` not found / weak version, or Release binaries fail on Ubuntu 22.04-class hosts; change Linux release linking / glibc floor before shipping. |
 | [`rm` active manual-only refused](2026-10-09-rm-active-manual-only.md) | `rm` asks to swap away from an active Claude custom API / `manual_only` account, or deleting the current API profile leaves API env in `settings.json`. |
