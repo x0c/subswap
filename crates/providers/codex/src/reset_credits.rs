@@ -30,13 +30,22 @@ pub async fn fetch_reset_credits(
         .build()
         .map_err(|e| Error::QuotaFetch(format!("build http client: {e}")))?;
 
-    let resp = client
+    subswap_core::request_metrics::record("codex", chatgpt_account_id, "http_start", None).await;
+    let sent = client
         .get(RESET_CREDITS_URL)
         .bearer_auth(access_token)
         .header("ChatGPT-Account-Id", chatgpt_account_id)
         .send()
-        .await
-        .map_err(|e| Error::QuotaFetch(format!("request rate-limit-reset-credits: {e}")))?;
+        .await;
+    subswap_core::request_metrics::record(
+        "codex",
+        chatgpt_account_id,
+        "http_complete",
+        sent.as_ref().ok().map(|resp| resp.status().as_u16()),
+    )
+    .await;
+    let resp =
+        sent.map_err(|e| Error::QuotaFetch(format!("request rate-limit-reset-credits: {e}")))?;
 
     let status = resp.status();
     if !status.is_success() {

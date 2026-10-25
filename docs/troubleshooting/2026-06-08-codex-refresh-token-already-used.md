@@ -15,14 +15,14 @@ Refresh token **一次性轮换**。旧 subswap 与原生客户端各自独立�
 
 ## 修复（永久不变量）
 
-**不能让 subswap 与原生客户端各自独立轮换 active 账号 token。** Claude active 仍只读不刷；Codex/Kimi 只通过官方 app-server / 跨进程锁协调。停泊账号由 subswap 刷新，离开前先把 live 回灌 store。
+**不能让 subswap 与原生客户端各自独立轮换 active 账号 token。** Claude active 自 1.16.0 起仅在持有 Claude Code 官方刷新锁时续期（[2026-10-25](2026-10-25-claude-active-quota-expired-while-idle.md)）；Codex/Kimi 只通过官方 app-server / 跨进程锁协调。停泊账号由 subswap 刷新，离开前先把 live 回灌 store。
 
 1. **Capture-on-leave（Codex + Claude）**：`Provider::activate` 覆盖 live 前，读 live → 找 owner → 回写 store。所有 swap 经 `activate`。
    - `crates/providers/codex/src/lib.rs::capture_live_into_store`
    - `crates/providers/claude/src/lib.rs::capture_live_into_store`
-2. **绝不轮换 active（Claude）**：
+2. **不在后台轮换 active（Claude）**：
    - `refresh_if_near_expiry` 开头 `active_account_id()` 命中即跳过；daemon 保活只对 parked。
-   - `query_quota` 401 自愈仅当凭证来自 store（parked）；来自 live（active）直接返回错误。
+   - `query_quota` 遇 active 过期 / 401 只在持有 Claude Code 官方刷新锁时续期（`active_refresh.rs`）；识别不到锁协议直接返回错误。
 
 Codex 无后台刷新，只需机制 1。
 

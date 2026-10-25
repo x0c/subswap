@@ -522,7 +522,8 @@ async fn fetch_console_quota_at(
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| Error::QuotaFetch(format!("opencode console status client failed: {e}")))?;
-    let resp = client
+    subswap_core::request_metrics::record("opencode", &account.id.0, "http_start", None).await;
+    let sent = client
         .get(url)
         .header("Authorization", format!("Bearer {}", live.access_token))
         .header("x-org-id", &live.org_id)
@@ -532,10 +533,29 @@ async fn fetch_console_quota_at(
             format!("subswap/{}", env!("CARGO_PKG_VERSION")),
         )
         .send()
-        .await
+        .await;
+    subswap_core::request_metrics::record(
+        "opencode",
+        &account.id.0,
+        "http_complete",
+        sent.as_ref().ok().map(|resp| resp.status().as_u16()),
+    )
+    .await;
+    let resp = sent
         .map_err(|e| Error::QuotaFetch(format!("opencode console status request failed: {e}")))?;
     let status = resp.status();
+    let retry_at = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| subswap_core::time::parse_retry_after(value, Utc::now()));
     let body = resp.text().await.unwrap_or_default();
+    if status.as_u16() == 429 {
+        return Err(Error::QuotaRateLimited {
+            message: "OpenCode Console status endpoint throttled".into(),
+            retry_at,
+        });
+    }
     if status.as_u16() == 401 || status.as_u16() == 403 {
         return Err(Error::QuotaFetch(format!(
             "opencode console status HTTP {status}: needs re-login"
@@ -565,6 +585,58 @@ mod tests {
         }
       }
     }"#;
+
+    #[tokio::test]
+    async fn console_429_preserves_retry_after_without_retry() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{Arc, Mutex};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let calls = Arc::new(Mutex::new(0_u32));
+        let captured = Arc::clone(&calls);
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0_u8; 8192];
+            let _ = stream.read(&mut buffer).unwrap();
+            *captured.lock().unwrap() += 1;
+            let body = r#"{"error":"rate_limited"}"#;
+            write!(
+                stream,
+                "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 7200\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        let live = ConsoleLive {
+            credential_id: "cred".into(),
+            credential_label: "console".into(),
+            account_id: "wrk_x".into(),
+            active: true,
+            email: "test@example.com".into(),
+            org_id: "org".into(),
+            org_name: "org".into(),
+            server: base.clone(),
+            access_token: "token".into(),
+        };
+        let before = Utc::now();
+        let err = fetch_console_quota_at(&live, &sample_account(), &base)
+            .await
+            .unwrap_err();
+        match err {
+            Error::QuotaRateLimited {
+                retry_at: Some(deadline),
+                ..
+            } => {
+                assert!(deadline >= before + chrono::Duration::minutes(119));
+                assert!(deadline <= Utc::now() + chrono::Duration::hours(3));
+            }
+            other => panic!("expected typed 429 deadline, got {other}"),
+        }
+        server.join().unwrap();
+        assert_eq!(*calls.lock().unwrap(), 1, "429 must not retry");
+    }
 
     fn sample_account() -> Account {
         Account {

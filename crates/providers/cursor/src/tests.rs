@@ -380,8 +380,29 @@ impl MockServer {
         Self::start_with_first_request_hook(responses, None)
     }
 
+    fn start_with_retry_after(
+        status: &'static str,
+        body: &'static str,
+        retry_after: Option<&'static str>,
+    ) -> Self {
+        Self::start_with_headers_and_hook(vec![(status, body, retry_after)], None)
+    }
+
     fn start_with_first_request_hook(
         responses: Vec<(&'static str, &'static str)>,
+        first_request_hook: Option<Box<dyn FnOnce() + Send>>,
+    ) -> Self {
+        Self::start_with_headers_and_hook(
+            responses
+                .into_iter()
+                .map(|(status, body)| (status, body, None))
+                .collect(),
+            first_request_hook,
+        )
+    }
+
+    fn start_with_headers_and_hook(
+        responses: Vec<(&'static str, &'static str, Option<&'static str>)>,
         first_request_hook: Option<Box<dyn FnOnce() + Send>>,
     ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -390,7 +411,7 @@ impl MockServer {
         let sink = requests.clone();
         let handle = std::thread::spawn(move || {
             let mut first_request_hook = first_request_hook;
-            for (index, (status, body)) in responses.into_iter().enumerate() {
+            for (index, (status, body, retry_after)) in responses.into_iter().enumerate() {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut buffer = [0; 16384];
                 let count = stream.read(&mut buffer).unwrap();
@@ -402,7 +423,10 @@ impl MockServer {
                         hook();
                     }
                 }
-                write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                let retry_header = retry_after
+                    .map(|value| format!("Retry-After: {value}\r\n"))
+                    .unwrap_or_default();
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{retry_header}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             }
         });
         Self {
@@ -419,6 +443,44 @@ impl MockServer {
             .into_inner()
             .unwrap()
     }
+}
+
+#[tokio::test]
+async fn usage_429_preserves_retry_after_without_refreshing() {
+    let (_temp, base_provider, db) = setup();
+    let access = jwt("auth0|user_a", "a");
+    write_live(&db, "a@example.com", "auth0|user_a", &access, "refresh-a");
+    let account = base_provider.import_active(None).await.unwrap();
+    let before = Utc::now();
+    let server = MockServer::start_with_retry_after(
+        "429 Too Many Requests",
+        r#"{"error":"rate_limited"}"#,
+        Some("7200"),
+    );
+    let provider = configured(
+        &base_provider,
+        db,
+        format!("{}/usage", server.base),
+        format!("{}/token", server.base),
+        Arc::new(NoopProcessControl),
+    );
+    let err = provider.query_quota(&account.id).await.unwrap_err();
+    match err {
+        Error::QuotaRateLimited {
+            retry_at: Some(deadline),
+            ..
+        } => {
+            assert!(deadline >= before + chrono::Duration::minutes(119));
+            assert!(deadline <= Utc::now() + chrono::Duration::hours(3));
+        }
+        other => panic!("expected typed 429 deadline, got {other}"),
+    }
+    let requests = server.finish();
+    assert_eq!(
+        requests.len(),
+        1,
+        "429 must not refresh or retry: {requests:?}"
+    );
 }
 
 #[tokio::test]
@@ -493,7 +555,14 @@ async fn parked_401_rotates_full_token_pair_then_retries() {
         format!("{}/token", server.base),
         Arc::new(NoopProcessControl),
     );
-    let quotas = provider.query_quota(&parked.id).await.unwrap();
+    let metrics_dir = tempfile::tempdir().unwrap();
+    let metrics_path = metrics_dir.path().join("request_metrics.json");
+    let quotas = subswap_core::request_metrics::with_sink(
+        metrics_path.clone(),
+        provider.query_quota(&parked.id),
+    )
+    .await
+    .unwrap();
     assert_eq!(quotas[0].used, 59);
     let stored = provider.stored_blob(&parked).unwrap();
     assert_eq!(stored.refresh_token.as_deref(), Some("refresh-a2"));
@@ -501,6 +570,11 @@ async fn parked_401_rotates_full_token_pair_then_retries() {
     assert!(requests[0].starts_with("GET /usage"));
     assert!(requests[1].starts_with("POST /token"));
     assert!(requests[2].starts_with("GET /usage"));
+    let metrics = subswap_core::request_metrics::snapshot_at(&metrics_path);
+    assert_eq!(metrics["totals"]["requests"]["http_start"], 3);
+    assert_eq!(metrics["totals"]["requests"]["http_complete"], 3);
+    assert_eq!(metrics["totals"]["statuses"]["401"], 1);
+    assert_eq!(metrics["totals"]["statuses"]["200"], 2);
 }
 
 #[tokio::test]
@@ -574,12 +648,22 @@ async fn dead_refresh_token_tombstone_prevents_request_storm() {
         Arc::new(NoopProcessControl),
     );
     let original = provider.stored_blob(&parked).unwrap();
-    assert!(provider
-        .refresh_parked(&parked, original.clone())
-        .await
-        .is_err());
-    assert!(provider.refresh_parked(&parked, original).await.is_err());
+    let metrics_dir = tempfile::tempdir().unwrap();
+    let metrics_path = metrics_dir.path().join("request_metrics.json");
+    subswap_core::request_metrics::with_sink(metrics_path.clone(), async {
+        assert!(provider
+            .refresh_parked(&parked, original.clone())
+            .await
+            .is_err());
+        assert!(provider.refresh_parked(&parked, original).await.is_err());
+    })
+    .await;
     assert_eq!(server.finish().len(), 1);
+    let metrics = subswap_core::request_metrics::snapshot_at(&metrics_path);
+    assert_eq!(
+        metrics["totals"]["requests"]["http_start"], 1,
+        "dead refresh tombstone must block the second token request"
+    );
 }
 
 struct NoopProcessControl;

@@ -24,6 +24,7 @@ keyring.workspace = true
 directories.workspace = true
 chrono.workspace = true
 fs2.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

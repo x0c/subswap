@@ -151,7 +151,8 @@ async fn fetch_quota_at(
         .timeout(HTTP_TIMEOUT)
         .build()
         .map_err(|e| Error::QuotaFetch(format!("commandcode credits client failed: {e}")))?;
-    let resp = client
+    subswap_core::request_metrics::record("commandcode", &account.id.0, "http_start", None).await;
+    let sent = client
         .get(&url)
         .header("Authorization", format!("Bearer {access_token}"))
         .header(
@@ -159,10 +160,29 @@ async fn fetch_quota_at(
             format!("subswap/{}", env!("CARGO_PKG_VERSION")),
         )
         .send()
-        .await
-        .map_err(|e| Error::QuotaFetch(format!("commandcode credits request failed: {e}")))?;
+        .await;
+    subswap_core::request_metrics::record(
+        "commandcode",
+        &account.id.0,
+        "http_complete",
+        sent.as_ref().ok().map(|resp| resp.status().as_u16()),
+    )
+    .await;
+    let resp =
+        sent.map_err(|e| Error::QuotaFetch(format!("commandcode credits request failed: {e}")))?;
     let status = resp.status();
+    let retry_at = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| subswap_core::time::parse_retry_after(value, Utc::now()));
     let body = resp.text().await.unwrap_or_default();
+    if status.as_u16() == 429 {
+        return Err(Error::QuotaRateLimited {
+            message: "CommandCode credits endpoint throttled".into(),
+            retry_at,
+        });
+    }
     if status.as_u16() == 401 || status.as_u16() == 403 {
         return Err(Error::QuotaFetch(format!(
             "commandcode credits HTTP {status}: needs re-login: {body}"
@@ -249,6 +269,25 @@ mod tests {
 
     impl MockServer {
         fn start(responses: Vec<(&'static str, &'static str)>) -> Self {
+            Self::start_with_headers(
+                responses
+                    .into_iter()
+                    .map(|(status, body)| (status, body, None))
+                    .collect(),
+            )
+        }
+
+        fn start_with_retry_after(
+            status: &'static str,
+            body: &'static str,
+            retry_after: Option<&'static str>,
+        ) -> Self {
+            Self::start_with_headers(vec![(status, body, retry_after)])
+        }
+
+        fn start_with_headers(
+            responses: Vec<(&'static str, &'static str, Option<&'static str>)>,
+        ) -> Self {
             use std::io::{Read, Write};
             use std::net::TcpListener;
 
@@ -257,7 +296,7 @@ mod tests {
             let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
             let captured = std::sync::Arc::clone(&requests);
             let handle = std::thread::spawn(move || {
-                for (status, body) in responses {
+                for (status, body, retry_after) in responses {
                     let (mut stream, _) = listener.accept().unwrap();
                     let mut buffer = [0_u8; 8192];
                     let count = stream.read(&mut buffer).unwrap();
@@ -266,9 +305,12 @@ mod tests {
                         .lock()
                         .unwrap()
                         .push(request.lines().next().unwrap_or_default().to_string());
+                    let retry_header = retry_after
+                        .map(|value| format!("Retry-After: {value}\r\n"))
+                        .unwrap_or_default();
                     write!(
                         stream,
-                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{retry_header}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
                     )
                     .unwrap();
@@ -297,15 +339,29 @@ mod tests {
     #[tokio::test]
     async fn fetch_maps_windows_from_http() {
         let server = MockServer::start(vec![("200 OK", SAMPLE)]);
-        let quotas = fetch_quota_at("cc-live", &sample_account(), server.base_url())
-            .await
-            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let metrics_path = dir.path().join("request_metrics.json");
+        let quotas = subswap_core::request_metrics::with_sink(
+            metrics_path.clone(),
+            fetch_quota_at("cc-live", &sample_account(), server.base_url()),
+        )
+        .await
+        .unwrap();
         assert_eq!(quotas.len(), 3);
         assert_eq!(quotas[0].window, QuotaWindow::FiveHour);
         assert_eq!(
             server.finish(),
             vec!["GET /alpha/billing/credits HTTP/1.1".to_string()]
         );
+        let metrics = subswap_core::request_metrics::snapshot_at(&metrics_path);
+        assert_eq!(metrics["totals"]["requests"]["http_start"], 1);
+        assert_eq!(metrics["totals"]["requests"]["http_complete"], 1);
+        assert_eq!(metrics["totals"]["statuses"]["200"], 1);
+        assert_eq!(
+            metrics["providers"]["commandcode"]["requests"]["http_start"],
+            1
+        );
+        assert_eq!(metrics["accounts"].as_object().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -326,10 +382,11 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_429_is_not_authentication_failure() {
-        let server = MockServer::start(vec![(
+        let server = MockServer::start_with_retry_after(
             "429 Too Many Requests",
             r#"{"error":"rate_limited"}"#,
-        )]);
+            None,
+        );
         let err = fetch_quota_at("cc-live", &sample_account(), server.base_url())
             .await
             .unwrap_err();
@@ -338,6 +395,42 @@ mod tests {
             !subswap_core::is_authentication_failure(&text),
             "429 must stay a transient fetch failure: {text}"
         );
-        let _ = server.finish();
+        match err {
+            Error::QuotaRateLimited { retry_at, .. } => assert_eq!(retry_at, None),
+            other => panic!("expected typed rate limit, got {other}"),
+        }
+        assert_eq!(server.finish().len(), 1, "429 must not be retried");
+    }
+
+    #[tokio::test]
+    async fn fetch_429_preserves_long_retry_after_header() {
+        let before = Utc::now();
+        let server = MockServer::start_with_retry_after(
+            "429 Too Many Requests",
+            r#"{"error":"rate_limited"}"#,
+            Some("7200"),
+        );
+        let err = fetch_quota_at("cc-live", &sample_account(), server.base_url())
+            .await
+            .unwrap_err();
+        match err {
+            Error::QuotaRateLimited {
+                retry_at: Some(deadline),
+                ..
+            } => {
+                assert!(
+                    deadline > before + chrono::Duration::minutes(15),
+                    "server deadline must exceed the generic failure cap"
+                );
+                assert!(deadline >= before + chrono::Duration::minutes(119));
+                assert!(deadline <= Utc::now() + chrono::Duration::hours(3));
+            }
+            other => panic!("expected typed rate limit with deadline, got {other}"),
+        }
+        assert_eq!(
+            server.finish().len(),
+            1,
+            "429 must not retry or switch endpoint"
+        );
     }
 }

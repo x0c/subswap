@@ -88,19 +88,29 @@ pub struct ExtraUsage {
 }
 
 /// 查询用量。`access_token` 失效时调用方应先 [`refresh_access_token`]。
-pub async fn fetch_usage(access_token: &str) -> Result<UsageResponse> {
+///
+/// `account_id` 只用于无凭证请求指标；不会进入上游请求。
+pub async fn fetch_usage(account_id: &str, access_token: &str) -> Result<UsageResponse> {
     let client = reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .build()
         .map_err(|e| Error::QuotaFetch(format!("build http client: {e}")))?;
 
-    let resp = client
+    subswap_core::request_metrics::record("claude", account_id, "http_start", None).await;
+    let sent = client
         .get(USAGE_URL)
         .bearer_auth(access_token)
         .header("anthropic-beta", BETA_HEADER)
         .send()
-        .await
-        .map_err(|e| Error::QuotaFetch(format!("request usage endpoint: {e}")))?;
+        .await;
+    subswap_core::request_metrics::record(
+        "claude",
+        account_id,
+        "http_complete",
+        sent.as_ref().ok().map(|resp| resp.status().as_u16()),
+    )
+    .await;
+    let resp = sent.map_err(|e| Error::QuotaFetch(format!("request usage endpoint: {e}")))?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -108,7 +118,7 @@ pub async fn fetch_usage(access_token: &str) -> Result<UsageResponse> {
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| retry_after(v, Utc::now()));
+            .and_then(|v| subswap_core::time::parse_retry_after(v, Utc::now()));
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             return Err(Error::QuotaRateLimited {
                 message: "Claude usage endpoint throttled".into(),
@@ -126,31 +136,26 @@ pub async fn fetch_usage(access_token: &str) -> Result<UsageResponse> {
         .map_err(|e| Error::QuotaFetch(format!("parse usage response: {e}")))
 }
 
-/// Retry-After 支持秒数与 HTTP-date；0/过去时间交由调用方采用保守下限。
-fn retry_after(value: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    let value = value.trim();
-    if let Ok(seconds) = value.parse::<i64>() {
-        return (seconds > 0)
-            .then(|| chrono::Duration::try_seconds(seconds).and_then(|d| now.checked_add_signed(d)))
-            .flatten();
-    }
-    DateTime::parse_from_rfc2822(value)
-        .ok()
-        .map(|d| d.with_timezone(&Utc))
-        .filter(|d| *d > now)
-}
-
 #[derive(Debug, Deserialize)]
 pub struct RefreshResponse {
     pub access_token: String,
     pub expires_in: Option<i64>,
     pub refresh_token: Option<String>,
+    /// 轮换后 refresh token 的剩余秒数；Claude Code 写进 `refreshTokenExpiresAt`。
+    #[serde(default)]
+    pub refresh_token_expires_in: Option<i64>,
+    /// 空格分隔的授权 scope。
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 /// 刷新 access_token。client_id 默认走 [`DEFAULT_CLIENT_ID`]，
 /// 可通过 `SUBSWAP_CLAUDE_OAUTH_CLIENT_ID` 环境变量覆写。
 /// 空白 `scopes` 时使用 [`DEFAULT_SCOPES`] 作为 fallback——store 中旧凭据可能没有 scope 记录。
+///
+/// `account_id` 只用于无凭证请求指标；不会进入上游请求。
 pub async fn refresh_access_token(
+    account_id: &str,
     refresh_token: &str,
     scopes: &[String],
 ) -> Result<RefreshResponse> {
@@ -171,17 +176,37 @@ pub async fn refresh_access_token(
         "client_id": client_id,
         "scope": scope_str,
     });
+    subswap_core::request_metrics::record("claude", account_id, "http_start", None).await;
     let resp = client
         .post(REFRESH_URL)
         .header("Content-Type", "application/json")
         .json(&body)
         .send()
-        .await
-        .map_err(|e| Error::QuotaFetch(format!("request refresh endpoint: {e}")))?;
+        .await;
+
+    subswap_core::request_metrics::record(
+        "claude",
+        account_id,
+        "http_complete",
+        resp.as_ref().ok().map(|resp| resp.status().as_u16()),
+    )
+    .await;
+    let resp = resp.map_err(|e| Error::QuotaFetch(format!("request refresh endpoint: {e}")))?;
 
     let status = resp.status();
+    let retry_at = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| subswap_core::time::parse_retry_after(value, Utc::now()));
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(Error::QuotaRateLimited {
+                message: format!("Claude refresh endpoint throttled: {body}"),
+                retry_at,
+            });
+        }
         return Err(Error::QuotaFetch(format!(
             "refresh returned {status}: {body}"
         )));
@@ -195,23 +220,6 @@ pub async fn refresh_access_token(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn retry_after_accepts_both_forms_without_overflow_or_zero_retry() {
-        let now = Utc::now();
-        assert_eq!(
-            retry_after("7200", now),
-            Some(now + chrono::Duration::hours(2))
-        );
-        let future = now + chrono::Duration::hours(3);
-        assert_eq!(
-            retry_after(&future.to_rfc2822(), now).unwrap().timestamp(),
-            future.timestamp()
-        );
-        for value in ["0", "-1", "garbage", "9223372036854775807"] {
-            assert!(retry_after(value, now).is_none());
-        }
-    }
 
     /// 2026-07 线上真实响应片段：`used_credits` 是小数、多出一批未知窗口字段。
     /// 旧的 `Option<u64>` 会在这里解崩，导致整份响应 parse 失败、额度永远查不出。

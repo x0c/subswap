@@ -14,8 +14,41 @@
 | `subswap shell <id>` | 起一个导出好隔离环境变量的子 shell，交互里连跑多条命令；provider 从账号推断；退出时吸收凭证 |
 | `subswap env <id>` | 打印 `export` 行供 `eval`。**注意**：eval 模式不持锁、退出后不吸收凭证，仅供临时短用 |
 | `subswap doctor` | 环境自检 |
+| `subswap status [--json]` | **只读快照**：导出账号、有效 quota 窗口与原始观测时间、daemon 状态与本机请求指标；不 sync active、不查额度、不自动切换、不拉 daemon、不写任何状态。供 GUI / widget / 脚本反复调用 |
 
 `add-api` / `login` / `swap <目标>` / `rm` 成功后的 status-after-action 见下节。
+
+### 只读状态快照（`status`）
+
+`subswap status --json` 是 GUI 与 widget 的唯一读取入口。它只读 `<config>/registry.toml`、`<cache>/quota_cache.json` 与本机请求指标文件，**不构造 Provider**，因此不会读取原生客户端钥匙串、启动客户端进程或访问网络。
+
+JSON 顶层 `schema_version` 当前为 `1`；新增字段保持追加式，旧消费者可忽略：
+
+| 字段 | 含义 |
+|---|---|
+| `generated_at` | 本次快照生成时间。**不是**额度观测时间；每次重绘都会变化 |
+| `stale_after_ms` | 展示/决策可接受的最大数据年龄，来自 `[quota].decision_max_age_ms` |
+| `daemon_running` | PID 文件对应的进程是否存活；只探测，不发送信号 |
+| `auto_swap` / `warn_pct` / `exhausted_pct` | 当前展示与自动切换配置 |
+| `accounts[]` | 每个账号的 `cached_at`（原始观测时间）、`fetch_state`、`manual_only`、`error` 与有效窗口 |
+| `request_metrics` | 本机请求计数器只读快照；文件缺失时仍是稳定结构，`available=false` |
+
+账号的 `fetch_state`：
+
+- `ready`：有未 reset 的缓存窗口，且观测年龄小于 `stale_after_ms`。
+- `stale`：曾成功查询过，但所有窗口已 reset/过期，或观测年龄已超限；`cached_at` 仍保留原值，`quotas` 不展示过期数字。
+- `failed`：当前没有可信额度，且有最近一次查询错误。
+- `missing`：从未成功查询过；`manual_only` 的自定义 API 账号通常停在这里。
+
+reset 已过的窗口不会伪装成当前额度；账号本身及其原始 `cached_at` 仍保留。读取 `status` 不会刷新 `cached_at`、不会写 `quota_cache.json`、不会启动 daemon，也不会更新 `request_metrics.json`。若某次查询失败晚于成功缓存（例如新数据刚拿到后又收到 429），该账号标记为 `stale` 并保留原观测时间与失败错误，不会继续显示 `ready`。消费者判断额度新鲜度应看 `accounts[].cached_at` 与 `fetch_state`，不能把顶层 `generated_at` 当作观测时间。
+
+`status` 在全新的空 home 上同样只返回空快照：不创建 `config` / `data` / `state` / `cache` 目录，也不写任何文件。只读路径解析与写入路径解析共用同一套平台规则，但只读入口不会 `create_dir_all`。
+
+`request_metrics` 只统计 **subswap 自己实际发起** 的直接 HTTP 请求、原生 RPC 调用与采集/缓存/合并/推迟事件。它看不到官方客户端（如 Claude Code、Codex CLI）内部自行发出的、subswap 未经过的 HTTP 流量；`native_rpc_*` 与 `http_*` 分开计数。账号维度只保存 SHA-256 短键，不包含邮箱、URL 或令牌。
+
+不带 `--json` 时输出同一份数据的紧凑人读视图，仍然只读。
+
+后台采集节奏由默认入口与 `subswapd` 执行，`status` 不参与：激活账号约每 3 分钟、停放/已确认耗尽账号约每 15 分钟；同账号真实请求仍受 90 秒最小间隔与 Provider 更严下限约束。调度只增加最多 10% 的正向抖动，不会提前；已知 reset 后延迟约 2 秒再显式采集。数据超过 5 分钟（`decision_max_age_ms`）只用于展示，不能作为自动切换依据。具体默认值以 [CONFIG.md](CONFIG.md) 为准。
 
 ### Automatic swap safety
 

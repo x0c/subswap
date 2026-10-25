@@ -8,6 +8,7 @@
 //! - 任一已知字段成功 → 返回一个 Quota
 //! - 全部解析失败 → 返回单条 status=Unknown 的 Quota，避免破坏调用方流程
 
+use chrono::Utc;
 use serde::Deserialize;
 use subswap_core::error::{Error, Result};
 
@@ -80,17 +81,36 @@ pub async fn fetch_usage_raw(
         .build()
         .map_err(|e| Error::QuotaFetch(format!("build http client: {e}")))?;
 
-    let resp = client
+    subswap_core::request_metrics::record("codex", chatgpt_account_id, "http_start", None).await;
+    let sent = client
         .get(USAGE_URL)
         .bearer_auth(access_token)
         .header("ChatGPT-Account-Id", chatgpt_account_id)
         .send()
-        .await
-        .map_err(|e| Error::QuotaFetch(format!("request wham/usage: {e}")))?;
+        .await;
+    subswap_core::request_metrics::record(
+        "codex",
+        chatgpt_account_id,
+        "http_complete",
+        sent.as_ref().ok().map(|resp| resp.status().as_u16()),
+    )
+    .await;
+    let resp = sent.map_err(|e| Error::QuotaFetch(format!("request wham/usage: {e}")))?;
 
     let status = resp.status();
+    let retry_at = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| subswap_core::time::parse_retry_after(value, Utc::now()));
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
+        if status.as_u16() == 429 {
+            return Err(Error::QuotaRateLimited {
+                message: "Codex wham/usage endpoint throttled".into(),
+                retry_at,
+            });
+        }
         return Err(Error::QuotaFetch(format!(
             "wham/usage returned {status}: {body}"
         )));

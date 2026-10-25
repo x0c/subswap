@@ -179,6 +179,9 @@ enum Cmd {
     /// Environment self-check.
     Doctor,
 
+    /// Read-only account and quota snapshot for GUI consumers; never swaps or fetches quota.
+    Status,
+
     /// Import local data from legacy account stores.
     #[command(hide = true)]
     MigrateLocal,
@@ -199,6 +202,14 @@ async fn main() -> Result<()> {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(cli.log.clone()));
     tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    // `status` 是纯只读快照入口：必须在 settings reload / AppContext 之前分流。
+    // `reload_from_file` 会调用 `AppPaths::resolve` 创建目录；AppContext 还会构造 Provider
+    // （Cursor 可能读取原生钥匙串）并 best-effort 迁移旧 OpenCode API Key。GUI/widget
+    // 高频重绘不能触发这些副作用，status 自己用只读路径加载配置。
+    if matches!(cli.cmd, Some(Cmd::Status)) {
+        return cmd::status::run(cli.json).await;
+    }
 
     // 启动时加载 config.toml（缺失 / 解析失败时沿用默认值 + warn）。
     if let Err(e) = subswap_core::settings::reload_from_file() {
@@ -261,6 +272,7 @@ async fn main() -> Result<()> {
         Some(Cmd::Rm { id }) => cmd::rm::run(&ctx, &id, cli.json).await,
         Some(Cmd::Autoswap { toggle }) => cmd::autoswap::run(toggle.as_deref()),
         Some(Cmd::Doctor) => cmd::doctor::run(&ctx).await,
+        Some(Cmd::Status) => unreachable!("handled before CLI context initialization"),
         Some(Cmd::MigrateLocal) => cmd::migrate::run(&ctx).await,
         Some(Cmd::InternalDaemon) => unreachable!("handled before CLI context initialization"),
     }

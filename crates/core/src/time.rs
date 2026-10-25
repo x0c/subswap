@@ -29,6 +29,26 @@ pub fn epoch_to_datetime(epoch: i64) -> DateTime<Utc> {
     DateTime::<Utc>::from_timestamp(secs, 0).unwrap_or_else(Utc::now)
 }
 
+/// 解析 HTTP `Retry-After` 的 delta-seconds 或 HTTP-date（RFC 2822/IMF-fixdate）。
+///
+/// 返回绝对 UTC 截止时间；缺失、非正数、过去时间或溢出返回 `None`，交由调用方的
+/// 通用退避下限兜底。该函数是纯计算，不依赖 HTTP 客户端，供各 Provider 共用。
+pub fn parse_retry_after(value: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let value = value.trim();
+    if let Ok(seconds) = value.parse::<i64>() {
+        return (seconds > 0)
+            .then(|| {
+                chrono::Duration::try_seconds(seconds)
+                    .and_then(|duration| now.checked_add_signed(duration))
+            })
+            .flatten();
+    }
+    DateTime::parse_from_rfc2822(value)
+        .ok()
+        .map(|date| date.with_timezone(&Utc))
+        .filter(|date| *date > now)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -44,5 +64,38 @@ mod tests {
     fn millis_normalization() {
         assert_eq!(epoch_to_millis(1_700_000_000), 1_700_000_000_000);
         assert_eq!(epoch_to_millis(1_700_000_000_000), 1_700_000_000_000);
+    }
+
+    #[test]
+    fn retry_after_accepts_delta_seconds_and_http_date() {
+        let now = Utc::now();
+        assert_eq!(
+            parse_retry_after("7200", now),
+            Some(now + chrono::Duration::hours(2))
+        );
+        let future = now + chrono::Duration::hours(3);
+        assert_eq!(
+            parse_retry_after(&future.to_rfc2822(), now).map(|date| date.timestamp()),
+            Some(future.timestamp())
+        );
+        let http_date = future.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+        assert_eq!(
+            parse_retry_after(&http_date, now).map(|date| date.timestamp()),
+            Some(future.timestamp()),
+            "{http_date}"
+        );
+        assert_eq!(
+            parse_retry_after(" Wed, 21 Oct 2015 07:28:00 GMT ", Utc::now()),
+            None,
+            "past HTTP-date must not create a deadline"
+        );
+    }
+
+    #[test]
+    fn retry_after_rejects_zero_negative_garbage_and_overflow() {
+        let now = Utc::now();
+        for value in ["", "0", "-1", "garbage", "9223372036854775807"] {
+            assert_eq!(parse_retry_after(value, now), None, "{value:?}");
+        }
     }
 }

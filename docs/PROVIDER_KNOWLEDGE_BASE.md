@@ -76,13 +76,13 @@ Token 刷新体：`{"grant_type":"refresh_token","refresh_token":"...","client_i
 
 **429 是 usage 端点真实极严限流**（有效 token 间隔约 4s 仍 `200→429→429` + `retry-after`），不是鉴权伪装。完整排查：[troubleshooting/2026-06-14](troubleshooting/2026-06-14-claude-quota-unqueryable-429-vs-invalid-grant.md)。
 
-Research and implementation update (2026-10-09): the historical one-request-per-minute observation is not an official allowance. An expired active credential can coexist with a cached 429; 429 does not validate the credential. Active queries prefer a fresh, UUID-matched official snapshot (no request), then send one read-only direct usage request with the live access token; subswap never refreshes the active credential, and an expired active credential sends no request (`open Claude Code to renew`). **Do not start the official client to read quota**: 2.1.296 `get_usage` hits the same endpoint with `refreshOAuth: true` (can rotate the shared refresh token) and returns `rate_limits: null` without the failure reason; 1.15.0 used it and lost the 429/auth distinction ([active quota native null](troubleshooting/2026-10-11-claude-active-quota-native-null.md)). Parked queries check expiry before usage and retain guarded refresh. Per-account persistent reservations/results coordinate CLI and daemon, with a three-minute default interval and 30-minute minimum wait after 429. Direct responses retain seconds/date `Retry-After`; a later server deadline overrides the generic cap. Evidence and remaining boundaries: [persistent Claude usage 429](troubleshooting/2026-10-09-claude-persistent-usage-429.md).
+Research and implementation update (2026-10-09): the historical one-request-per-minute observation is not an official allowance. An expired active credential can coexist with a cached 429; 429 does not validate the credential. Active queries prefer a fresh, UUID-matched official snapshot (no request), then send one direct usage request with the live access token. Since 1.16.0 an expired (or usage-401) active credential is renewed only inside Claude Code's official refresh lock; see [Active credential renewal](#active-credential-renewal-under-the-official-lock-2026-10-25). **Do not start the official client to read quota**: 2.1.296 `get_usage` hits the same endpoint with `refreshOAuth: true` (can rotate the shared refresh token) and returns `rate_limits: null` without the failure reason; 1.15.0 used it and lost the 429/auth distinction ([active quota native null](troubleshooting/2026-10-11-claude-active-quota-native-null.md)). Parked queries check expiry before usage and retain guarded refresh. Per-account persistent reservations/results coordinate CLI and daemon, with a three-minute default interval and 30-minute minimum wait after 429. Direct responses retain seconds/date `Retry-After`; a later server deadline overrides the generic cap. Evidence and remaining boundaries: [persistent Claude usage 429](troubleshooting/2026-10-09-claude-persistent-usage-429.md).
 
 | 信号 | 端点/状态 | 含义 | 处理 |
 |---|---|---|---|
 | `429 rate_limit_error` | usage 429 + `retry-after` | Usage collection throttled; no fixed published allowance | Persist deadline and coordinate collectors; 429 alone does not require login |
 | `invalid_grant` | refresh `/v1/oauth/token` 400 | parked refresh 已死 | 死 token 守卫 + 重登 |
-| `401` | usage 401 | active live 过期、Claude Code 未刷 | 开一次 Claude Code；subswap 不刷 active；失败退避最多保留 90s |
+| `401` | usage 401 | active live 过期、Claude Code 未刷 | 持官方刷新锁重读 live / 续期一次后重试；无法持锁时保留错误，换了凭证后不受旧退避阻挡 |
 | `bad response` | usage **200** 但 parse 失败 | 响应结构漂移 | 补宽容解析；能走到 parse = 鉴权/限流 OK |
 | 空 access token | 本地凭据 | 登录/切换中间态回灌不完整 | 不发 usage，显示 `needs re-login`；回灌保留 store 完整副本 |
 
@@ -96,6 +96,25 @@ daemon 与 CLI **共用** `quota_cache.json`；`QuotaCache::fresh()` 比 `settin
 
 - 勿手动连发 curl usage 打空限流桶。
 - `oauth.rs::fetch_usage` 保留原始状态码；CLI 压成 `429 rate limited`；stale 行 `(cached ~Xm · 429 rate limited)`；排查看 `--log debug`。
+
+### Active credential renewal under the official lock (2026-10-25)
+
+Requirement (owner, 2026-10-25): while Claude Code's login still works (refresh token valid), the active account's quota must be readable at any time, including after one or two days without opening Claude Code. Before 1.16.0 an expired active access token (about 8 hours of client idleness) showed `credentials expired; open native client`; the expiry failure also entered the escalating usage backoff, so the error persisted for up to the backoff cap after Claude Code had renewed.
+
+Official protocol (verified in the installed 2.1.310 bundle; changelog mirrors place the refresh-lock fix at 2.1.248):
+
+- Lock directory is the Claude config dir (`CLAUDE_SECURESTORAGE_CONFIG_DIR`, else `CLAUDE_CONFIG_DIR`, else `~/.claude`). Two proper-lockfile `mkdir` locks are taken in order: `<dir>/.oauth_refresh.lock`, then the legacy `<realpath(dir)>.lock`; if the legacy lock is busy, the first is released. Stale after 60 s without mtime update (holders touch every 5 s); up to 5 retries of 1–2 s on contention.
+- Under the lock the client re-reads the credential; a different access token than the one it entered with means a sibling refreshed (`race_resolved`) and is adopted. Only otherwise does it POST the refresh (30 s timeout) and save with compare-and-swap: write only if the stored refresh token still equals the one posted, else adopt the newer write.
+- Running instances clear their 30 s credential cache and re-read before refreshing, so a token written by another lock holder is adopted rather than raced.
+
+subswap behavior (`crates/providers/claude/src/active_refresh.rs`):
+
+- Runs only when `claude --version` is at least the verified version (2.1.310) and the access token is expired, or usage returned 401 with the same token. Unknown/older client → no refresh, keep `renew` error.
+- Takes both locks with the same paths, heartbeat and 60 s stale rule; waits up to 12 s, then re-reads live once and adopts a renewed token if present.
+- Under the lock: verify `oauthAccount` is still the queried account; re-read live; adopt a sibling's token; respect `refreshTokenExpiresAt` and the dead-token guard; refresh once; compare-and-swap write to the same live backend (macOS `/usr/bin/security -U` in place, never `keyring`; elsewhere atomic `.credentials.json`) before releasing.
+- The lock + POST + write run on a blocking thread with its own runtime, so the outer quota timeout or task cancellation cannot drop the response after the server rotated the token (lost-response logout: [#102985](https://github.com/anthropics/claude-code/issues/102985), killed mid-refresh: [claude-usage-menu-bar #6](https://github.com/ac3charland/claude-usage-menu-bar/pull/6)). A future-dated lock mtime is never treated as stale ([#95739](https://github.com/anthropics/claude-code/issues/95739)).
+- `invalid_grant` marks the refresh fingerprint dead and shows `needs re-login`; subswap never clears the live credential.
+- The per-account usage backoff records a fingerprint of the access token it failed with. A non-429 failure no longer blocks a query made with a different access token (for example, after Claude Code or subswap renewed it). 429 backoff stays per account regardless of token.
 
 ### 本地激活文件
 
@@ -137,7 +156,7 @@ daemon 与 CLI **共用** `quota_cache.json`；`QuotaCache::fresh()` 比 `settin
 
 Token 预刷新 **best-effort**：`expiresAt` 在 5 分钟内且 keyring 有 `refreshToken` 时刷；失败仅 warn，不阻塞切换（不变量 #1）。
 
-**Token 保活分工**：非活跃 `access_token` 只在凭证仓库 → **daemon 后台保活**（扫描 `expires_at`，临近过期且有 `refresh_token` 调 Anthropic OAuth + 写回）。不暴露 `subswap refresh`。active 绝不刷（见下「Refresh token 轮换」）。
+**Token 保活分工**：非活跃 `access_token` 只在凭证仓库 → **daemon 后台保活**（扫描 `expires_at`，临近过期且有 `refresh_token` 调 Anthropic OAuth + 写回）。不暴露 `subswap refresh`。active 仅在已核实的官方刷新锁内续期，不能走 parked 保活路径（见上「Active credential renewal」及下「Refresh token 轮换」）。
 
 ### Claude Code 自定义 API
 
@@ -289,22 +308,22 @@ parked 查额度前由引擎调 `runtime.refresh()`：`CodexRuntime::refresh` �
 
 **两边 refresh 都是一次性轮换。** 与原生客户端各持一份并各自刷 → `refresh token already used` 强制重登（[troubleshooting/2026-06-08](troubleshooting/2026-06-08-codex-refresh-token-already-used.md)）。
 
-**不变量：active 只能在原生认可的协调机制内轮换。** Claude/Cursor active 只读不刷；Codex **active** 只委托 app-server；Kimi 仅识别官方锁并成功持锁时自愈。parked 可由 subswap 按各 Provider 串行化边界刷新（Codex parked = 直连 OAuth）；Cursor 用跨进程文件锁。
+**不变量：active 只能在原生认可的协调机制内轮换。** Cursor active 只读不刷；Claude active 仅在识别 Claude Code 官方刷新锁（`claude --version` ≥ 已核实版本）并持锁后续期；Codex **active** 只委托 app-server；Kimi 仅识别官方锁并成功持锁时自愈。parked 可由 subswap 按各 Provider 串行化边界刷新（Codex parked = 直连 OAuth）；Cursor 用跨进程文件锁。
 
 1. **Capture-on-leave**：`Provider::activate` 覆盖 live 前，读 live → 找受管 owner → 回写 store（Codex/Kimi 共享引擎，Claude/Cursor 各自实现）。所有 swap（手动 + daemon）唯一经 `activate`。找不到 owner 跳过（best-effort）。
    Claude 重复切换当前账号：只回灌并返回，禁止用 store 陈旧 token 盖回 live。
    - **覆盖前比较新旧 access/refresh；禁止用缺字段快照覆盖字段完整的快照**（[troubleshooting/2026-06-18](troubleshooting/2026-06-18-live-capture-clobbers-refresh-token.md)）。
      Claude 缺 refresh → 合并保留旧 refresh、只跟进非空新 access；缺 access → 整段保留 store；Codex 命中 → 整段跳过回灌（opaque blob，不做字段合并）。
-2. **Claude active 绝不轮换**：
+2. **Claude active 不在后台轮换**：
    - `refresh_if_near_expiry` 开头 `active_account_id()` 命中 → `Ok(false)`；daemon 保活只对 parked。
-   - `query_quota` 401 自愈：凭证来自 store（parked）才刷；来自 live（active）直接错误，交 Claude Code。
+   - `query_quota` 遇 active 过期 / usage 401：只走 `active_refresh.rs` 的官方锁续期（见 Claude 节「Active credential renewal」）；识别不到锁协议时直接错误，交 Claude Code。
    - macOS active 凭证优先 Claude Code Keychain；`.credentials.json` 只是兼容副本。
 
-一般 quota 遇 `401` / `403` / `429` 不盲目重试；仅 Codex 官方 app-server、持官方锁的 Kimi active 恢复、Cursor active 重读到更新 live access，允许各重试一次。**429 永不重试或切换通道。**
+一般 quota 遇 `401` / `403` / `429` 不盲目重试；仅 Codex 官方 app-server、持官方锁的 Kimi / Claude active 恢复、Cursor active 重读到更新 live access，允许各重试一次。**429 永不重试或切换通道。**
 
 **capture-on-leave 缺口 + 两道补救**：绕过 subswap 在 Claude Code 内登录/切换 → store 陈旧 → parked 后 daemon 刷死 token 成风暴：
 
-1. **死 token 守卫**（`ClaudeProvider.dead_refresh`，进程内）：`invalid_grant` → 记 refresh 指纹；`refresh_if_near_expiry` / `query_quota` 401 自愈命中则跳过；指纹变化自动恢复。quota 错误含 `re-login` → CLI `needs re-login`（`render.rs::compact_error`）。**只判 `invalid_grant`，网络/超时不判**。
+1. **死 token 守卫**（`ClaudeProvider.dead_refresh`，进程内）：`invalid_grant` → 记 refresh 指纹；`refresh_if_near_expiry` / `query_quota` 401 自愈 / `activate` 的 best-effort 预刷新命中则跳过；指纹变化自动恢复。quota 错误含 `re-login` → CLI `needs re-login`（`render.rs::compact_error`）。**只判 `invalid_grant`，网络/超时不判**。切换预刷新曾绕过该守卫，会在每次手动 `swap` 重打已死 refresh token；修复后与 parked 查询共用同一指纹集合。
 2. **持续回灌**（capture-on-arrival）：daemon 每轮 `ClaudeProvider::reconcile_active_from_live()`（=`capture_live_into_store`，只 live→store，不刷新、不写 live）。缩小缺口但**无法 100% 消除**；彻底恢复仍需重登。
 
 改 `activate` / keepalive / `query_quota` 自愈时须维持：不在后台刷 active、不把陈旧 token 写回 live。
@@ -685,6 +704,67 @@ macOS 命令行钥匙串**只能 fork `/usr/bin/security`**，禁止 `keyring` c
 - 细则：[AUTO_SWAP_DESIGN.md](design/AUTO_SWAP_DESIGN.md) §1.1；[2026-08-21](troubleshooting/2026-08-21-cursor-auto-swap-to-zero-over-remaining.md)
 
 active 查询 401 **绝不刷新**：只重读 live。Cursor 已自行轮换 → capture 回仓库并用新 token 重试一次；否则认证错误。parked 允许在 subswap 跨进程文件锁内刷新：锁内重读，另一进程已轮换则复用；否则刷一次并持久化完整 pair。401/403 或 `shouldLogout` → refresh SHA-256 dead guard。
+
+---
+
+## 请求可观测性（request metrics）
+
+`crates/core/src/request_metrics.rs` 提供有界、无凭证的本地计数；`request_metrics::snapshot()` 只读，**不创建目录/锁文件、不修复损坏文件、不触发任何上游请求**。
+
+- 写入 `data_dir/request_metrics.json`（跟随 `SUBSWAP_HOME`），`flock` + 读改写 + 临时文件原子替换，CLI/daemon 跨进程合并。写入时才创建目录；只读快照使用 `AppPaths::resolve_readonly()`，全新用户目录不会被一次读取隐式创建。
+- 事件固定为 `http_start/http_complete/native_rpc_start/native_rpc_complete` 与采集器的 `collection_start/collection_success/collection_failure/cache_hit/coalesced/deferred`；未知事件丢弃。
+- HTTP 与原生 RPC 分表计数；`http_complete` 另记 1xx–5xx 状态码。采集器事件由共享收集器上报，provider 只上报真实发起的请求。
+- 账号键是 `SHA-256(provider + NUL + account)` 前 128 bit；不存 URL、令牌、邮箱、原始账号、错误正文。Provider 键只接受 ASCII 标识，异常值归 `other`。
+- 上限：128 个账号、32 个 Provider、60 个最近分钟桶、每个 scope 32 个状态码；账号/Provider 按最近使用淘汰，总量计数不丢。
+- 每个 totals / Provider / 账号 scope 各自保留 `<=60` 个分钟桶。快照把当前分钟及之前 59 个分钟槽内的桶求和为 `last_hour`（同样区分 requests / collections / statuses）；顶层 `totals.last_hour` 以顶层 `minutes` 为准，兼容缺少 per-scope 历史的旧文件（旧 scope 的 `last_hour` 为 0）。
+- `requests` / `collections` 是**生命周期累计**；诊断“过去一小时”必须读同一 scope 的 `last_hour`，不能拿 lifetime 数字冒充窗口值。schema 仍为 version 1，新增字段均为可选，旧文件可读、旧读取器可忽略。
+- 损坏 JSON 在下次写入时隔离为 `request_metrics.json.corrupt` 并重新开始；快照对损坏文件只报告 `corrupt: true`。写入失败只影响遥测，不影响额度查询。
+- 单元测试用 task-local sink 或隐藏的绝对路径 `SUBSWAP_REQUEST_METRICS_PATH` 隔离；生产默认落在用户 data 目录。
+
+实际打点位置（每次真实 `.send()` 前/后各一次，不按“采集轮次”估算）：
+
+| Provider | 直接 HTTP | 原生 RPC |
+|---|---|---|
+| Claude | usage GET、OAuth refresh POST | — |
+| Codex | `wham/usage`、rate-limit-reset-credits、parked OAuth refresh | control-socket WebSocket JSON-RPC；`codex app-server --stdio` JSONL（initialize / account/read / rateLimits/read） |
+| Kimi | `/usages`、OAuth refresh | —（官方 refresh 锁不是 RPC） |
+| OpenCode | Go `/usage`、Console `/console/api/go/status` | — |
+| CommandCode | `/alpha/billing/credits` | — |
+| Cursor | usage GET、Credits POST、token refresh POST | — |
+
+一次 collection 可产生多条 HTTP（Codex 主额度 + 重置道具明细；Cursor 1st/API + Credits；Kimi active 401 恢复 = usage + refresh + usage；Claude parked 401 自愈 = usage + refresh + usage），每条都按实际发送计数。Codex 原生 RPC 只覆盖 subswap 自己发起的 JSON-RPC，**不代表官方客户端进程内部的 HTTP 流量**；WebSocket 握手、`initialized` 通知与客户端自身刷新不计。
+
+被动来源边界：Claude 的 `cachedUsageUtilization` 官方快照、Codex 的 `last_usage` 兜底都是本地只读，不产生 HTTP/native 计数；provider 内部是否命中被动快照目前不单独上报，`cache_hit` 由共享收集器按自身缓存/合并结果记录。禁止为此启动官方客户端、注入模型请求、读浏览器 Cookie 或改写 statusline。官方客户端、Cursor GUI/CLI、Kimi/OpenCode 官方登录流程自身发出的请求不可见，保持保守轮询。
+
+429 是瞬态限流：不得重试或切换通道，也不得据此判定凭证死亡；测试同时断言只有一次 `http_start` 且状态码为 429。缺 access token 时 Claude 在发送前返回 `needs re-login`，HTTP 计数保持 0；active 凭证过期且识别不到官方锁时返回 `renew`，同样零 HTTP。
+
+### 凭证死亡守卫审计（2026-10-24）
+
+- **Claude**：`dead_refresh` 进程内指纹，`invalid_grant` 才标记；`refresh_if_near_expiry`、parked 401 自愈和 `activate` 预刷新共用，token 轮换后指纹变化自动恢复。active 只在持 Claude Code 官方刷新锁时续期，同一守卫在发 HTTP 前拦截已死 refresh token。
+- **Codex**：parked refresh 的终态（401/403、`refresh_token_reused`、`invalid_grant` 等）记进程内指纹，第二次刷新在发 HTTP 前返回 `DeadToken`；进程重启后最多再尝试一次。该守卫只覆盖 refresh，不阻止后续只读 usage 401（由共享采集退避收敛）。
+- **Kimi**：dead fingerprint 持久化在 Kimi home，只有凭证里的 refresh token 变化才清除；active 恢复仅在识别并持有官方跨进程锁时执行。
+- **Cursor**：`.dead` 文件按账号记录 refresh 指纹，成功轮换后清除；active 401 只重读 live，绝不以 parked 身份刷新。
+- **OpenCode / CommandCode**：API key 无 refresh，401/403 直接 `needs re-login`，没有进程级死亡守卫；依赖共享采集器的失败退避与 parked 15 分钟节奏，禁止改成高频探测。
+
+### 429 / Retry-After 覆盖（2026-10-25）
+
+共享纯解析器 `core::time::parse_retry_after(value, now)`：支持 delta-seconds 与 HTTP-date（RFC 2822/IMF-fixdate）；`0`、负数、过去时间、未知值和溢出返回 `None`，由调用方的通用退避下限兜底。各 Provider 在消费响应正文前读取 `Retry-After`，429 统一返回 `Error::QuotaRateLimited { retry_at, .. }`；不得重试、切通道或回退到另一个额度端点。
+
+| 路径 | 429 处理 |
+|---|---|
+| `claude/oauth.rs::fetch_usage` / `refresh_access_token` | typed；usage_poll 继续用 Claude 三分钟下限，服务端更晚 deadline 不被通用上限缩短 |
+| `codex/openai_usage.rs::fetch_usage_raw` | typed；失败直接冒泡，不再回退 |
+| `codex/oauth.rs::refresh_parked_blob_at` | typed；替代原 `Unsupported`，避免刷新 429 后继续用旧 token 打 usage |
+| `kimi/kimi_usage.rs::fetch_quota_at` | typed；429 不触发 active 401 recovery |
+| `kimi/oauth.rs::refresh_blob_at` | typed；不标记 dead token |
+| `opencode/usage.rs`（Go key） | typed |
+| `opencode/console.rs`（Console status） | typed |
+| `commandcode/usage.rs` | typed |
+| `cursor/lib.rs::fetch_usage` | `UsageError::RateLimited` → typed；不刷新 |
+| `cursor/lib.rs::refresh_parked` | typed；不标记 dead token |
+| `codex/reset_credits.rs` / Cursor Credits | 可选展示明细，失败仍只降级，不新增请求 |
+
+Codex 官方 app-server / control socket 的 429 没有 HTTP `Retry-After`，仍按原生 RPC 错误处理；不伪造 deadline。mocked tests 覆盖缺失/`0` header 返回 `None`、`Retry-After: 7200` 保留且只发一次请求；core collection 测试覆盖 2 小时 typed deadline 压过通用退避上限并持久化。
 
 ---
 

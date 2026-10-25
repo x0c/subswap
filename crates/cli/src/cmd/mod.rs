@@ -8,6 +8,7 @@ pub mod login;
 pub mod migrate;
 pub mod rm;
 pub mod run;
+pub mod status;
 pub mod swap;
 
 use anyhow::{Context, Result};

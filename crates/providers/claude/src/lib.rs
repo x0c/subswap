@@ -7,6 +7,7 @@
 //!   避免堵塞 tokio worker（daemon 并发 activate 时尤其重要）。
 //! - 敏感数据：credentials.json 整段写 keyring；registry.toml 只存元数据。
 
+mod active_refresh;
 mod claude_files;
 mod oauth;
 mod paths;
@@ -786,7 +787,7 @@ impl Provider for ClaudeProvider {
         )?;
 
         // best-effort 预刷新：失败不阻塞 activate，保持「网络挂了也能切」的不变量。
-        if best_effort_pre_refresh(&mut target_creds).await {
+        if best_effort_pre_refresh(self, id, &mut target_creds).await {
             // 回写 keyring，避免下次 activate 重复刷。Best-effort：失败仅日志。
             if let Err(e) = self.save_credentials(id, &target_creds) {
                 tracing::warn!(err=%e, "writing refreshed token back to keyring failed; next activate will refresh again");
@@ -918,10 +919,12 @@ impl Provider for ClaudeProvider {
         }
         let account = id.0.clone();
         let config = cfg.clone();
-        let begin =
-            tokio::task::spawn_blocking(move || usage_poll::begin(&root, &account, &config))
-                .await
-                .map_err(|e| Error::Provider(format!("reserve Claude usage query: {e}")))??;
+        let access_token = creds.oauth.access_token.clone();
+        let begin = tokio::task::spawn_blocking(move || {
+            usage_poll::begin(&root, &account, &access_token, &config)
+        })
+        .await
+        .map_err(|e| Error::Provider(format!("reserve Claude usage query: {e}")))??;
         let lease = match begin {
             usage_poll::Begin::Cached(quotas) => return Ok(quotas),
             usage_poll::Begin::Fetch(lease) => lease,
@@ -1299,14 +1302,24 @@ impl ClaudeProvider {
                     "Claude account changed before usage query".into(),
                 ));
             }
-            // active 凭据只读不刷，由官方客户端在下次使用时续期；过期 token 不发上游。
+            // active 凭据过期时只在 Claude Code 官方刷新锁内续期；识别不到锁协议则不发上游。
             // 不能拉起官方客户端代查：其 usage 请求会轮换共享 refresh token，失败时也不给原因。
             if is_expired_or_soon(&creds, 0) {
-                return Err(Error::QuotaFetch(
-                    "Claude credential expired; open Claude Code to renew".into(),
-                ));
+                creds = self
+                    .renew_active(id, &creds.oauth.access_token)
+                    .await?
+                    .ok_or_else(|| {
+                        Error::QuotaFetch(
+                            "Claude credential expired; open Claude Code to renew".into(),
+                        )
+                    })?;
             }
-            let usage = oauth::fetch_usage(&creds.oauth.access_token).await;
+            let mut usage = oauth::fetch_usage(&id.0, &creds.oauth.access_token).await;
+            if matches!(&usage, Err(error) if is_auth_error(error)) {
+                if let Some(renewed) = self.renew_active(id, &creds.oauth.access_token).await? {
+                    usage = oauth::fetch_usage(&id.0, &renewed.oauth.access_token).await;
+                }
+            }
             let after = read_oauth_account_async(home).await?;
             if before.as_ref().map(|a| (&a.email_address, &a.account_uuid))
                 != after.as_ref().map(|a| (&a.email_address, &a.account_uuid))
@@ -1321,13 +1334,13 @@ impl ClaudeProvider {
             if is_expired_or_soon(&creds, 0) {
                 creds = self.refresh_parked_for_usage(id, None, 0).await?;
             }
-            match oauth::fetch_usage(&creds.oauth.access_token).await {
+            match oauth::fetch_usage(&id.0, &creds.oauth.access_token).await {
                 Ok(usage) => usage,
                 Err(error) if is_auth_error(&error) => {
                     creds = self
                         .refresh_parked_for_usage(id, Some(creds.oauth.access_token.clone()), 0)
                         .await?;
-                    oauth::fetch_usage(&creds.oauth.access_token).await?
+                    oauth::fetch_usage(&id.0, &creds.oauth.access_token).await?
                 }
                 Err(error) => return Err(error),
             }
@@ -1339,6 +1352,59 @@ impl ClaudeProvider {
             ));
         }
         Ok(quotas)
+    }
+
+    /// active 凭据过期或 usage 401 时，在 Claude Code 官方刷新锁内取得可用凭据。
+    ///
+    /// 本机 Claude Code 未声明已核实的锁协议时返回 `Ok(None)`，调用方保留原错误、不刷新。
+    /// 锁、刷新请求与写回整体跑在独立阻塞线程与运行时上：外层超时或取消不能在服务端已轮换
+    /// refresh token 后丢掉响应，否则所有客户端都会掉登录。
+    async fn renew_active(
+        &self,
+        id: &AccountId,
+        attempted_access: &str,
+    ) -> Result<Option<CredentialsFile>> {
+        let home = self.claude_home.clone();
+        let dead_refresh = self.dead_refresh.clone();
+        let account = id.0.clone();
+        let attempted = attempted_access.to_string();
+        tokio::task::spawn_blocking(move || {
+            if !active_refresh::lock_protocol_available() {
+                tracing::warn!(
+                    "Claude Code refresh-lock protocol not recognized; skip active credential renewal"
+                );
+                return Ok(None);
+            }
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| Error::Provider(format!("build Claude renewal runtime: {e}")))?;
+            let backend = LiveStore { home: home.clone() };
+            let paths = active_refresh::LockPaths::for_claude_home(&home);
+            active_refresh::renew_blocking(
+                &backend,
+                &paths,
+                &account,
+                &attempted,
+                &dead_refresh,
+                |live| {
+                    let token = live.oauth.refresh_token.clone().unwrap_or_default();
+                    runtime.block_on(async {
+                        tokio::time::timeout(
+                            active_refresh::REFRESH_TIMEOUT,
+                            oauth::refresh_access_token(&account, &token, &live.oauth.scopes),
+                        )
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(Error::QuotaFetch("Claude credential refresh timed out".into()))
+                        })
+                    })
+                },
+            )
+            .map(Some)
+        })
+        .await
+        .map_err(|e| Error::Provider(format!("renew Claude active credential: {e}")))?
     }
 
     async fn refresh_parked_for_usage(
@@ -1373,7 +1439,7 @@ impl ClaudeProvider {
         if token.is_empty() || self.is_refresh_dead(&token) || refresh_token_expired(&creds) {
             return Err(relogin_required_error(id));
         }
-        match apply_refresh_to_creds(&mut creds).await {
+        match apply_refresh_to_creds(&id.0, &mut creds).await {
             Ok(()) => {
                 let provider = self.clone();
                 let account = id.clone();
@@ -1760,28 +1826,44 @@ fn capture_live_into_store(
 }
 
 /// best-effort 预刷新。返回 `true` 表示 token 已被刷新。
-async fn best_effort_pre_refresh(creds: &mut CredentialsFile) -> bool {
+///
+/// 与 parked 查询共用死 token 守卫：`invalid_grant` 后同一 refresh token 不再发请求，
+/// 直到凭证轮换出新的 refresh token。网络/超时错误不标记死亡。
+async fn best_effort_pre_refresh(
+    provider: &ClaudeProvider,
+    id: &AccountId,
+    creds: &mut CredentialsFile,
+) -> bool {
     if !is_expired_or_soon(creds, settings::current().token.refresh_slack_ms) {
         return false;
     }
-    if creds
+    let Some(refresh_token) = creds
         .oauth
         .refresh_token
-        .as_deref()
-        .unwrap_or("")
-        .is_empty()
-    {
+        .clone()
+        .filter(|token| !token.is_empty())
+    else {
         tracing::warn!(
             "token expired/expiring but refreshToken is empty in store; skipping pre-refresh — log in again if the client returns 401"
         );
         return false;
+    };
+    if provider.is_refresh_dead(&refresh_token) {
+        tracing::debug!(
+            account = %id,
+            "Claude refresh token already invalid; skipping pre-refresh until credentials change"
+        );
+        return false;
     }
-    match apply_refresh_to_creds(creds).await {
+    match apply_refresh_to_creds(&id.0, creds).await {
         Ok(()) => {
             tracing::info!("Claude access_token pre-refreshed");
             true
         }
         Err(e) => {
+            if is_invalid_grant(&e) {
+                provider.mark_refresh_dead(&refresh_token);
+            }
             tracing::warn!(
                 err=%e,
                 "pre-refresh failed; swapping with existing token — log in again if the client returns 401"
@@ -1795,7 +1877,7 @@ async fn best_effort_pre_refresh(creds: &mut CredentialsFile) -> bool {
 ///
 /// 不读 keyring、不写 keyring、不动磁盘；调用方负责持久化。缺 `refresh_token`
 /// 时返回 [`Error::Provider`]（不能 offline 续期）。
-async fn apply_refresh_to_creds(creds: &mut CredentialsFile) -> Result<()> {
+async fn apply_refresh_to_creds(account: &str, creds: &mut CredentialsFile) -> Result<()> {
     if refresh_token_expired(creds) {
         return Err(Error::QuotaFetch(format!(
             "re-login required: {PROVIDER_ID} refresh token expired (refreshTokenExpiresAt), log in again in Claude Code"
@@ -1811,15 +1893,68 @@ async fn apply_refresh_to_creds(creds: &mut CredentialsFile) -> Result<()> {
                 "{PROVIDER_ID} account has no refreshToken; cannot refresh offline, log in and re-add"
             ))
         })?;
-    let resp = oauth::refresh_access_token(&refresh_token, &creds.oauth.scopes).await?;
+    let resp = oauth::refresh_access_token(account, &refresh_token, &creds.oauth.scopes).await?;
+    apply_refresh_response(creds, resp);
+    Ok(())
+}
+
+/// 把刷新响应合并进凭据，其余字段（订阅类型、限额档位等）原样保留。
+fn apply_refresh_response(creds: &mut CredentialsFile, resp: oauth::RefreshResponse) {
+    let now_ms = Utc::now().timestamp_millis();
     creds.oauth.access_token = resp.access_token;
     if let Some(secs) = resp.expires_in {
-        creds.oauth.expires_at = Some(Utc::now().timestamp_millis() + secs * 1000);
+        creds.oauth.expires_at = Some(now_ms + secs * 1000);
     }
-    if let Some(rt) = resp.refresh_token {
+    if let Some(rt) = resp.refresh_token.filter(|rt| !rt.is_empty()) {
         creds.oauth.refresh_token = Some(rt);
     }
-    Ok(())
+    if let Some(secs) = resp.refresh_token_expires_in {
+        creds.oauth.other.insert(
+            "refreshTokenExpiresAt".into(),
+            (now_ms + secs * 1000).into(),
+        );
+    }
+    if let Some(scope) = resp.scope.filter(|scope| !scope.trim().is_empty()) {
+        creds.oauth.scopes = scope.split_whitespace().map(str::to_string).collect();
+    }
+}
+
+/// Claude Code 实际读取的 live 凭证存储：macOS 钥匙串（只经 `/usr/bin/security`），其他平台
+/// `.credentials.json`。账号身份取自全局配置的 `oauthAccount`。
+struct LiveStore {
+    home: PathBuf,
+}
+
+impl active_refresh::LiveBackend for LiveStore {
+    fn account_email(&self) -> Result<Option<String>> {
+        Ok(read_oauth_account(&global_config_path(&self.home))?.map(|a| a.email_address))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn read(&self) -> Result<Option<CredentialsFile>> {
+        security_find_password()?
+            .map(|raw| serde_json::from_str(&raw).map_err(Error::from))
+            .transpose()
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn read(&self) -> Result<Option<CredentialsFile>> {
+        let path = credentials_path(&self.home);
+        if !path.exists() {
+            return Ok(None);
+        }
+        read_credentials(&path).map(Some)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn write(&self, creds: &CredentialsFile) -> Result<()> {
+        write_claude_code_keychain(creds)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn write(&self, creds: &CredentialsFile) -> Result<()> {
+        write_credentials(&credentials_path(&self.home), creds)
+    }
 }
 
 /// 判断 quota 拉取错误是否为鉴权失效(401)，用于决定是否触发刷新重试。
@@ -2032,7 +2167,9 @@ mod tests {
             "refreshTokenExpiresAt".into(),
             (Utc::now().timestamp_millis() - 1).into(),
         );
-        let err = apply_refresh_to_creds(&mut creds).await.unwrap_err();
+        let err = apply_refresh_to_creds("a@x.com", &mut creds)
+            .await
+            .unwrap_err();
         // 文本含 "re-login"，CLI 会压成 needs re-login，而不是白打一次请求换 invalid_grant。
         assert!(err.to_string().contains("re-login"), "{err}");
     }
@@ -2143,6 +2280,82 @@ mod tests {
         let err = provider.query_quota(&id).await.unwrap_err();
         assert!(err.to_string().contains("access token missing"), "{err}");
         assert!(err.to_string().contains("re-login"), "{err}");
+
+        // 缺 access token 时不得发任何 HTTP；未写入计数文件也证明路径在发送前返回。
+        let metrics_dir = tempfile::tempdir().unwrap();
+        let metrics_path = metrics_dir.path().join("request_metrics.json");
+        let err = subswap_core::request_metrics::with_sink(
+            metrics_path.clone(),
+            provider.query_quota(&id),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("access token missing"), "{err}");
+        assert!(err.to_string().contains("re-login"), "{err}");
+
+        // 缺 access token 时不得发任何 HTTP。
+        assert!(!metrics_path.exists());
+        let metrics = subswap_core::request_metrics::snapshot_at(&metrics_path);
+        assert_eq!(metrics["totals"]["requests"]["http_start"], 0);
+        assert_eq!(metrics["available"], false);
+    }
+
+    #[tokio::test]
+    async fn expired_active_credential_sends_no_http() {
+        use subswap_core::FileStore;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("claude");
+        std::fs::create_dir_all(&home).unwrap();
+        let id = AccountId("active@x.com".into());
+        std::fs::write(
+            crate::paths::global_config_path(&home),
+            r#"{"oauthAccount":{"emailAddress":"active@x.com"}}"#,
+        )
+        .unwrap();
+
+        let provider = ClaudeProvider {
+            store: Arc::new(FileStore::new(tmp.path().join("creds.json"))),
+            registry: Arc::new(AccountRegistry::new(tmp.path().join("registry.toml"))),
+            claude_home: home,
+            dead_refresh: Arc::new(Mutex::new(HashSet::new())),
+        };
+        // 直接走 active 的 query_usage 预检，不经过 live/keychain 读取：
+        // 过期凭证必须在 oauth::fetch_usage 之前返回，且不发任何 HTTP。
+        let mut creds = mk_creds(Some(1), Some("refresh-active"));
+        creds.oauth.access_token = "expired-access".into();
+        let metrics_dir = tempfile::tempdir().unwrap();
+        let metrics_path = metrics_dir.path().join("request_metrics.json");
+        let err = subswap_core::request_metrics::with_sink(
+            metrics_path.clone(),
+            provider.query_usage(&id, creds, true),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("renew"), "{err}");
+        assert!(
+            !metrics_path.exists(),
+            "expired active credential sent HTTP"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_refresh_skips_dead_token_until_rotation() {
+        use subswap_core::FileStore;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = ClaudeProvider {
+            store: Arc::new(FileStore::new(tmp.path().join("creds.json"))),
+            registry: Arc::new(AccountRegistry::new(tmp.path().join("registry.toml"))),
+            claude_home: tmp.path().join("claude"),
+            dead_refresh: Arc::new(Mutex::new(HashSet::new())),
+        };
+        let id = AccountId("a@x.com".into());
+        provider.mark_refresh_dead("dead-refresh");
+        let mut creds = mk_creds(Some(0), Some("dead-refresh"));
+        assert!(!best_effort_pre_refresh(&provider, &id, &mut creds).await);
+        assert_eq!(creds.oauth.access_token, "old-token");
+        assert_eq!(creds.oauth.refresh_token.as_deref(), Some("dead-refresh"));
     }
 
     #[test]

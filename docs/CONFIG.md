@@ -27,7 +27,7 @@ Windows: %APPDATA%\subswap\subswap\config\config.toml
 
 ## 热加载
 
-- `subswapd` 每轮循环开头读一次；改了文件下一轮（≤ 60s）生效。
+- `subswapd` 每轮循环开头读一次；改了文件下一轮生效（活跃时约 ≤ 60s，空闲时最长约 30 分钟；已知 reset 唤醒可能更早）。
 - `subswap` CLI 每次启动读一次；下次执行生效。
 - **解析失败不会拖挂 daemon**：保留上一次成功加载的值，日志打 `reload config failed; keeping previous values`。
 - TOML **未识别字段**会让解析失败（`deny_unknown_fields`），便于早发现 typo。
@@ -47,14 +47,36 @@ Windows: %APPDATA%\subswap\subswap\config\config.toml
 | `quota.fetch_retry_delay_ms` | `500` | 毫秒 | 首次 quota 重试等待时间；后续按 500ms、1s、2s、4s、8s 指数退避 |
 | `quota.min_refresh_interval_ms` | `90000` | 毫秒 | 同一账号两次真实 quota 查询的最小间隔；缓存比它新就复用、不打端点。daemon 与 CLI 共用 `quota_cache.json`，节流对两条路径同时生效 |
 | `quota.failure_backoff_max_ms` | `900000` | 毫秒 | 连续查询失败时的退避上限；退避从 `min_refresh_interval_ms` 起按连续失败次数翻倍并封顶到此值。失败结果不进缓存，没有它时查不出的账号会被每轮重打，反而比健康账号更高频 |
+| `quota.active_refresh_interval_ms` | `180000` | 毫秒 | 后台对**当前激活账号**的目标刷新间隔。实际请求仍受 `min_refresh_interval_ms`、Provider 专属下限与协调器 `next_attempt_at` 约束 |
+| `quota.parked_refresh_interval_ms` | `900000` | 毫秒 | 后台对非激活、未确认耗尽账号的目标刷新间隔 |
+| `quota.exhausted_refresh_interval_ms` | `900000` | 毫秒 | 非激活、已确认耗尽账号的后台刷新间隔；低频检查只用于发现提前发放，不把计时器到期当成额度恢复 |
+| `quota.decision_max_age_ms` | `300000` | 毫秒 | 自动决策可接受的最大数据年龄；更老的额度只展示为 stale，不能作为切换触发或候选依据 |
+| `quota.candidate_refresh_margin_pct` | `15.0` | 0~100 | 激活账号进入「阈值 - margin」区间时提前确认候选；不改变切换阈值 |
+| `quota.candidate_refresh_limit` | `2` | 个 | 接近阈值时最多提前刷新的非 manual_only 候选数；其余候选仍按普通节奏刷新 |
+| `quota.refresh_jitter_pct` | `10.0` | 0~100 | 自适应间隔的正向抖动上限；只增加等待，不会早于基础间隔、Provider 下限或服务端截止时间 |
+| `quota.max_concurrent_fetches` | `4` | 个 | 同一进程同时进行真实采集的账号上限；跨进程另有协调器槽位限制 |
+| `quota.max_concurrent_per_provider` | `1` | 个 | 同一 Provider 同时进行的真实采集上限；默认串行以保护共享限流桶 |
+| `quota.reset_refresh_delay_ms` | `2000` | 毫秒 | 任意已知 gating 窗口倒计时（健康账号也算）到期后延迟多久显式刷新受影响账号；同一账号同一时刻的多个窗口合并为一次查询 |
 | `token.refresh_slack_ms` | `300000` | 毫秒 | Claude token 距过期此值内 → 触发预刷新 |
 | `daemon.poll_interval_ms` | `60000` | 毫秒 | 活跃时轮询间隔 |
 | `daemon.idle_threshold_ms` | `1800000` | 毫秒 | provider probe 文件 mtime 距今超过此值视为「用户没在用」 |
-| `daemon.idle_poll_interval_ms` | `900000` | 毫秒 | 空闲时轮询间隔 |
+| `daemon.idle_poll_interval_ms` | `1800000` | 毫秒 | 空闲时轮询间隔 |
 | `codex.usage_cache_max_age_ms` | `600000` | 毫秒 | wham/usage 字段漂移时，允许使用本地 last_usage 缓存的最大年龄 |
 | `codex.reset_details_timeout_ms` | `1000` | ms | Maximum wait for optional parked-account reset-credit details; `0` skips the extra request. Active accounts only reuse inline official details, so optional HTTP requests never delay their main quotas. |
 | `claude.usage_min_refresh_interval_ms` | `180000` | ms | Minimum interval between Claude network usage queries, also bounded by `quota.min_refresh_interval_ms`. A per-account persistent reservation coordinates CLI and daemon; fresh official snapshots add no request. |
 | `claude.usage_rate_limit_backoff_ms` | `1800000` | ms | Conservative minimum wait after Claude 429. A later server `Retry-After` deadline wins, even beyond the generic 15-minute cap. |
+
+## 自适应后台采集
+
+`subswapd` 不再对所有账号每轮同频查询，而是按账号状态与真实观测时间调度：
+
+- **节奏**：当前激活账号约 3 分钟，停放与已确认耗尽账号约 15 分钟；在基础间隔上叠加 `0~refresh_jitter_pct` 的**正向**抖动，避免多账号同一秒打向端点。抖动只会延后，不会提前，也不会绕开 `min_refresh_interval_ms`、Provider 专属下限（如 Claude 三分钟）或协调器记录的 `next_attempt_at` / 服务端 `Retry-After`。
+- **前台不降级**：无参 `subswap`、写操作后的状态面仍可主动检查；它们只是复用同一个共享协调器，真实请求仍服从最小间隔、并发槽位与服务端截止时间。GUI/`status --json` 保持只读，不触发采集。
+- **新鲜度**：只有不晚于 `decision_max_age_ms` 的真实观测才能作为自动切换依据。超过年龄的旧数据仍可展示，但状态是 `stale`，不会因为「本轮调度没查」变成 `ready`。
+- **近阈值候选**：激活账号进入「`auto_swap.threshold` - `candidate_refresh_margin_pct`」区间（或已确认耗尽）时，最多提前确认 `candidate_refresh_limit` 个非 `manual_only`、且缺少新鲜数据的候选；不会整池刷新。已有新鲜数据的候选不重复请求。
+- **已知 reset**：任何**已展示的 gating 窗口倒计时**到期（`ResetCredits` 除外）都应按 `reset + reset_refresh_delay_ms` 显式刷新受影响账号，健康账号（例如 5h 只用了 40%）同样如此，不能等 3/15 分钟普通节奏。同一账号多个窗口共享同一 reset 时间只查询一次；不同窗口的后续 reset 继续依次调度。叠加/并行池的有效恢复时间语义只用于自动切换的恢复排序，不再决定是否安排 reset 刷新。调度会先读取协调器记录，并在升级前缓存尚未生成协调记录时用其原始观测作为种子；唤醒仍服从 `min_refresh_interval_ms`、Provider 下限与服务端 `Retry-After`。已处理过的同一 reset 不会因服务端仍返回旧时间而重复查询；计时器到期本身不证明额度恢复，只有采集返回的真实读数才会更新状态。
+- **普通轮询仍保留**：没有 reset 信息或出现提前发放时，15 分钟的低频检查继续兜底；耗尽账号不会每轮重查。空闲模式（probe 文件超过 `daemon.idle_threshold_ms` 未变化）保留既有的空闲轮询节奏，只允许已知 reset 唤醒提前。
+- **并发**：`max_concurrent_fetches` 限制同进程并发采集总数，`max_concurrent_per_provider` 限制单 Provider 并发；两者都不绕过跨进程协调器。
 
 ## 示例：放慢 daemon
 
@@ -71,8 +93,8 @@ idle_poll_interval_ms = 1800000     # 空闲 30 分钟一轮
 - `quota.fetch_retries` 最大按 5 次生效；401/403/429 不重试，其余失败按 `quota.fetch_retry_delay_ms` 指数退避。
 - `quota.fetch_timeout_ms` 不要压到 Codex app-server / Kimi 自愈完成时间以下，否则会误报 `timeout after N attempts`。
 - Reducing quota or Claude-specific intervals increases contention with native clients. Historical per-minute observations are not a guaranteed Anthropic allowance; account-specific and hour-scale limits have been reported. Claude's durable retry deadline remains authoritative even if the shared cache is overwritten by another process.
-- `daemon.poll_interval_ms` 设过短（< 30s）→ wham/usage 高频请求可能触风控。
-- `daemon.idle_*` 的初衷是「用户真没在用 AI 时别打 quota 请求」，**不要**通过缩小 `idle_threshold_ms` 把空闲化掉。
+- `daemon.poll_interval_ms` 是**唤醒**间隔，不等于每账号请求间隔；真实采集由 `quota.active_refresh_interval_ms` / `parked_refresh_interval_ms` / `exhausted_refresh_interval_ms` 与协调器下限共同决定。即便如此也不要把唤醒调到秒级。
+- `daemon.idle_*` 的初衷是「用户真没在用 AI 时别打 quota 请求」，**不要**通过缩小 `idle_threshold_ms` 把空闲化掉；空闲时自适应到期不会提前唤醒 daemon，只有已知 reset 可以。
 
 详见 docs/design/ARCHITECTURE.md §5.6「风控边界」。
 

@@ -106,6 +106,63 @@ pub const QUOTA_MIN_REFRESH_INTERVAL_MS: u64 = 90_000;
 pub const QUOTA_FAILURE_BACKOFF_MAX_MS: u64 = 900_000;
 
 // ============================================================
+// 自适应后台额度采集节奏
+// ============================================================
+
+/// 当前激活账号的后台刷新间隔（毫秒），默认 3 分钟。
+///
+/// 激活账号决定自动切换能否及时发生，因此高于停放账号频率；仍受
+/// [`QUOTA_MIN_REFRESH_INTERVAL_MS`] 与各 Provider 的更严下限约束。
+pub const QUOTA_ACTIVE_REFRESH_INTERVAL_MS: u64 = 180_000;
+
+/// 停放（非激活、未确认耗尽）账号的后台刷新间隔（毫秒），默认 15 分钟。
+///
+/// 只为保持候选可用性与展示新鲜度；不需要和激活账号同频。
+pub const QUOTA_PARKED_REFRESH_INTERVAL_MS: u64 = 900_000;
+
+/// 已确认耗尽账号的后台刷新间隔（毫秒），默认 15 分钟。
+///
+/// 耗尽号不会因为每轮重查而恢复；低频检查只用于发现提前发放的额度。
+/// 已知窗口 reset 的显式唤醒见 [`QUOTA_RESET_REFRESH_DELAY_MS`]。
+pub const QUOTA_EXHAUSTED_REFRESH_INTERVAL_MS: u64 = 900_000;
+
+/// 自动决策可接受的最大数据年龄（毫秒），默认 5 分钟。
+///
+/// 超过此年龄的额度只能展示为 stale，不能作为切换触发或候选依据——
+/// 不能因为调度器「刚刚没查」就把旧数字升格成 Ready。
+pub const QUOTA_DECISION_MAX_AGE_MS: i64 = 300_000;
+
+/// 激活账号接近切换阈值多少个百分点时，提前确认候选（百分比 0~100）。
+///
+/// 默认 15：激活账号利用率进入「阈值 - 15」区间时，最多预热
+/// [`QUOTA_CANDIDATE_REFRESH_LIMIT`] 个非 manual_only 候选，确保阈值真正
+/// 被越过时已有可确认目标，而不是临时整池刷新。
+pub const QUOTA_CANDIDATE_REFRESH_MARGIN_PCT: f64 = 15.0;
+
+/// 接近阈值时最多提前刷新的候选账号数。
+pub const QUOTA_CANDIDATE_REFRESH_LIMIT: usize = 2;
+
+/// 调度抖动上限（正百分比 0~100），默认 10。
+///
+/// 在基础间隔上增加 `0..=10%` 的正向偏移，避免多个账号/机器同一秒打向同一端点；
+/// 抖动永远不会让采集早于基础间隔或 Provider 下限。
+pub const QUOTA_REFRESH_JITTER_PCT: f64 = 10.0;
+
+/// 同一进程内并发采集的最大账号数。
+pub const QUOTA_MAX_CONCURRENT_FETCHES: usize = 4;
+
+/// 同一 Provider 同时采集的最大账号数。
+///
+/// 默认 1：同一 Provider 的 usage 端点通常共享限流桶，串行化能显著降低 429 风险。
+pub const QUOTA_MAX_CONCURRENT_PER_PROVIDER: usize = 1;
+
+/// 已知额度窗口 reset 后的显式刷新延迟（毫秒），默认 2 秒。
+///
+/// 上游统计与 reset 生效之间常有短暂延迟；在 reset 时刻立刻查询容易仍读到旧值并
+/// 造成重复请求。延迟固定为小常数，既覆盖该间隙又避免长时间等待。
+pub const QUOTA_RESET_REFRESH_DELAY_MS: u64 = 2_000;
+
+// ============================================================
 // Token 生命周期
 // ============================================================
 

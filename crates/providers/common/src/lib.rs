@@ -4,6 +4,7 @@
 pub mod engine;
 pub mod isolated;
 pub mod json;
+pub mod proper_lock;
 pub mod runtime;
 
 pub use engine::FileBlobProvider;

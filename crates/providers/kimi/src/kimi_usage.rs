@@ -157,15 +157,34 @@ async fn fetch_quota_at(
     api_base: &str,
 ) -> Result<Vec<Quota>> {
     let url = format!("{}/usages", api_base.trim_end_matches('/'));
-    let resp = reqwest::Client::new()
+    subswap_core::request_metrics::record("kimi", &account.id.0, "http_start", None).await;
+    let sent = reqwest::Client::new()
         .get(&url)
         .header("Authorization", format!("Bearer {access_token}"))
         .header("User-Agent", "subswap")
         .send()
-        .await
-        .map_err(|e| Error::QuotaFetch(format!("kimi usages request failed: {e}")))?;
+        .await;
+    subswap_core::request_metrics::record(
+        "kimi",
+        &account.id.0,
+        "http_complete",
+        sent.as_ref().ok().map(|resp| resp.status().as_u16()),
+    )
+    .await;
+    let resp = sent.map_err(|e| Error::QuotaFetch(format!("kimi usages request failed: {e}")))?;
     let status = resp.status();
+    let retry_at = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| subswap_core::time::parse_retry_after(value, Utc::now()));
     let body = resp.text().await.unwrap_or_default();
+    if status.as_u16() == 429 {
+        return Err(Error::QuotaRateLimited {
+            message: "Kimi usages endpoint throttled".into(),
+            retry_at,
+        });
+    }
     if !status.is_success() {
         return Err(Error::QuotaFetch(format!(
             "kimi usages HTTP {status}: {body}"
@@ -229,15 +248,20 @@ mod tests {
                 r#"{"usage":{"limit":"100","used":"7","remaining":"93","resetTime":"2026-07-24T07:52:15Z"}}"#,
             ),
         ]);
-        let quotas = fetch_quota_with_active_recovery_at(
-            &old_access,
-            &active_account(),
-            server.base_url(),
-            temporary.path(),
-            Some((
+        let metrics_dir = tempfile::tempdir().unwrap();
+        let metrics_path = metrics_dir.path().join("request_metrics.json");
+        let quotas = subswap_core::request_metrics::with_sink(
+            metrics_path.clone(),
+            fetch_quota_with_active_recovery_at(
+                &old_access,
+                &active_account(),
                 server.base_url(),
-                crate::oauth::RefreshLockProtocol::TypeScriptDirectory,
-            )),
+                temporary.path(),
+                Some((
+                    server.base_url(),
+                    crate::oauth::RefreshLockProtocol::TypeScriptDirectory,
+                )),
+            ),
         )
         .await
         .unwrap();
@@ -253,6 +277,15 @@ mod tests {
                 "POST /api/oauth/token HTTP/1.1",
                 "GET /usages HTTP/1.1"
             ]
+        );
+        let metrics = subswap_core::request_metrics::snapshot_at(&metrics_path);
+        assert_eq!(metrics["totals"]["requests"]["http_start"], 3);
+        assert_eq!(metrics["totals"]["requests"]["http_complete"], 3);
+        assert_eq!(metrics["totals"]["statuses"]["401"], 1);
+        assert_eq!(metrics["totals"]["statuses"]["200"], 2);
+        assert_eq!(
+            metrics["providers"]["kimi"]["requests"]["native_rpc_start"], 0,
+            "direct HTTP must not be reported as native RPC"
         );
     }
 
@@ -284,6 +317,47 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("usages HTTP 401"));
         assert_eq!(std::fs::read_to_string(credentials).unwrap(), old);
         assert_eq!(server.finish().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn usage_429_preserves_retry_after_without_retry() {
+        let before = Utc::now();
+        let server = MockServer::start_with_retry_after(
+            "429 Too Many Requests",
+            r#"{"error":"rate_limited"}"#,
+            Some("7200"),
+        );
+        let err = fetch_quota_at("access", &active_account(), server.base_url())
+            .await
+            .unwrap_err();
+        match err {
+            Error::QuotaRateLimited {
+                retry_at: Some(deadline),
+                ..
+            } => {
+                assert!(deadline >= before + chrono::Duration::minutes(119));
+                assert!(deadline <= Utc::now() + chrono::Duration::hours(3));
+            }
+            other => panic!("expected typed 429 deadline, got {other}"),
+        }
+        assert_eq!(server.finish().len(), 1, "429 must not retry or refresh");
+    }
+
+    #[tokio::test]
+    async fn usage_429_without_header_has_no_deadline() {
+        let server = MockServer::start_with_retry_after(
+            "429 Too Many Requests",
+            r#"{"error":"rate_limited"}"#,
+            Some("0"),
+        );
+        let err = fetch_quota_at("access", &active_account(), server.base_url())
+            .await
+            .unwrap_err();
+        match err {
+            Error::QuotaRateLimited { retry_at, .. } => assert_eq!(retry_at, None),
+            other => panic!("expected typed 429 without deadline, got {other}"),
+        }
+        assert_eq!(server.finish().len(), 1);
     }
 
     fn credential_blob(access: &str, refresh: &str) -> String {

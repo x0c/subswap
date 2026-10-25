@@ -168,7 +168,7 @@ async fn query_command(
         command.arg(socket);
     }
 
-    let mut session = AppServerSession::spawn(command)?;
+    let mut session = AppServerSession::spawn(command, expected_account_id)?;
     let result = match timeout(
         SESSION_TIMEOUT,
         session.query_rate_limits(allow_refresh, expected_account_id),
@@ -223,10 +223,11 @@ struct AppServerSession {
     child: Child,
     stdin: tokio::process::ChildStdin,
     lines: Lines<BufReader<ChildStdout>>,
+    metrics_account: String,
 }
 
 impl AppServerSession {
-    fn spawn(mut command: Command) -> Result<Self> {
+    fn spawn(mut command: Command, metrics_account: &str) -> Result<Self> {
         let mut attempt = 0u64;
         let mut child = loop {
             match command.spawn() {
@@ -247,6 +248,7 @@ impl AppServerSession {
             child,
             stdin,
             lines: BufReader::new(stdout).lines(),
+            metrics_account: metrics_account.to_string(),
         })
     }
 
@@ -289,6 +291,25 @@ impl AppServerSession {
     }
 
     async fn request(&mut self, id: u64, method: &str, params: Value) -> RpcResult<Value> {
+        subswap_core::request_metrics::record(
+            "codex",
+            &self.metrics_account,
+            "native_rpc_start",
+            None,
+        )
+        .await;
+        let result = self.request_inner(id, method, params).await;
+        subswap_core::request_metrics::record(
+            "codex",
+            &self.metrics_account,
+            "native_rpc_complete",
+            None,
+        )
+        .await;
+        result
+    }
+
+    async fn request_inner(&mut self, id: u64, method: &str, params: Value) -> RpcResult<Value> {
         self.write_json(&json!({ "id": id, "method": method, "params": params }))
             .await
             .map_err(RpcFailure::transport)?;

@@ -839,22 +839,40 @@ impl CursorProvider {
         let cookie = session_cookie(&blob.access_token).ok_or_else(|| {
             UsageError::Other("access token does not contain a WorkOS user ID".into())
         })?;
-        let response = self
+        subswap_core::request_metrics::record("cursor", &id.0, "http_start", None).await;
+        let sent = self
             .client
             .get(&self.usage_url)
             .header("Accept", "application/json")
             .header("Cookie", &cookie)
             .header("User-Agent", "Mozilla/5.0 (subswap Cursor quota)")
             .send()
-            .await
-            .map_err(|error| UsageError::Other(format!("request failed: {error}")))?;
-        if matches!(response.status().as_u16(), 401 | 403) {
+            .await;
+        subswap_core::request_metrics::record(
+            "cursor",
+            &id.0,
+            "http_complete",
+            sent.as_ref().ok().map(|resp| resp.status().as_u16()),
+        )
+        .await;
+        let response =
+            sent.map_err(|error| UsageError::Other(format!("request failed: {error}")))?;
+        let status = response.status();
+        let retry_at = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| subswap_core::time::parse_retry_after(value, Utc::now()));
+        if matches!(status.as_u16(), 401 | 403) {
             return Err(UsageError::Unauthorized);
         }
-        if !response.status().is_success() {
+        if status.as_u16() == 429 {
+            return Err(UsageError::RateLimited { retry_at });
+        }
+        if !status.is_success() {
             return Err(UsageError::Other(format!(
                 "usage API returned HTTP {}",
-                response.status().as_u16()
+                status.as_u16()
             )));
         }
         let body: Value = response
@@ -881,7 +899,8 @@ impl CursorProvider {
         if self.credits_url.is_empty() {
             return Ok(None);
         }
-        let response = self
+        subswap_core::request_metrics::record("cursor", &id.0, "http_start", None).await;
+        let sent = self
             .client
             .post(&self.credits_url)
             .header("Accept", "application/json")
@@ -892,8 +911,16 @@ impl CursorProvider {
             .header("User-Agent", "Mozilla/5.0 (subswap Cursor quota)")
             .json(&serde_json::json!({}))
             .send()
-            .await
-            .map_err(|error| UsageError::Other(format!("credits request failed: {error}")))?;
+            .await;
+        subswap_core::request_metrics::record(
+            "cursor",
+            &id.0,
+            "http_complete",
+            sent.as_ref().ok().map(|resp| resp.status().as_u16()),
+        )
+        .await;
+        let response =
+            sent.map_err(|error| UsageError::Other(format!("credits request failed: {error}")))?;
         if matches!(response.status().as_u16(), 401 | 403) {
             return Err(UsageError::Unauthorized);
         }
@@ -946,7 +973,8 @@ impl CursorProvider {
                 "Cursor refresh token is invalid; run `subswap login cursor`".into(),
             ));
         }
-        let response = self
+        subswap_core::request_metrics::record("cursor", &account.id.0, "http_start", None).await;
+        let sent = self
             .client
             .post(&self.token_url)
             .json(&serde_json::json!({
@@ -955,9 +983,29 @@ impl CursorProvider {
                 "refresh_token": refresh_token,
             }))
             .send()
-            .await
+            .await;
+        subswap_core::request_metrics::record(
+            "cursor",
+            &account.id.0,
+            "http_complete",
+            sent.as_ref().ok().map(|resp| resp.status().as_u16()),
+        )
+        .await;
+        let response = sent
             .map_err(|error| Error::QuotaFetch(format!("Cursor token refresh failed: {error}")))?;
-        if matches!(response.status().as_u16(), 401 | 403) {
+        let status = response.status();
+        let retry_at = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| subswap_core::time::parse_retry_after(value, Utc::now()));
+        if status.as_u16() == 429 {
+            return Err(Error::QuotaRateLimited {
+                message: "Cursor token refresh endpoint throttled".into(),
+                retry_at,
+            });
+        }
+        if matches!(status.as_u16(), 401 | 403) {
             tokio::task::spawn_blocking(move || guard.mark_dead(&refresh_fingerprint))
                 .await
                 .map_err(join_error)??;
@@ -965,10 +1013,10 @@ impl CursorProvider {
                 "Cursor refresh token is invalid; run `subswap login cursor`".into(),
             ));
         }
-        if !response.status().is_success() {
+        if !status.is_success() {
             return Err(Error::QuotaFetch(format!(
                 "Cursor token refresh returned HTTP {}",
-                response.status().as_u16()
+                status.as_u16()
             )));
         }
         let refreshed: RefreshResponse = response.json().await.map_err(|error| {
@@ -2124,6 +2172,7 @@ fn sha256_hex(value: &[u8]) -> String {
 #[derive(Debug)]
 enum UsageError {
     Unauthorized,
+    RateLimited { retry_at: Option<DateTime<Utc>> },
     Other(String),
 }
 
@@ -2139,6 +2188,10 @@ fn usage_error(error: UsageError) -> Error {
         UsageError::Unauthorized => Error::QuotaFetch(
             "Cursor session is unauthorized; reopen Cursor or run `subswap login cursor`".into(),
         ),
+        UsageError::RateLimited { retry_at } => Error::QuotaRateLimited {
+            message: "Cursor usage endpoint throttled".into(),
+            retry_at,
+        },
         UsageError::Other(message) => Error::QuotaFetch(format!("Cursor {message}")),
     }
 }

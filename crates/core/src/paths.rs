@@ -24,7 +24,20 @@ impl AppPaths {
     /// 设置 `SUBSWAP_HOME` 时，配置、数据、状态与缓存会全部收口到该绝对路径下。
     /// 该入口用于跨平台隔离运行与测试，避免 Windows 系统目录无法由 XDG 变量重定向。
     pub fn resolve() -> Result<Self> {
-        let (config_dir, data_dir, cache_dir) = match std::env::var_os("SUBSWAP_HOME") {
+        Self::resolve_with_home(std::env::var_os("SUBSWAP_HOME").as_deref(), true)
+    }
+
+    /// 解析默认路径，但**不创建目录、不触碰文件系统**。
+    ///
+    /// 供只读状态/遥测入口使用：即使全新用户目录尚不存在，调用方也应能读取并得到
+    /// 空快照，而不是由一次读取隐式创建 config/data/state/cache。写入路径仍使用
+    /// [`Self::resolve`] 以确保目录存在。
+    pub fn resolve_readonly() -> Result<Self> {
+        Self::resolve_with_home(std::env::var_os("SUBSWAP_HOME").as_deref(), false)
+    }
+
+    fn resolve_with_home(home: Option<&std::ffi::OsStr>, create_dirs: bool) -> Result<Self> {
+        let (config_dir, data_dir, cache_dir) = match home {
             Some(root) => {
                 let root = PathBuf::from(root);
                 if !root.is_absolute() {
@@ -47,16 +60,23 @@ impl AppPaths {
         // ProjectDirs 没有 state_dir 抽象，按平台约定挂在 data_dir 下。
         let state_dir = data_dir.join("state");
 
-        for d in [&config_dir, &data_dir, &state_dir, &cache_dir] {
-            std::fs::create_dir_all(d)?;
-        }
-
-        Ok(Self {
+        let paths = Self {
             config_dir,
             data_dir,
             state_dir,
             cache_dir,
-        })
+        };
+        if create_dirs {
+            for d in [
+                &paths.config_dir,
+                &paths.data_dir,
+                &paths.state_dir,
+                &paths.cache_dir,
+            ] {
+                std::fs::create_dir_all(d)?;
+            }
+        }
+        Ok(paths)
     }
 
     /// 账号注册表路径：`<config_dir>/registry.toml`。
@@ -111,5 +131,48 @@ impl AppPaths {
     /// quota 查询结果缓存：`<cache_dir>/quota_cache.json`。
     pub fn quota_cache_file(&self) -> PathBuf {
         self.cache_dir.join("quota_cache.json")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn readonly_resolution_touches_nothing_while_normal_resolution_creates_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("fresh-subswap-home");
+        assert!(!root.exists());
+
+        let readonly = AppPaths::resolve_with_home(Some(root.as_os_str()), false).unwrap();
+        assert_eq!(readonly.config_dir, root.join("config"));
+        assert_eq!(readonly.data_dir, root.join("data"));
+        assert_eq!(readonly.state_dir, root.join("data").join("state"));
+        assert_eq!(readonly.cache_dir, root.join("cache"));
+        assert!(
+            !root.exists(),
+            "readonly resolution created {}",
+            root.display()
+        );
+
+        let created = AppPaths::resolve_with_home(Some(root.as_os_str()), true).unwrap();
+        for dir in [
+            &created.config_dir,
+            &created.data_dir,
+            &created.state_dir,
+            &created.cache_dir,
+        ] {
+            assert!(dir.is_dir(), "{} should exist", dir.display());
+        }
+    }
+
+    #[test]
+    fn readonly_resolution_rejects_relative_home_without_creating_anything() {
+        let error = match AppPaths::resolve_with_home(Some(std::ffi::OsStr::new("relative")), false)
+        {
+            Ok(_) => panic!("relative SUBSWAP_HOME must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("SUBSWAP_HOME"));
     }
 }

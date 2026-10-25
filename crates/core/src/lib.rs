@@ -11,8 +11,11 @@ pub mod model;
 pub mod paths;
 pub mod provider;
 pub mod quota_cache;
+pub mod quota_collection;
 pub mod quota_query;
+pub mod quota_schedule;
 pub mod registry;
+pub mod request_metrics;
 pub mod settings;
 pub mod store;
 pub mod swap;
@@ -32,6 +35,10 @@ pub use model::{
 };
 pub use provider::Provider;
 pub use quota_cache::{is_authentication_failure, CachedEntry, QuotaCache, ValidEntry};
+pub use quota_collection::{
+    collect_quota, collect_quota_at, invalidate_collection_state, CollectionState,
+    CollectionStatus, QuotaReading,
+};
 pub use quota_query::query_quota_with_retry;
 pub use registry::ProviderRegistry;
 pub use store::{CredentialStore, FileStore, KeyringStore};

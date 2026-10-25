@@ -21,6 +21,12 @@ struct Record {
     #[serde(default)]
     quotas: Vec<Quota>,
     error: Option<String>,
+    /// 失败时所用 access token 的指纹；换了凭证后非限流失败不再挡查询。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    failed_credential: Option<String>,
+    /// 429 退避按账号生效，与凭证无关。
+    #[serde(default)]
+    rate_limited: bool,
 }
 
 #[derive(Debug)]
@@ -34,6 +40,7 @@ pub struct Lease {
     _lock: File,
     path: PathBuf,
     record: Record,
+    credential: String,
     min_interval_ms: u64,
 }
 
@@ -53,12 +60,17 @@ pub fn refresh_lock(root: &Path, id: &str) -> Result<File> {
     Ok(lock)
 }
 
+fn credential_fingerprint(access_token: &str) -> String {
+    format!("{:x}", Sha256::digest(access_token.as_bytes()))[..16].to_string()
+}
+
 fn after(now: DateTime<Utc>, ms: u64) -> DateTime<Utc> {
     now.checked_add_signed(Duration::milliseconds(ms.min(i64::MAX as u64) as i64))
         .unwrap_or(DateTime::<Utc>::MAX_UTC)
 }
 
-pub fn begin(root: &Path, id: &str, cfg: &Settings) -> Result<Begin> {
+/// 预约一次账号 usage 查询。`access_token` 只用于比对上次失败所用凭证，不落盘原文。
+pub fn begin(root: &Path, id: &str, access_token: &str, cfg: &Settings) -> Result<Begin> {
     std::fs::create_dir_all(root)?;
     let key = format!("{:x}", Sha256::digest(id.as_bytes()));
     let lock = OpenOptions::new()
@@ -81,7 +93,14 @@ pub fn begin(root: &Path, id: &str, cfg: &Settings) -> Result<Begin> {
         .claude
         .usage_min_refresh_interval_ms
         .max(cfg.quota.min_refresh_interval_ms);
-    if record.next_attempt_at.is_some_and(|d| d > now) {
+    let credential = credential_fingerprint(access_token);
+    // 过期 / 401 这类失败只针对当时那枚凭证：Claude Code 或 subswap 续期后立即可查。
+    let failed_with_other_credential = !record.rate_limited
+        && record
+            .failed_credential
+            .as_deref()
+            .is_some_and(|failed| failed != credential);
+    if record.next_attempt_at.is_some_and(|d| d > now) && !failed_with_other_credential {
         if let Some(error) = record.error {
             return Err(Error::QuotaFetch(error));
         }
@@ -95,10 +114,13 @@ pub fn begin(root: &Path, id: &str, cfg: &Settings) -> Result<Begin> {
     }
     record.next_attempt_at = Some(after(now, min_interval_ms));
     record.error = Some("Claude quota query pending; waiting for refresh interval".into());
+    record.failed_credential = None;
+    record.rate_limited = false;
     let lease = Lease {
         _lock: lock,
         path,
         record,
+        credential,
         min_interval_ms,
     };
     lease.save()?; // 请求前落盘：超时、取消、进程退出都不能立即再打一次。
@@ -130,6 +152,8 @@ impl Lease {
                 self.record.quotas = quotas.clone();
                 self.record.error = None;
                 self.record.failures = 0;
+                self.record.failed_credential = None;
+                self.record.rate_limited = false;
             }
             Err(error) => {
                 self.record.failures = self.record.failures.saturating_add(1);
@@ -149,6 +173,8 @@ impl Lease {
                 self.record.next_attempt_at = Some(deadline);
                 self.record.error = Some(format!("{text}; retry after {}", deadline.to_rfc3339()));
                 self.record.quotas.clear();
+                self.record.failed_credential = Some(self.credential.clone());
+                self.record.rate_limited = matches!(error, Error::QuotaRateLimited { .. });
             }
         }
         self.save()
@@ -172,12 +198,12 @@ mod tests {
     fn reservation_survives_cancel_and_coordinates_separate_handles() {
         let temp = tempfile::tempdir().unwrap();
         let cfg = Settings::default();
-        let Begin::Fetch(lease) = begin(temp.path(), "account", &cfg).unwrap() else {
+        let Begin::Fetch(lease) = begin(temp.path(), "account", "token-a", &cfg).unwrap() else {
             panic!()
         };
-        assert!(begin(temp.path(), "account", &cfg).is_err());
+        assert!(begin(temp.path(), "account", "token-a", &cfg).is_err());
         drop(lease);
-        assert!(begin(temp.path(), "account", &cfg)
+        assert!(begin(temp.path(), "account", "token-a", &cfg)
             .unwrap_err()
             .to_string()
             .contains("pending"));
@@ -187,7 +213,7 @@ mod tests {
     fn server_deadline_outlives_generic_cap_and_token_changes() {
         let temp = tempfile::tempdir().unwrap();
         let cfg = Settings::default();
-        let Begin::Fetch(lease) = begin(temp.path(), "account", &cfg).unwrap() else {
+        let Begin::Fetch(lease) = begin(temp.path(), "account", "token-a", &cfg).unwrap() else {
             panic!()
         };
         let deadline = Utc::now() + Duration::hours(2);
@@ -200,7 +226,39 @@ mod tests {
                 &cfg,
             )
             .unwrap();
-        let error = begin(temp.path(), "account", &cfg).unwrap_err().to_string();
+        let error = begin(temp.path(), "account", "token-b", &cfg)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains(&deadline.to_rfc3339()));
+    }
+
+    #[test]
+    fn non_rate_limited_failure_only_blocks_the_same_credential() {
+        let temp = tempfile::tempdir().unwrap();
+        let cfg = Settings::default();
+        let Begin::Fetch(lease) = begin(temp.path(), "account", "token-a", &cfg).unwrap() else {
+            panic!()
+        };
+        lease
+            .finish(
+                &Err(Error::QuotaFetch(
+                    "Claude credential expired; open Claude Code to renew".into(),
+                )),
+                &cfg,
+            )
+            .unwrap();
+        let error = begin(temp.path(), "account", "token-a", &cfg)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("expired"), "{error}");
+        assert!(matches!(
+            begin(temp.path(), "account", "token-b", &cfg).unwrap(),
+            Begin::Fetch(_)
+        ));
+        // 新凭证的预约生效后，旧凭证也不得绕过这次预约连打。
+        assert!(begin(temp.path(), "account", "token-a", &cfg)
+            .unwrap_err()
+            .to_string()
+            .contains("pending"));
     }
 }

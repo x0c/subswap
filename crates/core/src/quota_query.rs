@@ -1,21 +1,32 @@
 //! quota 查询的通用重试包装。
 //!
 //! Provider 只负责「怎么查」；CLI / daemon 共享这里的超时与重试策略，避免各处各写一套。
+//! 对外入口 [`query_quota_with_retry`] 已收口到跨进程采集协调器；本模块保留下层的
+//! 保守重试实现供协调器与单元测试使用。
 
 use std::time::Duration;
 
 use crate::error::{Error, Result};
 use crate::model::{AccountId, Quota};
 use crate::provider::Provider;
-use crate::settings::{self, Quota as QuotaSettings};
+use crate::settings::Quota as QuotaSettings;
 
-/// 按当前配置查询 quota，失败或单次超时后做保守重试。
+pub use crate::quota_collection::{collect_quota, collect_quota_at, QuotaReading};
+
+/// 按当前配置查询 quota；缓存命中、并发合并与失败退避由采集协调器负责。
+///
+/// 只返回额度值；需要原始观测时间的调用方应直接用
+/// [`crate::quota_collection::collect_quota`]。
 pub async fn query_quota_with_retry(provider: &dyn Provider, id: &AccountId) -> Result<Vec<Quota>> {
-    let cfg = settings::current().quota.clone();
-    query_quota_with_retry_config(provider, id, &cfg).await
+    crate::quota_collection::collect_quota(provider, id)
+        .await
+        .map(|reading| reading.quotas)
 }
 
-async fn query_quota_with_retry_config(
+/// 不经过缓存/协调器的原始查询 + 保守重试。
+///
+/// 供采集协调器在已经持有账号锁、落盘预约后调用；也是现有重试单元测试的入口。
+pub(crate) async fn raw_query_quota_with_retry(
     provider: &dyn Provider,
     id: &AccountId,
     cfg: &QuotaSettings,
@@ -140,8 +151,7 @@ mod tests {
             ..QuotaSettings::default()
         };
 
-        let result =
-            query_quota_with_retry_config(&provider, &AccountId("alice".into()), &cfg).await;
+        let result = raw_query_quota_with_retry(&provider, &AccountId("alice".into()), &cfg).await;
 
         assert!(result.is_ok());
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
@@ -187,7 +197,7 @@ mod tests {
         };
 
         let err =
-            query_quota_with_retry_config(&AlwaysTimeoutProvider, &AccountId("alice".into()), &cfg)
+            raw_query_quota_with_retry(&AlwaysTimeoutProvider, &AccountId("alice".into()), &cfg)
                 .await
                 .unwrap_err()
                 .to_string();
@@ -240,7 +250,7 @@ mod tests {
             ..QuotaSettings::default()
         };
 
-        let err = query_quota_with_retry_config(&provider, &AccountId("alice".into()), &cfg)
+        let err = raw_query_quota_with_retry(&provider, &AccountId("alice".into()), &cfg)
             .await
             .unwrap_err()
             .to_string();
@@ -267,7 +277,7 @@ mod tests {
                 ..QuotaSettings::default()
             };
 
-            let err = query_quota_with_retry_config(&provider, &AccountId("alice".into()), &cfg)
+            let err = raw_query_quota_with_retry(&provider, &AccountId("alice".into()), &cfg)
                 .await
                 .unwrap_err()
                 .to_string();

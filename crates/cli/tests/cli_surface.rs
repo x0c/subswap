@@ -7,9 +7,23 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::{fs, path::Path};
 
+use base64::Engine;
+
 fn subswap() -> Command {
     Command::new(env!("CARGO_BIN_EXE_subswap"))
 }
+
+/// 在运行时拼一个明确无效的假 JWT；仓库里不出现任何完整 token 字面量。
+fn synthetic_jwt(claims: serde_json::Value, signature: &str) -> String {
+    let encode = |value: &serde_json::Value| {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value.to_string())
+    };
+    let header = serde_json::json!({"alg": "none", "typ": "JWT"});
+    format!("{}.{}.{}", encode(&header), encode(&claims), signature)
+}
+
+/// 明确不可达的 localhost：未显式注入 mock 的 setup 查询必须快速失败，绝不能打生产端点。
+const OFFLINE_COMMANDCODE_BASE: &str = "http://127.0.0.1:1";
 
 fn isolated_subswap(tmp: &tempfile::TempDir) -> Command {
     let mut command = subswap();
@@ -30,6 +44,8 @@ fn isolated_subswap(tmp: &tempfile::TempDir) -> Command {
         .env("SUBSWAP_OPENCODE_HOME", tmp.path().join("opencode"))
         // 隔离测试专用一次性目录，绝不碰真实 `~/.commandcode/auth.json`。
         .env("SUBSWAP_COMMANDCODE_HOME", tmp.path().join("commandcode"))
+        // 默认指向不可达 localhost：setup 阶段未注入 mock 时也不能拿合成 key 打生产端点。
+        .env("SUBSWAP_COMMANDCODE_BASE", OFFLINE_COMMANDCODE_BASE)
         // Cursor 的平台默认路径不受 HOME/SUBSWAP_HOME 统一覆盖，必须显式指向临时目录。
         .env(
             "SUBSWAP_CURSOR_STATE_DB_PATH",
@@ -124,7 +140,18 @@ fn write(path: &Path, contents: &str) {
 fn write_fast_quota_timeout(tmp: &tempfile::TempDir) {
     write(
         &app_config_dir(tmp).join("config.toml"),
-        "[quota]\nfetch_timeout_ms = 1\nfetch_retries = 0\n",
+        // 这些测试故意用 1ms 超时让 setup 阶段的真实查询失败；同时把最小刷新间隔设为 0，
+        // 避免这次「故意失败」的采集预约/退避把后续 mocked 查询挡在 90s 产品下限之外。
+        "[quota]\nfetch_timeout_ms = 1\nfetch_retries = 0\nmin_refresh_interval_ms = 0\n",
+    );
+}
+
+/// 全程使用本地 mock 的 commandcode 用例：超时给足，但仍禁用最小刷新间隔，
+/// 让 setup 的登录/切号后状态面与最终默认入口都查询同一份 mock 响应。
+fn write_local_mock_quota_config(tmp: &tempfile::TempDir) {
+    write(
+        &app_config_dir(tmp).join("config.toml"),
+        "[quota]\nfetch_timeout_ms = 2000\nfetch_retries = 0\nmin_refresh_interval_ms = 0\n[auto_swap]\nmanual_hold_ms = 0\n",
     );
 }
 
@@ -136,12 +163,16 @@ fn first_action_line(stdout: &str) -> &str {
         .unwrap_or("")
 }
 
+fn app_root(tmp: &tempfile::TempDir) -> std::path::PathBuf {
+    tmp.path().join("subswap")
+}
+
 fn app_config_dir(tmp: &tempfile::TempDir) -> std::path::PathBuf {
-    tmp.path().join("subswap").join("config")
+    app_root(tmp).join("config")
 }
 
 fn app_data_dir(tmp: &tempfile::TempDir) -> std::path::PathBuf {
-    tmp.path().join("subswap").join("data")
+    app_root(tmp).join("data")
 }
 
 #[test]
@@ -461,7 +492,11 @@ priority = 100
     let fake = bin.join("claude");
     write(
         &fake,
-        &format!("#!/bin/sh\ntouch '{}'\necho 9.9.9\n", marker.display()),
+        // 版本探测不算启动客户端；早于已核实锁协议的版本必须保持零刷新。
+        &format!(
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo '2.1.296 (Claude Code)'; exit 0; fi\ntouch '{}'\necho 9.9.9\n",
+            marker.display()
+        ),
     );
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!(
@@ -583,11 +618,12 @@ priority = 100
         &credentials,
         r#"{"kimi:kimi-user:blob":"{\"user_id\":\"kimi-user\",\"access_token\":\"AT\"}"}"#,
     );
-    // header.{"user_id":"kimi-user"}.sig,让 parse_metadata 能从 JWT 里解出 user_id。
-    write(
-        &live_cred,
-        r#"{"access_token":"header.eyJ1c2VyX2lkIjogImtpbWktdXNlciJ9.sig"}"#,
-    );
+    // 运行时构造 header.{"user_id":"kimi-user"}.sig，让 parse_metadata 能从 JWT 里解出 user_id。
+    let live_blob = serde_json::json!({
+        "access_token": synthetic_jwt(serde_json::json!({"user_id": "kimi-user"}), "sig")
+    })
+    .to_string();
+    write(&live_cred, &live_blob);
 
     let rm_stdout = assert_success(
         isolated_subswap(&tmp)
@@ -784,11 +820,13 @@ fn rm_cursor_agent_live_clears_tokens() {
     write_fast_quota_timeout(&tmp);
     let auth_json = tmp.path().join("cursor-agent").join("auth.json");
     let cli_config = tmp.path().join("cursor-agent").join("cli-config.json");
-    // JWT payload {"sub":"auth0|user_x"}，与 authInfo 的 authId 一致才是同一账号。
-    write(
-        &auth_json,
-        r#"{"accessToken":"eyJhbGciOiJub25lIn0.eyJzdWIiOiJhdXRoMHx1c2VyX3gifQ.sig","refreshToken":"rr"}"#,
-    );
+    // 运行时构造 JWT payload {"sub":"auth0|user_x"}，与 authInfo 的 authId 一致才是同一账号。
+    let auth_blob = serde_json::json!({
+        "accessToken": synthetic_jwt(serde_json::json!({"sub": "auth0|user_x"}), "sig"),
+        "refreshToken": "rr",
+    })
+    .to_string();
+    write(&auth_json, &auth_blob);
     write(
         &cli_config,
         r#"{"authInfo":{"email":"x@example.com","authId":"auth0|user_x"}}"#,
@@ -1576,10 +1614,28 @@ fn run_commandcode_unknown_account_reports_not_found() {
     );
 }
 
+/// 清掉 setup 阶段故意制造/可能受时序影响的额度测量与退避。
+///
+/// Command Code 的这些用例只验证「最终默认入口面对指定 mock 响应时的自动切换」；
+/// 登录/切号后的状态面查询不是断言对象，但会把失败退避或旧观测持久化到
+/// `quota_cache.json` 与 `quota_collection/`。清掉它们可避免 setup 的副作用污染
+/// 最终断言，同时不绕过生产请求下限（最终运行仍走完整协调器与真实 mock 请求）。
+fn clear_quota_measurements(tmp: &tempfile::TempDir) {
+    let cache = app_root(tmp).join("cache");
+    let _ = fs::remove_file(cache.join("quota_cache.json"));
+    let _ = fs::remove_file(cache.join("quota_cache.json.lock"));
+    let _ = fs::remove_dir_all(cache.join("quota_collection"));
+}
+
 fn login_commandcode_key(tmp: &tempfile::TempDir, key: &str) -> String {
+    login_commandcode_key_at(tmp, key, OFFLINE_COMMANDCODE_BASE)
+}
+
+fn login_commandcode_key_at(tmp: &tempfile::TempDir, key: &str, base: &str) -> String {
     let stdout = assert_success(
         isolated_subswap(tmp)
             .args(["login", "commandcode", "--", key])
+            .env("SUBSWAP_COMMANDCODE_BASE", base)
             .output()
             .unwrap(),
     );
@@ -1593,34 +1649,80 @@ fn login_commandcode_key(tmp: &tempfile::TempDir, key: &str) -> String {
 const COMMANDCODE_EXHAUSTED_KEY: &str = "cc-test-exhausted-0000";
 const COMMANDCODE_HEALTHY_KEY: &str = "cc-test-healthy-9999";
 const COMMANDCODE_DEAD_KEY: &str = "cc-test-deadkey-1111";
-const COMMANDCODE_EXHAUSTED_CREDITS: &str = r#"{"credits":{"monthlyCredits":0,"purchasedCredits":0,"freeCredits":0},"windowLimits":{"fiveHour":{"used":3,"cap":3,"exceeded":true,"resetAt":1786775976124},"weekly":{"used":1,"cap":6,"exceeded":false,"resetAt":1787310657649}}}"#;
-const COMMANDCODE_HEALTHY_CREDITS: &str = r#"{"credits":{"monthlyCredits":8.68,"purchasedCredits":0,"freeCredits":0},"windowLimits":{"fiveHour":{"used":0.12,"cap":3,"exceeded":false,"resetAt":1786775976124},"weekly":{"used":1.32,"cap":6,"exceeded":false,"resetAt":1787310657649}}}"#;
+
+/// 生成相对当前时间有效的 reset 时间，避免固定时间戳变成过去的 `reset now`。
+fn commandcode_credits(
+    monthly_credits: f64,
+    five_hour_used: f64,
+    five_hour_cap: f64,
+    five_hour_exceeded: bool,
+    weekly_used: f64,
+) -> String {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let five_hour_reset = now_ms + 4 * 60 * 60 * 1000;
+    let weekly_reset = now_ms + 6 * 24 * 60 * 60 * 1000;
+    serde_json::json!({
+        "credits": {
+            "monthlyCredits": monthly_credits,
+            "purchasedCredits": 0,
+            "freeCredits": 0,
+        },
+        "windowLimits": {
+            "fiveHour": {
+                "used": five_hour_used,
+                "cap": five_hour_cap,
+                "exceeded": five_hour_exceeded,
+                "resetAt": five_hour_reset,
+            },
+            "weekly": {
+                "used": weekly_used,
+                "cap": 6,
+                "exceeded": false,
+                "resetAt": weekly_reset,
+            },
+        },
+    })
+    .to_string()
+}
+
+fn commandcode_exhausted_credits() -> String {
+    commandcode_credits(0.0, 3.0, 3.0, true, 1.0)
+}
+
+fn commandcode_healthy_credits() -> String {
+    commandcode_credits(8.68, 0.12, 3.0, false, 1.32)
+}
 
 #[test]
 fn default_entry_auto_swaps_exhausted_commandcode() {
     let tmp = tempfile::tempdir().unwrap();
-    write_fast_quota_timeout(&tmp);
-    let exhausted_id = login_commandcode_key(&tmp, COMMANDCODE_EXHAUSTED_KEY);
-    let healthy_id = login_commandcode_key(&tmp, COMMANDCODE_HEALTHY_KEY);
+    let mut bodies = HashMap::new();
+    bodies.insert(
+        COMMANDCODE_EXHAUSTED_KEY.to_string(),
+        (200_u16, commandcode_exhausted_credits()),
+    );
+    bodies.insert(
+        COMMANDCODE_HEALTHY_KEY.to_string(),
+        (200, commandcode_healthy_credits()),
+    );
+    // setup 的 login/swap 后状态面也必须打本地 mock，绝不能拿合成 key 访问生产端点。
+    let server = KeyedUsageServer::start(bodies);
+    write_local_mock_quota_config(&tmp);
+    let exhausted_id = login_commandcode_key_at(&tmp, COMMANDCODE_EXHAUSTED_KEY, server.base_url());
+    let healthy_id = login_commandcode_key_at(&tmp, COMMANDCODE_HEALTHY_KEY, server.base_url());
     assert_ne!(exhausted_id, healthy_id);
 
     assert_success(
         isolated_subswap(&tmp)
             .args(["swap", &format!("commandcode/{exhausted_id}")])
+            .env("SUBSWAP_COMMANDCODE_BASE", server.base_url())
             .output()
             .unwrap(),
     );
-
-    let mut bodies = HashMap::new();
-    bodies.insert(
-        COMMANDCODE_EXHAUSTED_KEY.to_string(),
-        (200_u16, COMMANDCODE_EXHAUSTED_CREDITS.to_string()),
-    );
-    bodies.insert(
-        COMMANDCODE_HEALTHY_KEY.to_string(),
-        (200, COMMANDCODE_HEALTHY_CREDITS.to_string()),
-    );
-    let server = KeyedUsageServer::start(bodies);
+    clear_quota_measurements(&tmp);
 
     write(
         &app_config_dir(&tmp).join("config.toml"),
@@ -1647,26 +1749,27 @@ fn default_entry_auto_swaps_exhausted_commandcode() {
 #[test]
 fn default_entry_does_not_auto_swap_commandcode_to_401_key() {
     let tmp = tempfile::tempdir().unwrap();
-    write_fast_quota_timeout(&tmp);
-    let exhausted_id = login_commandcode_key(&tmp, COMMANDCODE_EXHAUSTED_KEY);
-    let _dead_id = login_commandcode_key(&tmp, COMMANDCODE_DEAD_KEY);
-    assert_success(
-        isolated_subswap(&tmp)
-            .args(["swap", &format!("commandcode/{exhausted_id}")])
-            .output()
-            .unwrap(),
-    );
-
     let mut bodies = HashMap::new();
     bodies.insert(
         COMMANDCODE_EXHAUSTED_KEY.to_string(),
-        (200_u16, COMMANDCODE_EXHAUSTED_CREDITS.to_string()),
+        (200_u16, commandcode_exhausted_credits()),
     );
     bodies.insert(
         COMMANDCODE_DEAD_KEY.to_string(),
         (401, r#"{"error":"invalid_api_key"}"#.into()),
     );
     let server = KeyedUsageServer::start(bodies);
+    write_local_mock_quota_config(&tmp);
+    let exhausted_id = login_commandcode_key_at(&tmp, COMMANDCODE_EXHAUSTED_KEY, server.base_url());
+    let _dead_id = login_commandcode_key_at(&tmp, COMMANDCODE_DEAD_KEY, server.base_url());
+    assert_success(
+        isolated_subswap(&tmp)
+            .args(["swap", &format!("commandcode/{exhausted_id}")])
+            .env("SUBSWAP_COMMANDCODE_BASE", server.base_url())
+            .output()
+            .unwrap(),
+    );
+    clear_quota_measurements(&tmp);
 
     write(
         &app_config_dir(&tmp).join("config.toml"),
@@ -1744,18 +1847,31 @@ impl Drop for KeyedUsageServer {
 }
 
 fn serve_go_usage(mut stream: TcpStream, bodies: &HashMap<String, (u16, String)>) {
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut request_bytes = Vec::new();
     let mut buffer = [0_u8; 2048];
-    while request_bytes.len() < 8192 {
-        let count = stream.read(&mut buffer).unwrap_or(0);
-        if count == 0 {
-            break;
+    while request_bytes.len() < 8192 && std::time::Instant::now() < deadline {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => {
+                request_bytes.extend_from_slice(&buffer[..count]);
+                if request_bytes.windows(4).any(|part| part == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            // accept 后客户端还没来得及写完整 header 时不要伪造 401；继续等到总截止时间。
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => break,
         }
-        request_bytes.extend_from_slice(&buffer[..count]);
-        if request_bytes.windows(4).any(|part| part == b"\r\n\r\n") {
-            break;
-        }
+    }
+    // Drop 唤醒/健康探测可能只建立连接不发送请求；空请求不能映射成鉴权失败。
+    if request_bytes.is_empty() {
+        return;
     }
     let request = String::from_utf8_lossy(&request_bytes);
     let key = bearer_key(&request).unwrap_or_default();

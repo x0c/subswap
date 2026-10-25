@@ -6,14 +6,17 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, IsTerminal};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use chrono::Utc;
 use futures::future::join_all;
+use subswap_core::quota_schedule::{fetch_state_for_observation, ScheduleConfig};
 use subswap_core::{
-    auto_decide, is_authentication_failure, paths::AppPaths, query_quota_with_retry, settings,
-    AccountId, AccountWithQuotas, AuditEvent, AuditLog, PolicyConfig, PolicyDecision,
-    ProviderRegistry, ProviderSnapshot, Quota, QuotaCache, QuotaFetchState,
+    auto_decide, collect_quota, collect_quota_at, is_authentication_failure, paths::AppPaths,
+    settings, AccountId, AccountWithQuotas, AuditEvent, AuditLog, PolicyConfig, PolicyDecision,
+    ProviderRegistry, ProviderSnapshot, Quota, QuotaCache, QuotaFetchState, QuotaReading,
 };
 
 use crate::app::AppContext;
@@ -93,6 +96,14 @@ pub async fn print_status_overview(ctx: &AppContext) -> Result<()> {
     .await?;
     renderer.render(&snapshots, &auto_lines)?;
     Ok(())
+}
+
+/// 读取配额缓存；文件 IO 放到阻塞线程，避免在 async 路径里直接读盘。
+async fn load_quota_cache(path: &std::path::Path) -> QuotaCache {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || QuotaCache::load(&path))
+        .await
+        .unwrap_or_default()
 }
 
 fn quota_cache_path() -> std::path::PathBuf {
@@ -422,7 +433,7 @@ async fn build_loading_snapshots(registry: &ProviderRegistry) -> Vec<ProviderSna
 struct QuotaUpdate {
     provider: String,
     account_id: AccountId,
-    result: std::result::Result<Vec<Quota>, String>,
+    result: std::result::Result<QuotaReading, String>,
 }
 
 /// 渐进式自动切换的运行内状态:额度是边查边回的,不能查到第一份就把决策锁死。
@@ -447,32 +458,41 @@ async fn fill_quotas_progressively(
     if total == 0 {
         return Ok(());
     }
-    let mut cache = QuotaCache::load(cache_path);
-    let quota_cfg = settings::current().quota.clone();
+    let all_settings = settings::current();
+    let quota_cfg = all_settings.quota.clone();
+    let schedule_cfg = ScheduleConfig::from_settings(&quota_cfg);
     let min_refresh = Duration::from_millis(quota_cfg.min_refresh_interval_ms);
     let backoff_cap = Duration::from_millis(quota_cfg.failure_backoff_max_ms);
+    let cache = load_quota_cache(cache_path).await;
+    let now = Utc::now();
+
+    // 先展示当前持久结果：新鲜数据 Ready；超过决策年龄的数据只能是 Stale，
+    // 不能因为这次调度暂时没查就继续伪装成 Ready。
+    for snap in snapshots.iter_mut() {
+        for awq in &mut snap.accounts {
+            merge_cached_state(awq, &cache, &snap.provider, &schedule_cfg, now);
+        }
+    }
 
     let mut jobs = Vec::new();
     for snap in snapshots.iter_mut() {
         let provider = snap.provider.clone();
         for awq in &mut snap.accounts {
-            // 缓存节流：缓存够新(< min_refresh)就直接复用、不打 usage 端点，避免高频触发 429。
-            // daemon 与 CLI 共用 quota_cache.json，谁先查到谁刷新 cached_at，另一方据此跳过。
-            if let Some(entry) = cache.fresh(&provider, &awq.account.id.0, min_refresh) {
-                awq.quotas = entry.quotas;
-                awq.fetch_state = QuotaFetchState::Ready;
-                continue;
-            }
-            // 失败退避：连续查不出的账号在退避窗口内不再重打端点，直接沿用上次的失败呈现。
-            if let Some(failure) =
-                cache.in_failure_backoff(&provider, &awq.account.id.0, min_refresh, backoff_cap)
+            // 前台手动检查可以比后台节奏更早发起，但协调器仍会执行真实请求下限；
+            // 缓存比 min_refresh 新时完全不用再打扰协调器。
+            if cache
+                .fresh(&provider, &awq.account.id.0, min_refresh)
+                .is_some()
             {
-                let error = failure.error.clone();
-                let account_id = awq.account.id.0.clone();
-                apply_quota_failure(awq, &cache, &provider, &account_id, error);
                 continue;
             }
-            // 凭证已走明文 FileStore，查任何账号都不再弹钥匙串，激活/非激活一律查额度。
+            // 失败退避由协调器持久化；这里只沿用已有结果，不重复记录失败或重打端点。
+            if cache
+                .in_failure_backoff(&provider, &awq.account.id.0, min_refresh, backoff_cap)
+                .is_some()
+            {
+                continue;
+            }
             jobs.push((provider.clone(), awq.account.id.clone()));
         }
     }
@@ -485,13 +505,33 @@ async fn fill_quotas_progressively(
 
     let mut progress = AutoSwapProgress::default();
     let (tx, mut rx) = tokio::sync::mpsc::channel(jobs.len());
+    // 生产路径必须走会记录遥测的 `collect_quota`；显式临时缓存路径（测试/嵌入）
+    // 才走 hermetic 的 `collect_quota_at`，避免碰到真实用户目录。
+    let production_cache = AppPaths::resolve()
+        .ok()
+        .is_some_and(|paths| paths.quota_cache_file() == cache_path);
+    // 前台仍然并发，但遵守共享采集器的全局并发上限，避免一次拉起整池请求。
+    let permits = Arc::new(tokio::sync::Semaphore::new(
+        schedule_cfg.max_concurrent_fetches.max(1),
+    ));
     for (provider, account_id) in jobs {
         let p = registry.get(&provider)?;
         let tx = tx.clone();
+        let permit = permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| anyhow::anyhow!("quota collection semaphore closed: {e}"))?;
+        let cache_path = cache_path.to_path_buf();
+        let settings = all_settings.clone();
         tokio::spawn(async move {
-            let result = query_quota_with_retry(p.as_ref(), &account_id)
-                .await
-                .map_err(|e| e.to_string());
+            let _permit = permit;
+            let result = if production_cache {
+                collect_quota(p.as_ref(), &account_id).await
+            } else {
+                collect_quota_at(p.as_ref(), &account_id, &cache_path, &settings).await
+            }
+            .map_err(|e| e.to_string());
             let _ = tx
                 .send(QuotaUpdate {
                     provider,
@@ -505,7 +545,9 @@ async fn fill_quotas_progressively(
 
     while let Some(update) = rx.recv().await {
         let provider = update.provider.clone();
-        apply_quota_update(snapshots, update, &mut cache);
+        // 协调器可能刚写了本轮真实结果；按账号重读缓存用于失败回退与更新事件比较。
+        let cache = load_quota_cache(cache_path).await;
+        apply_quota_update(snapshots, update, &cache, &schedule_cfg);
         if let Some(cfg) = auto_swap {
             try_auto_swap_ready_provider(
                 registry,
@@ -522,8 +564,47 @@ async fn fill_quotas_progressively(
             renderer.render(snapshots, auto_lines)?;
         }
     }
-    cache.save(cache_path);
     Ok(())
+}
+
+/// 把磁盘上最近一次确认结果并回内存快照。
+///
+/// 只读、不写缓存：持久化由共享采集协调器负责。成功缓存与失败记录同时存在时保留
+/// `Stale { cached_at, error }`，既不丢旧数字，也不把错误吞成 Ready。
+fn merge_cached_state(
+    awq: &mut AccountWithQuotas,
+    cache: &QuotaCache,
+    provider: &str,
+    cfg: &ScheduleConfig,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    let account_id = awq.account.id.0.clone();
+    let failure = cache.failure(provider, &account_id);
+    match cache.get(provider, &account_id) {
+        Some(entry) => {
+            awq.quotas = entry.quotas;
+            if let Some(failure) = failure {
+                if is_authentication_failure(&failure.error) {
+                    awq.quotas.clear();
+                    awq.fetch_state = QuotaFetchState::Failed(failure.error.clone());
+                } else {
+                    awq.fetch_state = QuotaFetchState::Stale {
+                        cached_at: entry.cached_at,
+                        error: failure.error.clone(),
+                    };
+                }
+            } else {
+                awq.fetch_state = fetch_state_for_observation(Some(entry.cached_at), now, cfg);
+            }
+        }
+        None => {
+            awq.quotas.clear();
+            awq.fetch_state = match failure {
+                Some(failure) => QuotaFetchState::Failed(failure.error.clone()),
+                None => QuotaFetchState::Loading,
+            };
+        }
+    }
 }
 
 /// 每收到一份额度就对该 provider 重判一次。
@@ -635,7 +716,8 @@ fn set_auto_line(auto_lines: &mut Vec<AutoLine>, provider: &str, text: String, k
 fn apply_quota_update(
     snapshots: &mut [ProviderSnapshot],
     update: QuotaUpdate,
-    cache: &mut QuotaCache,
+    cache: &QuotaCache,
+    cfg: &ScheduleConfig,
 ) {
     let Some(snap) = snapshots
         .iter_mut()
@@ -650,15 +732,33 @@ fn apply_quota_update(
     else {
         return;
     };
+    let provider = update.provider.clone();
+    let account_id = update.account_id.0.clone();
     match update.result {
-        Ok(quotas) => {
-            cache.set(&update.provider, &update.account_id.0, quotas.clone());
-            awq.quotas = quotas;
-            awq.fetch_state = QuotaFetchState::Ready;
+        Ok(reading) => {
+            // 协调器已经持久化这次真实结果（含原始 observed_at）；这里只读回填，
+            // 不重写缓存时间戳，也不伪造一次「刚刚刷新」。
+            let newer_failure = cache
+                .failure(&provider, &account_id)
+                .filter(|failure| failure.failed_at > reading.observed_at);
+            awq.fetch_state = match newer_failure {
+                Some(failure) if is_authentication_failure(&failure.error) => {
+                    awq.quotas.clear();
+                    QuotaFetchState::Failed(failure.error.clone())
+                }
+                Some(failure) => QuotaFetchState::Stale {
+                    cached_at: reading.observed_at,
+                    error: failure.error.clone(),
+                },
+                None => fetch_state_for_observation(Some(reading.observed_at), Utc::now(), cfg),
+            };
+            if !matches!(&awq.fetch_state, QuotaFetchState::Failed(_)) {
+                awq.quotas = reading.quotas;
+            }
         }
         Err(err) => {
-            cache.record_failure(&update.provider, &update.account_id.0, &err);
-            apply_quota_failure(awq, cache, &update.provider, &update.account_id.0, err);
+            // 失败已由协调器记账；用刚重读的缓存回填，调用方不再 record_failure。
+            apply_quota_failure(awq, cache, &provider, &account_id, err);
         }
     }
 }
@@ -735,11 +835,43 @@ mod tests {
     }
 
     #[test]
-    fn auto_swap_success_text_uses_friendly_label() {
-        let snap = snap_with_account(
-            "c1311d9b-47d1-4b8b-95e9-3401f967abd6",
-            "user@example.com",
+    fn cached_quota_older_than_decision_age_is_stale() {
+        let cfg = ScheduleConfig::from_settings(&settings::Quota::default());
+        let now = Utc::now();
+        let mut cache = QuotaCache::default();
+        cache.set_at(
+            "codex",
+            "old",
+            vec![quota("codex", "old", 10, QuotaStatus::Ok)],
+            now - chrono::Duration::minutes(10),
         );
+        let mut account = snap_with_account("old", "old").accounts.remove(0);
+        merge_cached_state(&mut account, &cache, "codex", &cfg, now);
+        assert_eq!(
+            account.quotas.len(),
+            1,
+            "old numbers may still be displayed"
+        );
+        assert!(
+            matches!(account.fetch_state, QuotaFetchState::Stale { .. }),
+            "scheduler wait must not promote old data to Ready: {:?}",
+            account.fetch_state
+        );
+
+        cache.set_at(
+            "codex",
+            "fresh",
+            vec![quota("codex", "fresh", 10, QuotaStatus::Ok)],
+            now - chrono::Duration::seconds(30),
+        );
+        let mut account = snap_with_account("fresh", "fresh").accounts.remove(0);
+        merge_cached_state(&mut account, &cache, "codex", &cfg, now);
+        assert_eq!(account.fetch_state, QuotaFetchState::Ready);
+    }
+
+    #[test]
+    fn auto_swap_success_text_uses_friendly_label() {
+        let snap = snap_with_account("c1311d9b-47d1-4b8b-95e9-3401f967abd6", "user@example.com");
 
         assert_eq!(
             auto_swap_success_text(

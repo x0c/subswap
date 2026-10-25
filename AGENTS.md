@@ -54,7 +54,10 @@
 - `Provider::activate` 必须先写快照，任一目标写失败要回滚。
 - refresh token 是一次性轮换，active 账号默认只读不刷；允许自愈的唯一例外是**复用原生客户端官方协调机制**，
   绝不能由 subswap 自创一套互不相认的锁或并行抢刷：Codex 通过官方 app-server 查询/刷新，Kimi 只在能
-  识别并持有当前版本官方跨进程锁时刷新，Cursor active 账号只重读 live、不刷新。
+  识别并持有当前版本官方跨进程锁时刷新，Claude 只在 `claude --version` 达到已核实版本并持有官方
+  `.oauth_refresh.lock` 与旧版 `<dir>.lock` 时续期（持锁重读、采用他人轮换、比较写入，经 `/usr/bin/security`
+  写回；见 PROVIDER_KNOWLEDGE_BASE「Active credential renewal under the official lock」），
+  Cursor active 账号只重读 live、不刷新。
   `activate` 覆盖 live 文件前先 capture-on-leave 回灌 live 凭证进 owner 账号 store；
   parked 账号按各 Provider 的串行化边界刷新；Cursor 必须使用 subswap 跨进程锁。daemon 每轮还做 capture-on-arrival
   (`reconcile_active_from_live`，只 live→store) 补「绕过 swap 离开」的缺口；refresh 被上游拒绝时必须有

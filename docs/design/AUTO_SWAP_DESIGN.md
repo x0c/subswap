@@ -45,7 +45,7 @@ The paragraph above is partially superseded: when **every** account is confirmed
 ### 1.3 采样入口
 
 - `subswap` 无参：调用即采样一次（渐进式重判见 1.4）。
-- `subswapd`（M4）：默认 60 秒一次。
+- `subswapd`（M4）：活跃时约 60 秒唤醒、空闲时约 30 分钟唤醒；唤醒只决定是否重新评估，真实采集按账号状态自适应（见 1.5）。
 
 ### 1.4 Progressive decisions
 
@@ -54,6 +54,22 @@ The default entry queries accounts concurrently and re-evaluates the provider af
 `AutoSwapProgress.activated_targets` prevents duplicate activation and `abandoned` prevents switching back within one invocation. With confirmed usable targets, a completed switch naturally yields `NoOp`; there is no intermediate jump through an unknown or depleted account.
 
 The previous loading fallback caused healthy Codex and OpenCode accounts to alternate solely because a candidate query returned first. This is corrected in v1.11.1; timing and verification are recorded in [the incident](../troubleshooting/2026-09-29-codex-auto-swap-with-healthy-accounts.md).
+
+### 1.5 Adaptive background collection
+
+The daemon no longer queries every account on every wake-up. Each account is classified by state and scheduled from its **original observation time**:
+
+- Active account: about 3 minutes (`quota.active_refresh_interval_ms`).
+- Parked and confirmed-exhausted accounts: about 15 minutes (`quota.parked_refresh_interval_ms` / `quota.exhausted_refresh_interval_ms`).
+- A positive, deterministic jitter of up to 10% (`quota.refresh_jitter_pct`) is added to the target interval. Jitter only delays, never advances, and never bypasses the shared collector's `min_refresh_interval_ms`, provider floor, `next_attempt_at`, or a server `Retry-After`.
+- The existing active/idle wake cadence is preserved. The sleep is the minimum of that cadence, the next adaptive due time (active mode only), and the next known reset wake. Idle mode ignores ordinary adaptive due times so "user is not using AI" still means fewer requests; a known reset may still shorten the sleep.
+- Foreground commands may ask for a check sooner than the background cadence, but the shared collector still enforces its floors, coalescing and deadlines. GUI/status reads remain read-only.
+
+Decision freshness is enforced independently of the scheduler: data older than `quota.decision_max_age_ms` (5 minutes) is `stale`, even if nothing was requested this cycle. Stale data may be displayed but can never establish a trigger or a usable target. A completed reading keeps its `observed_at`; callers must not restamp cache-served values.
+
+When the active account is within `quota.candidate_refresh_margin_pct` (15 percentage points) of the existing switching threshold, or already confirmed exhausted, the scheduler prepares at most `quota.candidate_refresh_limit` (2) non-manual candidates that lack genuinely fresh confirmation. Candidates that already have fresh data are not re-requested, and the whole pool/provider inventory is never refreshed just to look for a target.
+
+Any displayed gating-window countdown expiry (`ResetCredits` excluded) schedules an explicit refresh of the affected account at `reset_at + quota.reset_refresh_delay_ms` (2 seconds), even when the account is healthy (for example, a 5h window at 40% used). Same-account windows that share a reset timestamp are deduplicated into one query; later reset timestamps remain scheduled after the first refresh. Stacked/parallel recovery semantics remain for recovery ranking only and no longer decide whether a reset refresh happens. The scheduler seeds reset schedules from coordinator records and, before a coordinator record exists, from the raw observations in a pre-upgrade `quota_cache.json`. A handled reset is not queried again while the server keeps returning the same timestamp, and the wake still respects collector floors and server deadlines. A countdown reaching zero never proves a fresh balance: only a real returned reading updates quotas. Ordinary 15-minute checks remain the bounded fallback for early grants and missing reset data.
 
 ## 2. Candidate selection
 
@@ -73,7 +89,8 @@ Apply these rules in order:
 ## 2.5 风控与合规边界
 
 - `query_quota` 只做低频采样；无参 `subswap` 是用户主动一次性采样。
-- daemon 默认 60 秒轮询，失败退避；不得把周期调到秒级以下。
+- daemon 活跃时约 60 秒唤醒、空闲时约 30 分钟唤醒；唤醒不等于每账号请求。真实采集按账号状态自适应（激活 3 分钟 / 停放与耗尽 15 分钟），失败退避且不得把周期调到秒级以下。
+- 已知 reset 的显式刷新只在 `reset + reset_refresh_delay_ms` 触发，并服从共享采集器的请求地板与服务端截止时间。
 - 不绕过厂商并发、地域、账号共享、速率限制等政策。
 - 新增 Provider 的 usage/refresh 须先写入 `docs/PROVIDER_KNOWLEDGE_BASE.md`（端点、频率、失败退避）。
 - Active quota failure does not trigger extra requests or a swap. Preserve the account, report degraded status, and leave manual `subswap swap` available.
@@ -162,6 +179,18 @@ manual_hold_ms = 600000
 
 [daemon]
 poll_interval_ms = 60000
+
+[quota]
+# active_refresh_interval_ms = 180000
+# parked_refresh_interval_ms = 900000
+# exhausted_refresh_interval_ms = 900000
+# decision_max_age_ms = 300000
+# candidate_refresh_margin_pct = 15.0
+# candidate_refresh_limit = 2
+# refresh_jitter_pct = 10.0
+# max_concurrent_fetches = 4
+# max_concurrent_per_provider = 1
+# reset_refresh_delay_ms = 2000
 ```
 
 ## 7. 测试要点
@@ -173,7 +202,11 @@ poll_interval_ms = 60000
 - Across all providers: candidate-first completion, timeout/429/401, stale exhaustion, and exhausted targets must never produce a swap; confirmed exhaustion plus a ready usable target must still swap.
 - All-exhausted fallback: active 5h exhausted + every other account confirmed exhausted → swap to the one with the earliest gating reset; tie with the active account → stay; failed/loading/stale/unknown or `manual_only` accounts in the pool → excluded (`Degraded` when the pool is empty); Warn-only (not exhausted) active + all others exhausted → stay.
 - Nested stacked windows (2026-10-08): active `5h Ok + 7d Exhausted` vs candidate `5h Ok + 7d Exhausted` → effective recovery is the blocking `7d` reset (`max`, not `min` over all windows), so the candidate with the sooner `7d` reset wins even when the active `5h` resets sooner; any blocking window missing `reset_at` means unknown recovery and excludes that account from the pool. Cursor parallel pools keep `min` semantics.
-- 端到端：双账号 + mock HTTP，跑 `subswap` 看 keyring 与 client_targets 同步。
+- Adaptive scheduling (`quota_schedule`): active 3m / parked and exhausted 15m; positive bounded jitter; configured intervals never fall below `min_refresh_interval_ms`; a due/read observation older than `decision_max_age_ms` becomes `Stale`, never `Ready`; foreground/candidate collection never precedes the collector deadline.
+- Reset wake: every displayed gating-window expiry schedules a refresh, including healthy active and parked accounts; same-account windows at the same instant deduplicate to one query, later window timestamps remain scheduled, and pre-upgrade cache observations seed the schedule before any coordinator record exists. Recovery ranking still uses stacked latest / parallel earliest, but is not required for an expiry wake. A handled reset is not requery-able while the timestamp is unchanged; overdue wakes are bounded and never produce a zero-duration sleep loop.
+- Candidate prewarm: at most `candidate_refresh_limit` non-`manual_only`, non-fresh, non-exhausted candidates are selected when the active account is near/over threshold; healthy active accounts and stale active confirmations do not trigger prewarm.
+- Idle cadence: with no known reset, the daemon keeps the existing idle wake interval; adaptive due times do not shorten it. Active wake remains the existing poll interval and only collection eligibility changes.
+- End-to-end: double accounts + mock HTTP, run `subswap` to see keyring and client_targets sync.
 
 Shared optional orchestration patterns now live in the agent-friendly-cli skill ([Optional orchestration honesty patterns](~/.config/agentsync/skills/agent-friendly-cli/references/implementation-workflow.md#optional-orchestration-honesty-patterns-observed-contracts-not-mandates)): uncertain-measurement preservation, three-layer success, retry/fallback/cooldown, display-only signals — observed contracts, not mandates. Policy, thresholds and rankings stay here.
 

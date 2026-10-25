@@ -28,7 +28,10 @@ async fn query(socket: &Path, expected_account_id: &str) -> Result<Value> {
     let (stream, _) = client_async("ws://localhost/", stream)
         .await
         .context("upgrade Codex control socket to WebSocket")?;
-    let mut session = Session { stream };
+    let mut session = Session {
+        stream,
+        metrics_account: expected_account_id.to_string(),
+    };
     session
         .request(
             1,
@@ -71,6 +74,7 @@ async fn query(socket: &Path, expected_account_id: &str) -> Result<Value> {
 
 struct Session {
     stream: WebSocketStream<UnixStream>,
+    metrics_account: String,
 }
 
 impl Session {
@@ -82,6 +86,30 @@ impl Session {
     }
 
     async fn request(
+        &mut self,
+        id: u64,
+        method: &str,
+        params: Value,
+    ) -> std::result::Result<Value, RpcFailure> {
+        subswap_core::request_metrics::record(
+            "codex",
+            &self.metrics_account,
+            "native_rpc_start",
+            None,
+        )
+        .await;
+        let result = self.request_inner(id, method, params).await;
+        subswap_core::request_metrics::record(
+            "codex",
+            &self.metrics_account,
+            "native_rpc_complete",
+            None,
+        )
+        .await;
+        result
+    }
+
+    async fn request_inner(
         &mut self,
         id: u64,
         method: &str,
@@ -138,8 +166,9 @@ mod tests {
         routing: Option<&str>,
         quota: Value,
         unsupported_preflight: bool,
-    ) -> (Result<Value>, Vec<String>) {
+    ) -> (Result<Value>, Vec<String>, Value) {
         let temp = tempfile::tempdir().unwrap();
+        let metrics_path = temp.path().join("request_metrics.json");
         let socket = temp.path().join("control.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let routing = routing.map(str::to_owned);
@@ -184,9 +213,14 @@ mod tests {
             }
             methods
         });
-        let result = fetch_usage(&socket, "current").await;
+        let result = subswap_core::request_metrics::with_sink(
+            metrics_path.clone(),
+            fetch_usage(&socket, "current"),
+        )
+        .await;
+        let metrics = subswap_core::request_metrics::snapshot_at(&metrics_path);
         let methods = server.await.unwrap();
-        (result, methods)
+        (result, methods, metrics)
     }
 
     fn quota(account: Option<&str>) -> Value {
@@ -201,13 +235,20 @@ mod tests {
 
     #[tokio::test]
     async fn websocket_queries_matching_account_and_preserves_inline_details() {
-        let (result, methods) = exercise(Some("current"), quota(Some("current")), false).await;
+        let (result, methods, metrics) =
+            exercise(Some("current"), quota(Some("current")), false).await;
         let usage = result.unwrap();
         assert_eq!(usage["primary"]["used_percent"], 13);
         assert_eq!(usage["rate_limit_reset_credits"]["available_count"], 2);
         assert_eq!(
             usage["rate_limit_reset_credits"]["credits"][0]["expiresAt"],
             1800000000
+        );
+        assert_eq!(metrics["totals"]["requests"]["native_rpc_start"], 3);
+        assert_eq!(metrics["totals"]["requests"]["native_rpc_complete"], 3);
+        assert_eq!(
+            metrics["totals"]["requests"]["http_start"], 0,
+            "native RPC must not be reported as HTTP"
         );
         assert_eq!(
             methods,
@@ -222,8 +263,11 @@ mod tests {
 
     #[tokio::test]
     async fn stale_daemon_is_rejected_before_requesting_or_refreshing_quota() {
-        let (result, methods) = exercise(Some("previous"), quota(Some("previous")), false).await;
+        let (result, methods, metrics) =
+            exercise(Some("previous"), quota(Some("previous")), false).await;
         assert!(result.unwrap_err().is::<AccountMismatch>());
+        assert_eq!(metrics["totals"]["requests"]["native_rpc_start"], 2);
+        assert_eq!(metrics["totals"]["requests"]["native_rpc_complete"], 2);
         assert_eq!(methods, ["initialize", "initialized", "account/read"]);
     }
 
@@ -231,7 +275,7 @@ mod tests {
     async fn optional_preflight_never_replaces_final_account_validation() {
         for unsupported in [false, true] {
             for account in [None, Some("previous"), Some("current")] {
-                let (result, _) = exercise(None, quota(account), unsupported).await;
+                let (result, _, _) = exercise(None, quota(account), unsupported).await;
                 assert_eq!(result.is_ok(), account == Some("current"));
                 if let Err(error) = result {
                     assert!(error.is::<AccountMismatch>());
@@ -247,7 +291,7 @@ mod tests {
             ("HTTP 503 unavailable", false),
             ("HTTP 401 unauthorized", true),
         ] {
-            let (result, methods) = exercise(
+            let (result, methods, _) = exercise(
                 Some("current"),
                 json!({"error": {"code": -32000, "message": message}}),
                 false,

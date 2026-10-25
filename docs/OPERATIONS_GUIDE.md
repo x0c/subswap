@@ -8,6 +8,7 @@
 |---|---|---|---|---|---|---|
 | CLI 默认入口 | `subswap` | `crates/cli/src/main.rs` | 无 | 本机 Claude/Codex/Kimi/Cursor 登录状态、subswap 配置目录 | 可设 `SUBSWAP_NO_DAEMON=1` 禁止默认入口拉起 daemon；Windows 本就无 daemon | 已验证来源：README/AGENTS/源码 |
 | CLI 子命令 | `subswap --help`、`subswap swap`、`subswap run`、`subswap doctor` | `crates/cli/src/main.rs` | 无 | 视子命令读取本地账号文件或钥匙串 | 测试中使用临时 HOME、临时客户端目录和一次性 keychain | 已验证来源：CLI 集成测试 |
+| 只读状态快照 | `subswap status [--json]` | `crates/cli/src/cmd/status.rs` | 无 | 仅读 `registry.toml`、`quota_cache.json`、`request_metrics.json`、daemon PID | 不构造 Provider、不启动子进程、不访问网络、不写状态 | 已验证来源：`status_readonly` 集成测试 |
 | daemon | `subswap __daemon` 或 `subswapd` | `crates/daemon/src/main.rs`、`crates/daemon/src/unix.rs` | 无 | 本地账号 store、Provider usage API、配置文件 | macOS 默认不自动拉起；可用 `SUBSWAP_NO_DAEMON=1` 禁止 | 已验证来源：README/AGENTS/源码 |
 | release 二进制 | `target/release/subswap`、`target/release/subswapd` | release profile | 无 | Rust target、Linux 需 `libdbus-1-dev pkg-config` | 本机安装前可只跑 release build | 已验证来源：release workflow |
 
@@ -91,6 +92,42 @@ pgrep -af 'subswap __daemon|subswapd' || true
 | release 产物 | `~/.local/bin/subswap --version` | 版本与 workspace 版本一致 | 是否忘记安装新产物或同步 lock |
 | daemon | `pgrep -af 'subswap __daemon|subswapd'` | 需要冒烟时可看到进程 | macOS 是否未设置 `SUBSWAP_AUTO_DAEMON=1` |
 | 本机安装一致性 | `shasum -a 256 ...` | target 和 `~/.local/bin` 产物哈希一致 | 是否安装了旧构建产物 |
+| 只读状态面 | `subswap status --json` | `schema_version=1`、账号字段齐全、`generated_at` 变化但 `cached_at` 不变、`request_metrics` 结构稳定 | 是否误走默认入口/Provider 构造，或读到了真实客户端状态 |
+
+## 只读状态面验证
+
+`subswap status --json` 面向 GUI / widget / 脚本，必须能在没有任何 daemon、没有网络、没有原生客户端运行的情况下反复调用。完整约定见 [CLI.md](CLI.md)「只读状态快照（`status`）」。
+
+### 隔离回归
+
+```bash
+cargo test -p subswap-cli --test status_readonly
+cargo test -p subswap-core --test quota_collection
+```
+
+`status_readonly` 使用临时 `SUBSWAP_HOME`、临时原生客户端路径、一次性 Claude/Cursor keychain，并在运行前后对整个 app 根目录做内容快照。它同时用假原生客户端与本地监听器证明：`status` 不启动 Provider 进程、不建立网络连接；重复读取不改变 registry、quota cache、coordination 目录、metrics 文件或 daemon PID。空 home 用例还会断言执行后连 `config/data/state/cache` 目录都不会出现。
+
+`quota_collection` 用假 Provider 和显式临时 cache 路径验证：成功结果写回、缓存命中保留原始 `observed_at`、并发采集合并为一次请求、取消后仍保留请求下限、超时/401 写入失败退避。测试不安装全局配置、不碰真实账号目录。
+
+`crates/core/src/paths.rs` 的单元测试验证只读解析不创建目录、正常解析仍创建四类目录，并拒绝相对 `SUBSWAP_HOME`。
+
+### 真实路径核对
+
+先在隔离或真实环境运行：
+
+```bash
+subswap status --json
+```
+
+检查：
+
+1. `generated_at` 是本次快照时间；每个账号的 `cached_at` 是原始额度观测时间。连续执行两次 `status`，`generated_at` 应变化，`cached_at`、`fetch_state`、`quotas` 不应因读取而被刷新。
+2. `fetch_state` 能区分 `ready` / `stale` / `failed` / `missing`；已 reset 的窗口不出现在 `quotas` 中，但账号与原始 `cached_at` 仍保留。`manual_only` 账号单独标记，不因没有额度而被误判成失败。
+3. 运行前后比较 `<cache>/quota_cache.json`、`<config>/registry.toml`、`<data>/request_metrics.json` 与 `<data>/state/subswapd.pid` 的哈希；只读快照不得改动它们。也不得出现新的 `*.lock` 或 `quota_collection/` 文件。
+4. `request_metrics.available` 反映指标文件是否存在；`totals.requests.http_start/http_complete`、`native_rpc_*` 与 `collections.*` 分开计数。指标只覆盖 subswap 自己实际发出的请求与原生 RPC；**不能**用这些数字声称看到了官方客户端内部的 HTTP 流量。
+5. 指标文件缺失或损坏时，`status` 仍应成功并输出 `available=false`；不能为读取指标而创建目录、锁文件或修复文件。
+
+真实采集后的计数变化只能归因于 subswap 实际执行的那次采集。默认入口、daemon 或手动 `collect_quota` 可能让 `http_*` / `collections.*` 增长；`status` 本身不得让任何计数增长。
 
 ## 常见启动失败信号
 
@@ -180,6 +217,10 @@ Shared optional acceptance procedures now live in the agent-friendly-cli skill (
 - Windows 的本机手工冒烟仍依赖 CI 环境；当前支持结论来自三平台测试矩阵、Windows release 构建与一键安装链路，daemon 明确不在 Windows 支持范围内。
 
 <!-- 该文档整理/压缩于 2026-09-05 -->
+
+## Release notes
+
+- [v1.16.0](releases/v1.16.0.md): shared quota collection, adaptive/reset scheduling, read-only snapshots and request metrics; bilingual changes, verification boundaries and upgrade instructions.
 
 ## CI and Release failure badges
 

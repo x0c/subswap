@@ -17,7 +17,7 @@
 //! [daemon]
 //! poll_interval_ms = 60000
 //! idle_threshold_ms = 1800000
-//! idle_poll_interval_ms = 900000
+//! idle_poll_interval_ms = 1800000
 //!
 //! [quota]
 //! fetch_timeout_ms = 20000
@@ -81,6 +81,26 @@ pub struct Quota {
     /// 连续查询失败时的退避上限（毫秒）。退避从 `min_refresh_interval_ms` 起按失败次数
     /// 翻倍并封顶到这里，避免查不出的账号被每轮重查、把 usage 端点限流桶打空。
     pub failure_backoff_max_ms: u64,
+    /// 当前激活账号的后台刷新间隔（毫秒）。
+    pub active_refresh_interval_ms: u64,
+    /// 停放账号的后台刷新间隔（毫秒）。
+    pub parked_refresh_interval_ms: u64,
+    /// 已确认耗尽账号的后台刷新间隔（毫秒）。
+    pub exhausted_refresh_interval_ms: u64,
+    /// 自动决策可接受的最大数据年龄（毫秒）；更老的数据只能展示为 stale。
+    pub decision_max_age_ms: i64,
+    /// 激活账号进入「阈值 - margin」区间时提前确认候选的百分点。
+    pub candidate_refresh_margin_pct: f64,
+    /// 接近阈值时最多提前刷新的候选数。
+    pub candidate_refresh_limit: usize,
+    /// 自适应间隔的正向抖动上限（百分比 0~100）。
+    pub refresh_jitter_pct: f64,
+    /// 同一进程内并发采集的最大账号数。
+    pub max_concurrent_fetches: usize,
+    /// 同一 Provider 同时采集的最大账号数。
+    pub max_concurrent_per_provider: usize,
+    /// 已知额度窗口 reset 后的显式刷新延迟（毫秒）。
+    pub reset_refresh_delay_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -150,6 +170,16 @@ impl Default for Quota {
             fetch_retry_delay_ms: defaults::QUOTA_FETCH_RETRY_DELAY_MS,
             min_refresh_interval_ms: defaults::QUOTA_MIN_REFRESH_INTERVAL_MS,
             failure_backoff_max_ms: defaults::QUOTA_FAILURE_BACKOFF_MAX_MS,
+            active_refresh_interval_ms: defaults::QUOTA_ACTIVE_REFRESH_INTERVAL_MS,
+            parked_refresh_interval_ms: defaults::QUOTA_PARKED_REFRESH_INTERVAL_MS,
+            exhausted_refresh_interval_ms: defaults::QUOTA_EXHAUSTED_REFRESH_INTERVAL_MS,
+            decision_max_age_ms: defaults::QUOTA_DECISION_MAX_AGE_MS,
+            candidate_refresh_margin_pct: defaults::QUOTA_CANDIDATE_REFRESH_MARGIN_PCT,
+            candidate_refresh_limit: defaults::QUOTA_CANDIDATE_REFRESH_LIMIT,
+            refresh_jitter_pct: defaults::QUOTA_REFRESH_JITTER_PCT,
+            max_concurrent_fetches: defaults::QUOTA_MAX_CONCURRENT_FETCHES,
+            max_concurrent_per_provider: defaults::QUOTA_MAX_CONCURRENT_PER_PROVIDER,
+            reset_refresh_delay_ms: defaults::QUOTA_RESET_REFRESH_DELAY_MS,
         }
     }
 }
@@ -280,6 +310,82 @@ mod tests {
         assert_eq!(
             s.quota.fetch_retry_delay_ms,
             defaults::QUOTA_FETCH_RETRY_DELAY_MS
+        );
+        assert_eq!(
+            s.quota.active_refresh_interval_ms,
+            defaults::QUOTA_ACTIVE_REFRESH_INTERVAL_MS
+        );
+        assert_eq!(
+            s.quota.parked_refresh_interval_ms,
+            defaults::QUOTA_PARKED_REFRESH_INTERVAL_MS
+        );
+        assert_eq!(
+            s.quota.exhausted_refresh_interval_ms,
+            defaults::QUOTA_EXHAUSTED_REFRESH_INTERVAL_MS
+        );
+        assert_eq!(
+            s.quota.decision_max_age_ms,
+            defaults::QUOTA_DECISION_MAX_AGE_MS
+        );
+        assert_eq!(
+            s.quota.candidate_refresh_margin_pct,
+            defaults::QUOTA_CANDIDATE_REFRESH_MARGIN_PCT
+        );
+        assert_eq!(
+            s.quota.candidate_refresh_limit,
+            defaults::QUOTA_CANDIDATE_REFRESH_LIMIT
+        );
+        assert_eq!(
+            s.quota.refresh_jitter_pct,
+            defaults::QUOTA_REFRESH_JITTER_PCT
+        );
+        assert_eq!(
+            s.quota.max_concurrent_fetches,
+            defaults::QUOTA_MAX_CONCURRENT_FETCHES
+        );
+        assert_eq!(
+            s.quota.max_concurrent_per_provider,
+            defaults::QUOTA_MAX_CONCURRENT_PER_PROVIDER
+        );
+        assert_eq!(
+            s.quota.reset_refresh_delay_ms,
+            defaults::QUOTA_RESET_REFRESH_DELAY_MS
+        );
+    }
+
+    /// 新增调度字段必须可按 [quota] 段独立覆盖；未写的字段保持默认。
+    #[test]
+    fn schedule_fields_are_configurable_per_field() {
+        let cfg: Settings = toml::from_str(
+            r#"
+[quota]
+active_refresh_interval_ms = 120000
+parked_refresh_interval_ms = 600000
+exhausted_refresh_interval_ms = 700000
+decision_max_age_ms = 120000
+candidate_refresh_margin_pct = 5.0
+candidate_refresh_limit = 1
+refresh_jitter_pct = 0.0
+max_concurrent_fetches = 2
+max_concurrent_per_provider = 1
+reset_refresh_delay_ms = 500
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.quota.active_refresh_interval_ms, 120_000);
+        assert_eq!(cfg.quota.parked_refresh_interval_ms, 600_000);
+        assert_eq!(cfg.quota.exhausted_refresh_interval_ms, 700_000);
+        assert_eq!(cfg.quota.decision_max_age_ms, 120_000);
+        assert_eq!(cfg.quota.candidate_refresh_margin_pct, 5.0);
+        assert_eq!(cfg.quota.candidate_refresh_limit, 1);
+        assert_eq!(cfg.quota.refresh_jitter_pct, 0.0);
+        assert_eq!(cfg.quota.max_concurrent_fetches, 2);
+        assert_eq!(cfg.quota.max_concurrent_per_provider, 1);
+        assert_eq!(cfg.quota.reset_refresh_delay_ms, 500);
+        // 未写的旧字段继续使用默认值。
+        assert_eq!(
+            cfg.quota.min_refresh_interval_ms,
+            defaults::QUOTA_MIN_REFRESH_INTERVAL_MS
         );
     }
 

@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use chrono::Utc;
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -104,7 +105,20 @@ async fn refresh_parked_blob_at(blob: &str, url: &str) -> Result<RefreshOutcome>
         ("refresh_token", refresh.clone()),
     ];
 
-    let resp = match client.post(url).form(&form).send().await {
+    // 刷新入口只拿到 blob；从元数据取账号主键用于无凭证指标，取不到则归入 unattributed。
+    let metrics_account = crate::codex_files::parse_metadata(blob)
+        .primary_id()
+        .unwrap_or_default();
+    subswap_core::request_metrics::record("codex", &metrics_account, "http_start", None).await;
+    let sent = client.post(url).form(&form).send().await;
+    subswap_core::request_metrics::record(
+        "codex",
+        &metrics_account,
+        "http_complete",
+        sent.as_ref().ok().map(|resp| resp.status().as_u16()),
+    )
+    .await;
+    let resp = match sent {
         Ok(resp) => resp,
         Err(error) => {
             tracing::debug!(error = %error, "Codex OAuth refresh transport failed");
@@ -113,11 +127,22 @@ async fn refresh_parked_blob_at(blob: &str, url: &str) -> Result<RefreshOutcome>
     };
 
     let status = resp.status();
+    let retry_at = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| subswap_core::time::parse_retry_after(value, Utc::now()));
     let body = resp.text().await.unwrap_or_default();
 
     if is_terminal_oauth_failure(status.as_u16(), &body) {
         mark_refresh_dead(&refresh);
         return Ok(RefreshOutcome::DeadToken);
+    }
+    if status.as_u16() == 429 {
+        return Err(Error::QuotaRateLimited {
+            message: "Codex OAuth refresh endpoint throttled".into(),
+            retry_at,
+        });
     }
     if !status.is_success() {
         tracing::debug!(%status, body_len = body.len(), "Codex OAuth refresh non-terminal failure");
@@ -393,16 +418,66 @@ mod tests {
         let refresh = format!("rt-dead-{}", uuid_like());
         let blob = sample_blob(&expired_access_jwt(), &refresh);
         let url = format!("http://{addr}/oauth/token");
-        let first = refresh_parked_blob_at(&blob, &url).await.unwrap();
-        assert!(matches!(first, RefreshOutcome::DeadToken));
-        assert_eq!(*hits.lock().unwrap(), 1);
-
-        // 第二次不应再打网络（守卫命中）。
-        let second = refresh_parked_blob_at(&blob, "http://127.0.0.1:1")
-            .await
-            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let metrics_path = dir.path().join("request_metrics.json");
+        let second = subswap_core::request_metrics::with_sink(metrics_path.clone(), async {
+            let first = refresh_parked_blob_at(&blob, &url).await.unwrap();
+            assert!(matches!(first, RefreshOutcome::DeadToken));
+            assert_eq!(*hits.lock().unwrap(), 1);
+            // 第二次不应再打网络（守卫命中）。
+            refresh_parked_blob_at(&blob, "http://127.0.0.1:1")
+                .await
+                .unwrap()
+        })
+        .await;
         assert!(matches!(second, RefreshOutcome::DeadToken));
         assert_eq!(*hits.lock().unwrap(), 1);
+        let metrics = subswap_core::request_metrics::snapshot_at(&metrics_path);
+        assert_eq!(
+            metrics["totals"]["requests"]["http_start"], 1,
+            "dead refresh guard must block the second HTTP attempt"
+        );
+        assert_eq!(metrics["totals"]["requests"]["http_complete"], 1);
+        assert_eq!(metrics["totals"]["statuses"]["401"], 1);
+    }
+
+    #[tokio::test]
+    async fn refresh_429_preserves_retry_after_and_stops_without_retry() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(Mutex::new(0_u32));
+        let hits_bg = Arc::clone(&hits);
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = socket.read(&mut buf).await;
+            *hits_bg.lock().unwrap() += 1;
+            let body = r#"{"error":"rate_limited"}"#;
+            let resp = format!(
+                "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 7200\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(resp.as_bytes()).await;
+        });
+        let blob = sample_blob(&expired_access_jwt(), &format!("rt-429-{}", uuid_like()));
+        let url = format!("http://{addr}/oauth/token");
+        let before = Utc::now();
+        let error = match refresh_parked_blob_at(&blob, &url).await {
+            Err(error) => error,
+            Ok(_) => panic!("expected a typed 429 refresh error"),
+        };
+        match error {
+            Error::QuotaRateLimited {
+                retry_at: Some(deadline),
+                ..
+            } => {
+                assert!(deadline >= before + chrono::Duration::minutes(119));
+                assert!(deadline <= Utc::now() + chrono::Duration::hours(3));
+            }
+            other => panic!("expected typed 429 deadline, got {other}"),
+        }
+        assert_eq!(*hits.lock().unwrap(), 1, "429 must not retry");
     }
 
     fn uuid_like() -> String {

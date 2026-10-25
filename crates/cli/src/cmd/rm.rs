@@ -5,7 +5,7 @@
 //! 原生断失败只警告、仍清本地（客户端仍登录时下次入口可能再导入）。删 parked 账号只清本地。
 
 use anyhow::Result;
-use subswap_core::{AuditEvent, OfficialDisconnect};
+use subswap_core::{paths::AppPaths, quota_collection, AuditEvent, OfficialDisconnect};
 
 use crate::app::AppContext;
 use crate::cmd::default::print_status_overview;
@@ -53,6 +53,11 @@ pub async fn run(ctx: &AppContext, id_input: &str, json: bool) -> Result<()> {
 
     ctx.registry.remove(&acc.provider, &acc.id)?;
 
+    // 清掉额度缓存与采集协调记录。失败只警告：rm 永不因缓存/协调状态拒绝删除。
+    // 不删除协调锁或记录，而是保留未来的请求下限（含 Retry-After），避免同 ID 重新导入
+    // 立即打上游；旧成功结果与在途采集结果都会在账号锁内作废。
+    invalidate_quota_state(&acc.provider, &acc.id.0).await;
+
     // 各 provider 的专属凭证字段由 provider 自己声明（`credential_store_fields`）。
     for f in ctx
         .providers
@@ -99,6 +104,29 @@ pub async fn run(ctx: &AppContext, id_input: &str, json: bool) -> Result<()> {
         print_status_overview(ctx).await?;
     }
     Ok(())
+}
+
+async fn invalidate_quota_state(provider: &str, account_id: &str) {
+    let Ok(paths) = AppPaths::resolve() else {
+        return;
+    };
+    if let Err(error) = quota_collection::invalidate_collection_state(
+        &paths.quota_cache_file(),
+        provider,
+        account_id,
+    )
+    .await
+    {
+        tracing::warn!(
+            err = %error,
+            provider,
+            account = account_id,
+            "quota cache invalidation failed; continuing rm"
+        );
+        eprintln!(
+            "warning: could not clear cached quota state for {provider}/{account_id} ({error}); local removal continues"
+        );
+    }
 }
 
 fn try_official_disconnect(

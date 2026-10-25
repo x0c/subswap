@@ -74,12 +74,31 @@ mod test_support {
 
     impl MockServer {
         pub fn start(responses: Vec<(&'static str, &'static str)>) -> Self {
+            Self::start_with_headers(
+                responses
+                    .into_iter()
+                    .map(|(status, body)| (status, body, None))
+                    .collect(),
+            )
+        }
+
+        pub fn start_with_retry_after(
+            status: &'static str,
+            body: &'static str,
+            retry_after: Option<&'static str>,
+        ) -> Self {
+            Self::start_with_headers(vec![(status, body, retry_after)])
+        }
+
+        fn start_with_headers(
+            responses: Vec<(&'static str, &'static str, Option<&'static str>)>,
+        ) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let base_url = format!("http://{}", listener.local_addr().unwrap());
             let requests = Arc::new(Mutex::new(Vec::new()));
             let captured = Arc::clone(&requests);
             let handle = std::thread::spawn(move || {
-                for (status, body) in responses {
+                for (status, body, retry_after) in responses {
                     let (mut stream, _) = listener.accept().unwrap();
                     let mut buffer = [0_u8; 8192];
                     let count = stream.read(&mut buffer).unwrap();
@@ -88,9 +107,12 @@ mod test_support {
                         .lock()
                         .unwrap()
                         .push(request.lines().next().unwrap_or_default().to_string());
+                    let retry_header = retry_after
+                        .map(|value| format!("Retry-After: {value}\r\n"))
+                        .unwrap_or_default();
                     write!(
                         stream,
-                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{retry_header}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
                     )
                     .unwrap();

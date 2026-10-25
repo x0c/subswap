@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use chrono::Utc;
 use fs2::FileExt;
 use sha2::{Digest, Sha256};
 use subswap_core::error::{Error, Result};
@@ -51,10 +52,14 @@ fn client_id_from_blob(blob: &str) -> Option<String> {
 
 /// 用 blob 里的 refresh_token 换新令牌，返回轮换后的完整 blob（合并回原 JSON 结构）。
 pub async fn refresh_blob(blob: &str) -> Result<RefreshOutcome> {
-    refresh_blob_at(blob, &oauth_host()).await
+    refresh_blob_at(blob, &oauth_host(), "").await
 }
 
-async fn refresh_blob_at(blob: &str, oauth_base: &str) -> Result<RefreshOutcome> {
+async fn refresh_blob_at(
+    blob: &str,
+    oauth_base: &str,
+    metrics_account: &str,
+) -> Result<RefreshOutcome> {
     let Some(refresh) = extract_refresh_token(blob) else {
         return Ok(RefreshOutcome::Unsupported);
     };
@@ -73,20 +78,39 @@ async fn refresh_blob_at(blob: &str, oauth_base: &str) -> Result<RefreshOutcome>
         .timeout(REFRESH_HTTP_TIMEOUT)
         .build()
         .map_err(|e| Error::Provider(format!("kimi refresh client failed: {e}")))?;
-    let resp = client
+    subswap_core::request_metrics::record("kimi", metrics_account, "http_start", None).await;
+    let sent = client
         .post(&url)
         .header("User-Agent", "subswap")
         .header("Accept", "application/json")
         .form(&form)
         .send()
-        .await
-        .map_err(|e| Error::Provider(format!("kimi refresh request failed: {e}")))?;
+        .await;
+    subswap_core::request_metrics::record(
+        "kimi",
+        metrics_account,
+        "http_complete",
+        sent.as_ref().ok().map(|resp| resp.status().as_u16()),
+    )
+    .await;
+    let resp = sent.map_err(|e| Error::Provider(format!("kimi refresh request failed: {e}")))?;
 
     let status = resp.status();
+    let retry_at = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| subswap_core::time::parse_retry_after(value, Utc::now()));
     let body = resp.text().await.unwrap_or_default();
 
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
         return Ok(RefreshOutcome::DeadToken);
+    }
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(Error::QuotaRateLimited {
+            message: "Kimi OAuth refresh endpoint throttled".into(),
+            retry_at,
+        });
     }
     let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
     if parsed.get("error").and_then(|v| v.as_str()) == Some("invalid_grant") {
@@ -318,7 +342,7 @@ pub(crate) async fn recover_active_401_at(
         return Ok(None);
     }
 
-    let outcome = refresh_blob_at(&locked.raw, oauth_base).await;
+    let outcome = refresh_blob_at(&locked.raw, oauth_base, &account.id.0).await;
     match outcome {
         Ok(RefreshOutcome::Rotated(rotated)) => {
             let fresh_access = extract_access_token(&rotated);

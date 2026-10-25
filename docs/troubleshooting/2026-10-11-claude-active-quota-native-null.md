@@ -28,6 +28,8 @@ The exact upstream response for the two native failures was not captured, so 429
 
 ## Fix (1.15.1)
 
+> Superseded in part (2026-10-25, 1.16.0): expired active credentials are now renewed under Claude Code's official refresh lock instead of failing with `open Claude Code to renew`. See [active quota expired while idle](2026-10-25-claude-active-quota-expired-while-idle.md). Not starting the official client to read quota still applies.
+
 - Active subscription accounts no longer start the official client. Order: a fresh UUID-matched `cachedUsageUtilization` snapshot (no request), then one read-only direct usage request with the live access token, inside the existing per-account reservation and `Retry-After`/429 backoff. subswap never refreshes the active credential.
 - An expired active credential sends no request and reports `Claude credential expired; open Claude Code to renew`; Claude Code renews it on its next use.
 - Account identity is checked before and after the request; a swap in between discards the reading.

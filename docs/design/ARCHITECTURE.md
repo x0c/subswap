@@ -319,6 +319,22 @@ provider / cli / daemon 禁止硬编码阈值、时间窗口、百分比。
 
 CLI 与 daemon 共用持久 `quota_cache.json`。新鲜度 < `settings.quota.min_refresh_interval_ms`（默认 90 秒）复用；之外拉实时，失败可带时间戳显示 stale。限制请求频率，不把旧结果伪装成实时。
 
+### Shared quota collection (adopted 2026-10-24)
+
+The owner authorized implementation of the background-request review. One Rust collection coordinator must serve foreground CLI and daemon requests, including operation without a daemon. Apple apps and widgets remain read-only snapshot consumers; repainting, opening a view or reading `status --json` must not trigger upstream collection.
+
+- Coordinate by provider/account across processes. Persist a reservation before network work; cancellation, timeout or process exit must not erase the minimum interval. Coalesce concurrent collectors, bound cross-process concurrency and preserve the original observation timestamp when serving a cached/coalesced result.
+- Lock and atomically merge shared cache updates. An older process must not replace newer per-account results, deadlines or removals. Unreadable coordination state fails closed. Keep Claude's stricter per-account reservation, three-minute floor, 30-minute 429 minimum and later server Retry-After deadlines. Active Claude renewal is permitted only under the verified official lock protocol described in the Provider knowledge base; never start model/client sessions to collect quota.
+- Background defaults: active accounts every three minutes, non-active parked and confirmed-exhausted accounts every 15 minutes. Add up to 10% positive scheduling jitter, never earlier than the provider floor or retry deadline. Prioritize at most two candidates when the active account is within 15 percentage points of its existing switching threshold. Slow background data is display-only once older than five minutes; automatic decisions retain the existing confirmed trigger/target and all-exhausted fallback rules.
+- Schedule an explicit collection at a known quota reset, not merely at the next ordinary polling cycle. Respect minimum request intervals and server cooldowns; deduplicate multiple windows/clients and apply a small bounded post-reset delay. A countdown reaching zero invalidates the old window but never proves a full balance. Slow periodic checks remain necessary for early grants and provider corrections. Preserve stacked versus parallel-pool recovery semantics.
+- Definitively dead credentials remain guarded until their credential generation changes. Expired active credentials send no usage request until renewed under the verified native coordination mechanism; unsupported lock protocols send no renewal request. Temporary network failures and usage 429 are not permanent authentication failures. Manual activation remains independent of quota queries.
+- Prefer available, account-validated official snapshots/events. Do not overwrite user statusline scripts, read browser cookies, inject model probes or infer subscription quota from token-cost history. Unsupported passive sources retain conservative polling.
+- Persist bounded credential-free request metrics: actual direct HTTP starts/completions/statuses, native RPC calls separately, collection attempts, cache hits, coalescing and deferrals. Native RPC counts do not claim visibility into the official client's internal HTTP traffic. Read-only status exposes metrics and original per-account timestamps without writing or fetching.
+
+The shared collection API returns quotas and `observed_at`; callers preserve both. Configuration defaults remain in `defaults.rs` and [CONFIG.md](../CONFIG.md).
+
+Reference inspected: `realiti4/claude-swap` revision `042a36b673d51f4bf990b04f903aee02f1ab07e1`, `poll_policy.py` and `usage_store.py`. Reuse shared schedules and fenced claims, not its anecdotal upstream allowance, urgent 60-second polling, server-deadline cap or stale-data selection rules. [AWS retry guidance](https://builder.aws.com/content/3EumjoZascWd1oZiEgL8ORlv3qE/timeouts-retries-and-backoff-with-jitter) supports single-layer bounded retries and jitter; [Claude statusline fields](https://code.claude.com/docs/en/statusline#available-data) describe an optional passive source, not universal coverage.
+
 ## 6. 错误处理
 
 - `core::error::Error` 统一枚举。Provider 内部 `anyhow::Error` → `Error::Other` / `Error::Provider(String)`。
@@ -348,7 +364,7 @@ CLI 与 daemon 共用持久 `quota_cache.json`。新鲜度 < `settings.quota.min
 
 | 职责 | 函数 / 文件 |
 |---|---|
-| Claude quota orchestration, passive official snapshot, active read-only direct query and parked expiry preflight/refresh; never starts the official client | `lib.rs::ClaudeProvider::query_quota` / `query_usage` / `cached_native_usage` |
+| Claude quota orchestration, passive official snapshot, active official-lock renewal/direct query and parked expiry preflight/refresh; never starts a client session | `lib.rs::ClaudeProvider::query_quota` / `query_usage` / `cached_native_usage` |
 | Account-scoped reservations, shared results and retry deadlines; parked refresh lock | `usage_poll.rs::begin` / `Lease::finish` / `refresh_lock` |
 | 手动切换（阶段1 best-effort 预刷新，失败只 warn 不阻塞） | `lib.rs::activate` + `lib.rs::best_effort_pre_refresh` |
 | daemon 保活：仅临近过期才刷 | `lib.rs::refresh_if_near_expiry` |
