@@ -4,15 +4,15 @@
 
 ## 最高优先级
 
-1. **功能新增或缺陷修复后，当轮完成本机交付；公开发版交给发版管家**（2026-10-25 机主决定，权威见 [发版管家指南](~/.config/agentsync/docs/RELEASE_TRAIN_GUIDE.md)）。
+1. **功能新增或缺陷修复后，当轮完成本机交付；平时不发版，机主要求时直接发版。**
    每次改完：
    - 跑测试 / 构建 / release 构建。
    - 先覆盖安装本机 `subswap` / `subswapd`，重启 daemon，并验证构建产物哈希与实际行为。
-   - 提交并推送 Git。不要自己升版本、打 tag 或建 Release；机主要求发版、修复已发布版本的严重缺陷时，运行 `python3 ~/.config/agentsync/scripts/release_train.py now subswap`。
-   发版管家执行的公开发版步骤：
-   - 按语义化版本提升 workspace 版本并同步 `Cargo.lock`。
+   - 提交并推送 Git。
+   机主要求发版（或修复已发布版本的严重缺陷）时，直接执行并等到 GitHub Release 完成再回复：
+   - 按语义化版本提升 workspace 版本并同步 `Cargo.lock`，只提交版本文件。
    - 跑测试 / 构建 / release 构建，覆盖安装并验证版本与哈希。
-   - 提交 Git、创建并推送版本 tag、确认 GitHub Release 发布成功。
+   - 创建并推送版本 tag、确认 GitHub Release 发布成功。
    - GitHub Release publish 后 `update-homebrew.yml` 会**自动**更新 `x0c/homebrew-tap` 的 formula，无需手动操作。
      详见 [docs/OPERATIONS_GUIDE.md](~/Codes/Subswap/docs/OPERATIONS_GUIDE.md) §「Homebrew Tap 自动更新」。
 2. **修改代码前先查调用链。**
