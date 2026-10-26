@@ -236,6 +236,7 @@ Shared optional acceptance procedures now live in the agent-friendly-cli skill (
 
 ## Release notes
 
+- [v1.16.6](releases/v1.16.6.md): quota windows ordered by real duration, duration tokens for non-standard lengths, and Codex/Kimi duration preservation.
 - [v1.16.5](releases/v1.16.5.md): `status --json --no-metrics` for frequent GUI polling and the documented pipe-capacity contract; companion Subswap Apple client refresh deadlock fixed alongside it.
 - [v1.16.4](releases/v1.16.4.md): empty-success cadence correction, Linux quota-refresh lock safety, Windows test determinism, portable lock-contention classification, and the complete shared quota collection, adaptive scheduling, read-only snapshots and request metrics delivered across the v1.16.0–v1.16.3 drafts.
 - [v1.16.3](releases/v1.16.3.md): superseded by v1.16.4; it passed release CI but still re-collected empty successful readings at the request floor.
