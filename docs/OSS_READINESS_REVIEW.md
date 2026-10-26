@@ -117,4 +117,4 @@ Final delivery acceptance: tag `v1.15.0` points to `05a6fa1` and includes the re
 
 ## Homebrew metadata correction (2026-10-26)
 
-The v1.16.6 release audit found that `.github/workflows/update-homebrew.yml` still generated a formula description omitting Command Code, despite the README and repository description listing it. Include all six supported clients in that generated description; apply the correction through the existing tag-specific Homebrew workflow and verify the live formula. This changes distribution metadata only.
+The v1.16.6 release audit found that `.github/workflows/update-homebrew.yml` still generated a formula description omitting Command Code, despite the README and repository description listing it. The generator now includes all six supported clients. [The tag-specific Homebrew workflow](https://github.com/x0c/subswap/actions/runs/40249248239) applied the correction, and the live v1.16.6 formula description, four archive URLs and four SHA-256 values were verified. This changes distribution metadata only.
