@@ -236,7 +236,7 @@ Shared optional acceptance procedures now live in the agent-friendly-cli skill (
 
 ## Release notes
 
-- [v1.16.6](releases/v1.16.6.md): quota windows ordered by real duration, duration tokens for non-standard lengths, and Codex/Kimi duration preservation.
+- [v1.16.6](releases/v1.16.6.md): quota windows ordered by real duration, duration tokens for non-standard lengths, and Codex/Kimi duration preservation. Includes five-target publication, anonymous download checks and published Mac installation evidence.
 - [v1.16.5](releases/v1.16.5.md): `status --json --no-metrics` for frequent GUI polling and the documented pipe-capacity contract; companion Subswap Apple client refresh deadlock fixed alongside it.
 - [v1.16.4](releases/v1.16.4.md): empty-success cadence correction, Linux quota-refresh lock safety, Windows test determinism, portable lock-contention classification, and the complete shared quota collection, adaptive scheduling, read-only snapshots and request metrics delivered across the v1.16.0–v1.16.3 drafts.
 - [v1.16.3](releases/v1.16.3.md): superseded by v1.16.4; it passed release CI but still re-collected empty successful readings at the request floor.
@@ -253,3 +253,20 @@ Release must validate the selected tag through the same CI workflow before build
 Draft installer verification must explicitly select the release database ID and expected version, authenticate to the release API, and download draft assets through their API URLs with `Accept: application/octet-stream`. Public tag/download URLs are unsuitable for draft verification. Normal installation must continue to reject drafts. Verify the installed version exactly. Re-running a published release must not turn it back into a draft or overwrite its assets.
 
 References: [GitHub job dependencies](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-jobs), [release API](https://docs.github.com/en/rest/releases/releases), [asset downloads](https://docs.github.com/en/rest/releases/assets).
+
+## v1.16.6 release acceptance (2026-10-26)
+
+- Source tag: `v1.16.6` at `c8948782be25439e27ccb4e3e67f9d0ad5677ee2`, including `00b33a4bde3e`. Local Rust stable 1.99.1 completed format, workspace/all-target check, strict Clippy, 474 Rust tests, debug build and locked CLI/daemon release build. All compiler and lint diagnostics were inspected; none remain.
+- The optional installer regression initially could not start on this Mac because `pwsh` was missing. A task-scoped, SHA-256-verified official PowerShell 7.6.6 archive resolved preparation; all three installer regression tests then passed. This is separate from real Windows acceptance. [Microsoft binary archive procedure](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-macos).
+- [Release workflow 40248378004](https://github.com/x0c/subswap/actions/runs/40248378004) completed three-platform validation, all five release targets, the exact v1.16.6 Windows draft installation, publication and the automatic Homebrew update. Complete logs contain 16 completed compiler runs and no compiler/lint warnings or errors. Both Linux CLI/daemon pairs passed the actual `max GLIBC_2.28` guard.
+- All five public archives and five `.sha256` files were downloaded anonymously from [v1.16.6](https://github.com/x0c/subswap/releases/tag/v1.16.6); SHA-256 and package contents match. The public latest endpoint reports v1.16.6, and all four Homebrew URLs/checksums match those downloads.
+- Installed the downloaded ARM64 Mac CLI and daemon to `~/.local/bin`, confirmed PATH and exact version, restarted the daemon, ran the real default entry successfully and confirmed `daemon_running=true`. Installed hashes match the public binaries: CLI `254d49fa0ce53250b47001601f12a01a03f69a4b04c9ad1b2c734141155c9640`; daemon `f34888ab9420e1b50d40ba35e695fbbe59215646257ad1684f68a0c81fa3a899`. Synthetic cached quotas confirm duration order, JSON tokens, `--no-metrics` account equivalence and unchanged fixture files after reads. Other-platform runtime coverage is provided by CI; this Mac did not run Linux, Windows or Intel macOS binaries.
+- Complete local/remote logs, build input hashes, asset checks, installation receipts and the security review are retained under `~/.config/subswap/verification/20261026-release-v1.16.6/`. Security review identified two exact historical synthetic JWT fixtures, 182 documentation-path notices and four public base64url-alphabet notices; no real credential or blocking finding remained after those two evidence-backed fixture classifications. Repository scan rules were not changed.
+
+### Retained third-party workflow diagnostics
+
+| Diagnostic and targets | Origin, assessment and follow-up |
+|---|---|
+| `Node.js 20 is deprecated` / `mlugg/setup-zig@v2` forced to Node.js 24, on both `build x86_64-unknown-linux-gnu` and `build aarch64-unknown-linux-gnu` | The [v2 action metadata](https://github.com/mlugg/setup-zig/blob/v2/action.yml) declares Node 20; [GitHub's runtime migration](https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/) forces Node 24. In this release both setup steps, builds and GLIBC guards succeeded under that runtime. No Node runtime is shipped in the archives. Retained as a future CI compatibility risk; follow-up: adopt an upstream Node-24-declared action and validate both Linux release targets. Do not disable diagnostics or the GLIBC guard. |
+
+The hosted-runner Ubuntu 26 migration notices and Git's default-branch hints are environment information, not Rust diagnostics. The Linux binary compatibility claim is based on the explicit Zig target and observed GLIBC guard, rather than the hosted runner label.
