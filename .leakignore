@@ -1,0 +1,7 @@
+# Antigravity OAuth 应用公开常量：随官方 agy 客户端分发，亦见于公开 npm 包
+# opencode-antigravity-auth（MIT），属 installed-app 公开值而非用户密钥。
+# 已实测与本机 agy 钥匙串互通；用户 refresh/access token 从不入库。
+fp:68ade4ed911bf17f
+fp:1b9a9b26d10bcd9d
+fp:7903437fb2800569
+fp:f496ef19e2a6f4a8
