@@ -166,6 +166,17 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) for the supported contribution paths and
 
 If you find subswap useful, [star the repo](https://github.com/x0c/subswap) so you can find it again later.
 
+## 🧩 Related Tools in the AI Coding Suite
+
+If you run multiple AI coding agents daily, check out the rest of the local-first toolkit:
+
+| Repository | Description |
+| :--- | :--- |
+| **[corral](https://github.com/corral-dev/corral)** | Run Claude Code, Codex, OpenCode, Cursor & Pi side-by-side in a terminal session manager, then continue from iPhone or Mac. |
+| **[agentsync](https://github.com/x0c/agentsync)** | Sync `AGENTS.md`, `CLAUDE.md`, skills, and MCP configs across coding agents from one local source of truth. |
+| **[agent-doc-skills](https://github.com/x0c/agent-doc-skills)** | Navigable project knowledge base skills (`doc-init`, `doc-update`, `doc-compact`) so coding agents don't rediscover your repo every session. |
+| **[sesskit](https://github.com/x0c/sesskit)** | Parse and export local Claude Code, Codex CLI, and Cursor session transcript files from disk. |
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

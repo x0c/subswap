@@ -166,6 +166,17 @@ Cursor 可通过桌面版或 CLI 凭证进行导入、切换与额度查询，�
 
 如果 subswap 对你有帮助，可以给仓库[点个 star](https://github.com/x0c/subswap)，方便以后找到。
 
+## 🧩 AI 编程工具链里的相关工具
+
+如果你每天在多个 AI 编程助手之间切换，看看这套本地优先工具链的其余部分：
+
+| 仓库 | 说明 |
+| :--- | :--- |
+| **[corral](https://github.com/corral-dev/corral)** | 在终端会话管理器里并排跑 Claude Code、Codex、OpenCode、Cursor 和 Pi，再从 iPhone 或 Mac 上继续。 |
+| **[agentsync](https://github.com/x0c/agentsync)** | 以一份本地源统一同步 `AGENTS.md`、`CLAUDE.md`、skills 和 MCP 配置到各编程助手。 |
+| **[agent-doc-skills](https://github.com/x0c/agent-doc-skills)** | 可导航的项目知识库 skills（`doc-init`、`doc-update`、`doc-compact`），让 coding agent 不再每个会话都重新认识你的仓库。 |
+| **[sesskit](https://github.com/x0c/sesskit)** | 从磁盘解析、导出本地 Claude Code、Codex CLI 和 Cursor 会话记录文件。 |
+
 ## 许可证
 
 MIT — 见 [LICENSE](LICENSE)。
