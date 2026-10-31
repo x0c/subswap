@@ -71,7 +71,7 @@ subswap autoswap off
 subswap                # save local logins and show accounts + quota
 ```
 
-Save another account before switching between accounts. For Claude Code and Codex, subswap can start the native sign-in flow:
+Save each account before switching between them. For Claude Code and Codex, subswap can start the native sign-in flow:
 
 ```bash
 subswap login codex    # sign in to another Codex account; use claude for Claude Code
@@ -103,8 +103,8 @@ eval "$(subswap env codex/bob@example.com)"
 
 ## What you can do
 
-- **Switch saved accounts** — choose an account with `subswap swap <number>` instead of signing in again for every change.
-- **Check quota and reset times** — see remaining usage across supported clients, including available Codex reset counts and expiration times when provided by the service.
+- **Switch saved accounts** — choose an account with `subswap swap <number>` instead of signing in again.
+- **Check quota and reset times** — see remaining usage across supported clients, including Codex reset counts and expiration times when the service provides them.
 - **Use custom Claude Code API endpoints** — add an Anthropic-compatible endpoint with `subswap add-api`; these accounts are selected manually.
 - **Run another account in parallel** — use `run`, `shell`, or `env` for clients that support isolation, keeping the global active login unchanged.
 - **Enable automatic switching** — let subswap select another saved account when the configured quota conditions are met.
@@ -116,12 +116,12 @@ eval "$(subswap env codex/bob@example.com)"
 | Claude Code (OAuth) | Yes | Yes | Yes | Yes | Custom API endpoints are manual-only. |
 | Codex (ChatGPT login) | Yes | Yes | Yes | Yes | Restart existing Codex sessions after a global swap. |
 | Kimi Code | Yes | Yes | Yes | Yes | Sign in with the native client, then import. |
-| Cursor desktop / CLI | Yes | Yes | Yes | No | Desktop switching coordinates an app restart. |
+| Cursor desktop / CLI | Yes | Yes | Yes | No | Desktop switching restarts the app. |
 | OpenCode Console | Yes | Yes | Yes | No | Automatic switching stays within official Console accounts. |
 | OpenCode Go API key | Yes | Yes | No | V1 only | V2 key selection uses the official client. |
 | Command Code | Yes | Yes | Yes | Yes | Sign in with the native client, then import. |
 
-The CLI is tested in CI on macOS, Linux, and Windows. Install the native clients you want to use. Using the same account in multiple sessions can require signing in again if they refresh its credentials concurrently; use different saved accounts for parallel work where possible.
+The CLI is tested in CI on macOS, Linux, and Windows. Install the native clients you want to use. Using the same account in multiple sessions can require signing in again if the sessions refresh its credentials at the same time; use different saved accounts for parallel work where possible.
 
 ## Automatic switching
 
@@ -129,7 +129,7 @@ The CLI is tested in CI on macOS, Linux, and Windows. Install the native clients
 
 Automatic decisions preserve the current account while its quota is loading, failed, or stale. Normally, a quota threshold triggers selection of a usable account. If the current account is exhausted and no other account has remaining quota, `subswap` falls back to whichever account resets soonest. See [configuration](docs/CONFIG.md) for thresholds and timing.
 
-The background daemon is Unix-only. Linux starts it automatically when `subswap` runs; macOS requires `SUBSWAP_AUTO_DAEMON=1`; Windows uses the foreground CLI. `SUBSWAP_NO_DAEMON=1` prevents auto-starting a daemon. It does not stop one already running or disable automatic decisions in the foreground command.
+The background daemon is Unix-only. Linux starts it automatically when `subswap` runs; macOS requires `SUBSWAP_AUTO_DAEMON=1`; Windows uses the foreground CLI. `SUBSWAP_NO_DAEMON=1` prevents auto-starting a daemon. It stops neither a running daemon nor automatic decisions in the foreground command.
 
 <details>
 <summary>Environment check (`subswap doctor`)</summary>
