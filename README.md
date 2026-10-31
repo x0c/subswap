@@ -71,7 +71,7 @@ subswap autoswap off
 subswap                # save local logins and show accounts + quota
 ```
 
-Save another account before switching between accounts. For Claude Code and Codex, subswap can start the native sign-in flow:
+Save each account before switching between them. For Claude Code and Codex, subswap can start the native sign-in flow:
 
 ```bash
 subswap login codex    # sign in to another Codex account; use claude for Claude Code
@@ -103,8 +103,8 @@ eval "$(subswap env codex/bob@example.com)"
 
 ## What you can do
 
-- **Switch saved accounts** — choose an account with `subswap swap <number>` instead of signing in again for every change.
-- **Check quota and reset times** — see remaining usage across supported clients, including available Codex reset counts and expiration times when provided by the service.
+- **Switch saved accounts** — choose an account with `subswap swap <number>` instead of signing in again.
+- **Check quota and reset times** — see remaining usage across supported clients, including Codex reset counts and expiration times when the service provides them.
 - **Use custom Claude Code API endpoints** — add an Anthropic-compatible endpoint with `subswap add-api`; these accounts are selected manually.
 - **Run another account in parallel** — use `run`, `shell`, or `env` for clients that support isolation, keeping the global active login unchanged.
 - **Enable automatic switching** — let subswap select another saved account when the configured quota conditions are met.
@@ -116,20 +116,20 @@ eval "$(subswap env codex/bob@example.com)"
 | Claude Code (OAuth) | Yes | Yes | Yes | Yes | Custom API endpoints are manual-only. |
 | Codex (ChatGPT login) | Yes | Yes | Yes | Yes | Restart existing Codex sessions after a global swap. |
 | Kimi Code | Yes | Yes | Yes | Yes | Sign in with the native client, then import. |
-| Cursor desktop / CLI | Yes | Yes | Yes | No | Desktop switching coordinates an app restart. |
+| Cursor desktop / CLI | Yes | Yes | Yes | No | Desktop switching restarts the app. |
 | OpenCode Console | Yes | Yes | Yes | No | Automatic switching stays within official Console accounts. |
 | OpenCode Go API key | Yes | Yes | No | V1 only | V2 key selection uses the official client. |
 | Command Code | Yes | Yes | Yes | Yes | Sign in with the native client, then import. |
 
-The CLI is tested in CI on macOS, Linux, and Windows. Install the native clients you want to use. Using the same account in multiple sessions can require signing in again if they refresh its credentials concurrently; use different saved accounts for parallel work where possible.
+The CLI is tested in CI on macOS, Linux, and Windows. Install the native clients you want to use. Using the same account in multiple sessions can require signing in again if the sessions refresh its credentials at the same time; use different saved accounts for parallel work where possible.
 
 ## Automatic switching
 
 `subswap autoswap off` disables automatic switching for both the default command and the background daemon. `subswap autoswap on` enables it. Manual choices have a configurable grace period before automatic switching resumes.
 
-Automatic decisions preserve the current account while its quota is loading, failed, or stale. Normally, a quota threshold triggers selection of a usable account. If the current account is confirmed exhausted and no confirmed usable target exists, subswap may select a confirmed-depleted account that recovers sooner. See [configuration](docs/CONFIG.md) for thresholds and timing.
+Automatic decisions preserve the current account while its quota is loading, failed, or stale. Normally, a quota threshold triggers selection of a usable account. If the current account is exhausted and no other account has remaining quota, `subswap` falls back to whichever account resets soonest. See [configuration](docs/CONFIG.md) for thresholds and timing.
 
-The background daemon is Unix-only. Linux starts it automatically when `subswap` runs; macOS requires `SUBSWAP_AUTO_DAEMON=1`; Windows uses the foreground CLI. `SUBSWAP_NO_DAEMON=1` prevents auto-starting a daemon. It does not stop one already running or disable automatic decisions in the foreground command.
+The background daemon is Unix-only. Linux starts it automatically when `subswap` runs; macOS requires `SUBSWAP_AUTO_DAEMON=1`; Windows uses the foreground CLI. `SUBSWAP_NO_DAEMON=1` prevents auto-starting a daemon. It stops neither a running daemon nor automatic decisions in the foreground command.
 
 <details>
 <summary>Environment check (`subswap doctor`)</summary>
@@ -165,6 +165,17 @@ Cursor supports import, switching, and quota status through its desktop or CLI c
 Read [CONTRIBUTING.md](CONTRIBUTING.md) for the supported contribution paths and local checks. Do not open a public issue with credentials, refresh tokens, login files, real email addresses, or billing screenshots. See [SECURITY.md](SECURITY.md) for private vulnerability reporting.
 
 If you find subswap useful, [star the repo](https://github.com/x0c/subswap) so you can find it again later.
+
+## 🧩 Related Tools in the AI Coding Suite
+
+If you run multiple AI coding agents daily, check out the rest of the local-first toolkit:
+
+| Repository | Description |
+| :--- | :--- |
+| **[corral](https://github.com/corral-dev/corral)** | Run Claude Code, Codex, OpenCode, Cursor & Pi side-by-side in a terminal session manager, then continue from iPhone or Mac. |
+| **[agentsync](https://github.com/x0c/agentsync)** | Sync `AGENTS.md`, `CLAUDE.md`, skills, and MCP configs across coding agents from one local source of truth. |
+| **[agent-doc-skills](https://github.com/x0c/agent-doc-skills)** | Navigable project knowledge base skills (`doc-init`, `doc-update`, `doc-compact`) so coding agents don't rediscover your repo every session. |
+| **[sesskit](https://github.com/x0c/sesskit)** | Parse and export local Claude Code, Codex CLI, and Cursor session transcript files from disk. |
 
 ## License
 
