@@ -127,7 +127,7 @@ The CLI is tested in CI on macOS, Linux, and Windows. Install the native clients
 
 `subswap autoswap off` disables automatic switching for both the default command and the background daemon. `subswap autoswap on` enables it. Manual choices have a configurable grace period before automatic switching resumes.
 
-Automatic decisions preserve the current account while its quota is loading, failed, or stale. Normally, a quota threshold triggers selection of a usable account. If the current account is confirmed exhausted and no confirmed usable target exists, subswap may select a confirmed-depleted account that recovers sooner. See [configuration](docs/CONFIG.md) for thresholds and timing.
+Automatic decisions preserve the current account while its quota is loading, failed, or stale. Normally, a quota threshold triggers selection of a usable account. If the current account is exhausted and no other account has remaining quota, `subswap` falls back to whichever account resets soonest. See [configuration](docs/CONFIG.md) for thresholds and timing.
 
 The background daemon is Unix-only. Linux starts it automatically when `subswap` runs; macOS requires `SUBSWAP_AUTO_DAEMON=1`; Windows uses the foreground CLI. `SUBSWAP_NO_DAEMON=1` prevents auto-starting a daemon. It does not stop one already running or disable automatic decisions in the foreground command.
 

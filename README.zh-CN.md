@@ -9,7 +9,7 @@
 
 <p align="center"><strong>查看剩余额度，切换 AI 编程工具账号。</strong></p>
 
-<p align="center">管理 Claude Code、Codex、Kimi Code、Cursor、OpenCode 和 Command Code 的已保存登录。查看哪个账号还有额度，再用一条命令切换。</p>
+<p align="center">管理 Claude Code、Codex、Kimi Code、Cursor、OpenCode 和 Command Code 的已保存账号与登录状态。查看哪个账号还有额度，再用一条命令切换。</p>
 
 <p align="center">
   <a href="https://github.com/x0c/subswap/actions/workflows/ci.yml"><img src="https://github.com/x0c/subswap/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -20,7 +20,7 @@
 <p align="center">
   <img src="docs/images/demo-swap.gif" width="920" alt="终端演示：列出账号后用 subswap swap 切换到另一个 Codex 账号">
 </p>
-<p align="center"><em>使用示例账号的演示。</em></p>
+<p align="center"><em>注：演示画面中的账号均为虚构示例。</em></p>
 
 ## 安装
 
@@ -116,7 +116,7 @@ eval "$(subswap env codex/bob@example.com)"
 | Claude Code（OAuth） | 是 | 是 | 是 | 是 | 自定义 API 端点仅手动选择。 |
 | Codex（ChatGPT 登录） | 是 | 是 | 是 | 是 | 全局切换后需重启已有 Codex 会话。 |
 | Kimi Code | 是 | 是 | 是 | 是 | 先在原生客户端登录，再导入。 |
-| Cursor 桌面版 / CLI | 是 | 是 | 是 | 否 | 桌面版切换会协调应用重启。 |
+| Cursor 桌面版 / CLI | 是 | 是 | 是 | 否 | 桌面版切换账号时会自动重启 Cursor 应用。 |
 | OpenCode Console | 是 | 是 | 是 | 否 | 自动换号仅在官方 Console 账号之间进行。 |
 | OpenCode Go API Key | 是 | 是 | 否 | 仅 V1 | V2 通过官方客户端选择 Key。 |
 | Command Code | 是 | 是 | 是 | 是 | 先在原生客户端登录，再导入。 |
@@ -127,7 +127,7 @@ CLI 已在 macOS、Linux 和 Windows CI 中测试。请安装需要使用的原�
 
 `subswap autoswap off` 会同时关闭默认命令与后台进程的自动换号；`subswap autoswap on` 则开启。手动选择账号后有可配置的保持期，期间暂停自动换号。
 
-当前账号的额度仍在查询、查询失败或缓存已过期时，会保留当前账号。通常，达到额度阈值后会选择一个可用账号。若当前账号已确认耗尽，且没有确认可用的目标，也可能选择一个已确认耗尽、但恢复更早的账号。阈值与时间设置见[配置说明](docs/CONFIG.md)。
+当前账号的额度仍在查询、查询失败或缓存已过期时，会保留当前账号。通常，达到额度阈值后会选择一个可用账号。如果当前账号额度已用尽，且暂时没有其他可用账号，subswap 会优先切换到最快重置恢复的那个账号。阈值与时间设置见[配置说明](docs/CONFIG.md)。
 
 后台进程仅支持 Unix。Linux 在运行 `subswap` 时自动启动；macOS 需要设置 `SUBSWAP_AUTO_DAEMON=1`；Windows 使用前台 CLI。`SUBSWAP_NO_DAEMON=1` 只阻止自动启动后台进程，不会停止已运行的进程，也不会关闭默认命令中的自动换号。
 
@@ -154,7 +154,7 @@ CLI 已在 macOS、Linux 和 Windows CI 中测试。请安装需要使用的原�
 
 ### 会修改 ChatGPT 网页版的登录吗？
 
-subswap 管理的是 Codex 使用的 ChatGPT 登录凭证，ChatGPT 浏览器会话独立于它。
+subswap 仅管理 Codex 本地使用的 ChatGPT 凭证，不会影响你在浏览器里的 ChatGPT 登录状态。
 
 ### Cursor 可以使用 `run`、`shell` 或 `env` 吗？
 
