@@ -2,6 +2,7 @@
 
 | 文档 | 何时该读 |
 |---|---|
+| [OpenCode 同账号重复 Console 凭证导致 quota 401](2026-10-31-opencode-duplicate-console-credential-quota-401.md) | OpenCode 号显示 `needs re-login` 但官方客户端能正常聊天，或切号瞬间当前号报 401 而发一句话就好；改 Console 额度归属、active/parked 文案或自助续期前必读 |
 | [Subswap Apple 客户端额度停留在旧数据（`status --json` 管道死锁）](2026-10-25-client-frozen-quota-pipe-deadlock.md) | 终端数据正确但 Mac/iOS 客户端、菜单栏或小组件冻结在旧额度；或客户端残留长期不退出的 `subswap status --json` 子进程；改 CLI 快照输出体积 / GUI 读取方式前。 |
 | [Active Claude quota `credentials expired` after idle](2026-10-25-claude-active-quota-expired-while-idle.md) | Active Claude account shows `credentials expired; open native client` / `renew` while Claude Code works, especially after hours or days of not using it; before changing active credential renewal, the official refresh lock, or per-credential usage backoff; or when a reaped `proper-lockfile` holder refreshes/deletes a same-named replacement lock (Linux inode reuse). |
 | [Active Claude quota `usage unavailable` (native query)](2026-10-11-claude-active-quota-native-null.md) | Active Claude account shows `usage unavailable` / `native client returned no limits` while its login works; or before letting subswap start Claude Code to read quota. |

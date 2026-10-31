@@ -305,6 +305,28 @@ fn go_id_for_key(key: &str) -> AccountId {
 /// `rm` 断开官方凭证的结果（见 [`subswap_core::OfficialDisconnect`]，此处重导出保持旧引用可用）。
 pub use subswap_core::OfficialDisconnect;
 
+/// 同账号候选排序：registry 记录的 `credential_id` 优先，其余保持官方库顺序
+/// （稳定排序）。调用方已按账号过滤。
+fn order_console_candidates(candidates: &mut [console::ConsoleLive], account: &Account) {
+    let recorded = account
+        .extra
+        .get("credential_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    candidates.sort_by_key(|live| recorded.map(|id| live.credential_id != id).unwrap_or(false));
+}
+
+/// 是否为「该份 token 被上游拒绝」（死 token），区别于 429/网络/超时。
+/// 只有这类错误才值得顺试同账号的下一份凭证。
+fn is_console_unauthorized(err: &Error) -> bool {
+    let lower = err.to_string().to_ascii_lowercase();
+    lower.contains("401")
+        || lower.contains("403")
+        || lower.contains("unauthorized")
+        || lower.contains("forbidden")
+}
+
 #[async_trait]
 impl Provider for OpencodeApiKeyProvider {
     fn id(&self) -> &'static str {
@@ -591,15 +613,40 @@ impl OpencodeProvider {
         let lives = tokio::task::spawn_blocking(move || console::read_console_accounts(&home))
             .await
             .map_err(|e| Error::Provider(format!("console credential read join failed: {e}")))??;
-        let live = lives
+        // 同一账号在官方库里可能有多份重复凭证（重登新建不替换，其中可能有死 token）：
+        // 按 registry 记录的 credential_id 优先，其余同账号候选只在 401/403 时顺试。
+        // 全程只读、不写 token；429/网络/超时直接返回，不借限流多打。
+        // 详见 troubleshooting/2026-10-31。
+        let mut candidates: Vec<console::ConsoleLive> = lives
             .into_iter()
-            .find(|live| console::account_id_for(live) == account.id)
-            .ok_or_else(|| {
-                Error::QuotaFetch(
-                    "OpenCode Console credential is no longer available; needs re-login".into(),
-                )
-            })?;
-        console::fetch_console_quota(&live, account).await
+            .filter(|live| console::account_id_for(live) == account.id)
+            .collect();
+        if candidates.is_empty() {
+            return Err(Error::QuotaFetch(
+                "OpenCode Console credential is no longer available; needs re-login".into(),
+            ));
+        }
+        order_console_candidates(&mut candidates, account);
+        let mut last_err: Option<Error> = None;
+        for live in &candidates {
+            match console::fetch_console_quota(live, account).await {
+                Ok(quotas) => return Ok(quotas),
+                Err(e @ Error::QuotaRateLimited { .. }) => return Err(e),
+                Err(e) if is_console_unauthorized(&e) => last_err = Some(e),
+                Err(e) => return Err(e),
+            }
+        }
+        let err = last_err
+            .unwrap_or_else(|| Error::QuotaFetch("OpenCode Console quota unavailable".into()));
+        // active 号全 401 大多是切换瞬间的轮换中状态，官方下次使用会自动续上：
+        // 报软状态而不是 needs re-login。parked 号没人续，保持 needs re-login。
+        if account.active && is_console_unauthorized(&err) {
+            return Err(Error::QuotaFetch(
+                "opencode console status HTTP 401 Unauthorized: credential expired; open native client to refresh"
+                    .into(),
+            ));
+        }
+        Err(err)
     }
 }
 
@@ -785,5 +832,88 @@ mod tests {
             .unwrap()
             .is_some());
         assert!(store.get(PROVIDER_ID, "go_1", "blob").unwrap().is_none());
+    }
+
+    fn console_live_for(credential_id: &str, user: &str, org: &str) -> console::ConsoleLive {
+        console::ConsoleLive {
+            credential_id: credential_id.into(),
+            credential_label: "Personal".into(),
+            account_id: user.into(),
+            active: false,
+            email: format!("{user}@example.com"),
+            org_id: org.into(),
+            org_name: "Personal".into(),
+            server: "https://opencode.ai/console".into(),
+            access_token: "tok".into(),
+        }
+    }
+
+    fn console_account_with_credential(id: &str, credential_id: Option<&str>) -> Account {
+        let mut extra = serde_json::Map::new();
+        extra.insert("kind".into(), "console".into());
+        if let Some(credential) = credential_id {
+            extra.insert("credential_id".into(), credential.into());
+        }
+        Account {
+            provider: PROVIDER_ID.into(),
+            id: AccountId(id.into()),
+            label: "test@example.com".into(),
+            active: false,
+            created_at: Utc::now(),
+            last_used_at: None,
+            priority: 100,
+            extra,
+        }
+    }
+
+    #[test]
+    fn duplicate_console_candidates_prefer_recorded_credential() {
+        let account =
+            console_account_with_credential("console-user_x-wrk_1", Some("cred_dead_dup"));
+        let mut candidates = vec![
+            console_live_for("cred_alive_first", "user_x", "wrk_1"),
+            console_live_for("cred_dead_dup", "user_x", "wrk_1"),
+        ];
+        order_console_candidates(&mut candidates, &account);
+        let ids: Vec<&str> = candidates
+            .iter()
+            .map(|live| live.credential_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["cred_dead_dup", "cred_alive_first"]);
+    }
+
+    #[test]
+    fn duplicate_console_candidates_keep_db_order_without_record() {
+        let account = console_account_with_credential("console-user_x-wrk_1", None);
+        let mut candidates = vec![
+            console_live_for("cred_a", "user_x", "wrk_1"),
+            console_live_for("cred_b", "user_x", "wrk_1"),
+        ];
+        order_console_candidates(&mut candidates, &account);
+        let ids: Vec<&str> = candidates
+            .iter()
+            .map(|live| live.credential_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["cred_a", "cred_b"]);
+    }
+
+    #[test]
+    fn only_unauthorized_errors_qualify_for_sibling_retry() {
+        assert!(is_console_unauthorized(&Error::QuotaFetch(
+            "opencode console status HTTP 401 Unauthorized: needs re-login".into()
+        )));
+        assert!(is_console_unauthorized(&Error::QuotaFetch(
+            "opencode console status HTTP 403 Forbidden".into()
+        )));
+        assert!(!is_console_unauthorized(&Error::QuotaFetch(
+            "OpenCode Console credential is no longer available; needs re-login".into()
+        )));
+        assert!(!is_console_unauthorized(&Error::QuotaFetch(
+            "opencode console status request failed: network unreachable".into()
+        )));
+        assert!(!is_console_unauthorized(&Error::QuotaRateLimited {
+            message: "OpenCode Console status endpoint throttled".into(),
+            retry_at: None,
+        }));
     }
 }
