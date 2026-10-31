@@ -8,6 +8,7 @@ use subswap_core::{
     paths::AppPaths, Account, AccountRegistry, AuditLog, CredentialStore, FileStore, KeyringStore,
     ProviderRegistry,
 };
+use subswap_provider_antigravity::AntigravityProvider;
 use subswap_provider_claude::ClaudeProvider;
 use subswap_provider_codex::CodexProvider;
 use subswap_provider_commandcode::CommandcodeProvider;
@@ -26,6 +27,7 @@ pub struct AppContext {
     pub opencode: Arc<OpencodeProvider>,
     pub opencode_api_key: Arc<OpencodeApiKeyProvider>,
     pub commandcode: Arc<CommandcodeProvider>,
+    pub antigravity: Arc<AntigravityProvider>,
     pub providers: ProviderRegistry,
     /// 隔离运行（`run`/`shell`/`env`）查表：provider id → 通用隔离抽象。
     /// Claude 不在此表中，走 `run.rs` 里的专用分支（macOS 钥匙串 / API 账号逻辑不适配此通用形状）。
@@ -61,6 +63,10 @@ impl AppContext {
             store.clone(),
             registry.clone(),
         ));
+        let antigravity = Arc::new(subswap_provider_antigravity::AntigravityProvider::new(
+            store.clone(),
+            registry.clone(),
+        ));
 
         let mut providers = ProviderRegistry::new();
         providers.register(claude.clone());
@@ -70,6 +76,7 @@ impl AppContext {
         providers.register(opencode.clone());
         providers.register(opencode_api_key.clone());
         providers.register(commandcode.clone());
+        providers.register(antigravity.clone());
 
         let mut isolated: HashMap<&'static str, Arc<dyn IsolatedProvider>> = HashMap::new();
         isolated.insert("codex", codex.clone());
@@ -89,6 +96,7 @@ impl AppContext {
             opencode,
             opencode_api_key,
             commandcode,
+            antigravity,
             providers,
             isolated,
             audit,

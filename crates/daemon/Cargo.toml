@@ -22,6 +22,7 @@ subswap-provider-kimi.workspace = true
 subswap-provider-cursor.workspace = true
 subswap-provider-opencode.workspace = true
 subswap-provider-commandcode.workspace = true
+subswap-provider-antigravity.workspace = true
 subswap-provider-common.workspace = true
 
 anyhow.workspace = true

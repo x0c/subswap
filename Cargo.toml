@@ -11,6 +11,7 @@ members = [
     "crates/providers/cursor",
     "crates/providers/opencode",
     "crates/providers/commandcode",
+    "crates/providers/antigravity",
 ]
 
 [workspace.package]
@@ -66,6 +67,7 @@ subswap-provider-kimi = { path = "crates/providers/kimi" }
 subswap-provider-cursor = { path = "crates/providers/cursor" }
 subswap-provider-opencode = { path = "crates/providers/opencode" }
 subswap-provider-commandcode = { path = "crates/providers/commandcode" }
+subswap-provider-antigravity = { path = "crates/providers/antigravity" }
 subswap-daemon = { path = "crates/daemon" }
 
 [profile.release]

@@ -36,6 +36,10 @@ pub async fn run(ctx: &AppContext, id_input: &str, json: bool) -> Result<()> {
             "opencode",
             ctx.opencode.disconnect_official_console(&acc).await,
         ),
+        "antigravity" => try_official_disconnect(
+            "antigravity",
+            ctx.antigravity.disconnect_official(&acc.id).await,
+        ),
         _ => None,
     };
 
@@ -47,6 +51,7 @@ pub async fn run(ctx: &AppContext, id_input: &str, json: bool) -> Result<()> {
         "opencode" => ctx.opencode.live_console_id().ok(),
         "opencode-api-key" => ctx.opencode_api_key.live_account_id().ok(),
         "commandcode" => ctx.commandcode.live_account_id().ok(),
+        "antigravity" => ctx.antigravity.live_account_id().ok(),
         _ => None,
     }
     .is_some_and(|live| live == acc.id);

@@ -46,15 +46,20 @@ fn isolated_subswap(tmp: &tempfile::TempDir) -> Command {
         .env("SUBSWAP_COMMANDCODE_HOME", tmp.path().join("commandcode"))
         // 默认指向不可达 localhost：setup 阶段未注入 mock 时也不能拿合成 key 打生产端点。
         .env("SUBSWAP_COMMANDCODE_BASE", OFFLINE_COMMANDCODE_BASE)
+        // 隔离测试专用一次性目录，绝不碰真实 `~/.gemini/antigravity-cli`。
+        .env("SUBSWAP_ANTIGRAVITY_HOME", tmp.path().join("antigravity"))
+        // 默认指向不可达 localhost：未注入 mock 的 antigravity 额度查询必须快速失败。
+        .env("SUBSWAP_ANTIGRAVITY_BASE", OFFLINE_COMMANDCODE_BASE)
         // Cursor 的平台默认路径不受 HOME/SUBSWAP_HOME 统一覆盖，必须显式指向临时目录。
         .env(
             "SUBSWAP_CURSOR_STATE_DB_PATH",
             tmp.path().join("cursor").join("state.vscdb"),
         )
         // macOS：把 Claude Code / Cursor 命令行钥匙串读写重定向到一次性 keychain，绝不碰用户真实登录钥匙串
-        // （否则集成测试会弹授权框并污染本机凭证）。
+        // （否则集成测试会弹授权框并污染本机凭证）。Antigravity 同理（service gemini / account antigravity）。
         .env("SUBSWAP_CLAUDE_KEYCHAIN_PATH", test_keychain_path(tmp))
         .env("SUBSWAP_CURSOR_KEYCHAIN_PATH", test_keychain_path(tmp))
+        .env("SUBSWAP_ANTIGRAVITY_KEYCHAIN_PATH", test_keychain_path(tmp))
         // 每个测试独占 metrics 文件，避免外部 `SUBSWAP_REQUEST_METRICS_PATH`
         // 把 provider 单测遥测混进当前任务或真实用户统计。
         .env(

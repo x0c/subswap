@@ -270,6 +270,16 @@ async fn sync_local_active(ctx: &AppContext) -> Vec<AutoLine> {
             Err(e) => notices.push(signed_in_but_untracked("commandcode", &id, e)),
         }
     }
+    if let Ok(id) = ctx.antigravity.live_account_id() {
+        match ctx.antigravity.sync_active_metadata(None) {
+            Ok(account) => {
+                if ctx.registry.set_active("antigravity", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "antigravity", &account.id);
+                }
+            }
+            Err(e) => notices.push(signed_in_but_untracked("antigravity", &id, e)),
+        }
+    }
     notices
 }
 
@@ -405,6 +415,16 @@ async fn sync_local_active_metadata(ctx: &AppContext) -> Vec<AutoLine> {
                 }
             }
             Err(e) => notices.push(signed_in_but_untracked("commandcode", &id, e)),
+        }
+    }
+    if let Ok(id) = ctx.antigravity.live_account_id() {
+        match ctx.antigravity.sync_active_metadata(None) {
+            Ok(account) => {
+                if ctx.registry.set_active("antigravity", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "antigravity", &account.id);
+                }
+            }
+            Err(e) => notices.push(signed_in_but_untracked("antigravity", &id, e)),
         }
     }
     notices

@@ -1593,6 +1593,7 @@ dependencies = [
  "serde_json",
  "subswap-core",
  "subswap-daemon",
+ "subswap-provider-antigravity",
  "subswap-provider-claude",
  "subswap-provider-codex",
  "subswap-provider-commandcode",
@@ -1636,6 +1637,7 @@ dependencies = [
  "chrono",
  "fs2",
  "subswap-core",
+ "subswap-provider-antigravity",
  "subswap-provider-claude",
  "subswap-provider-codex",
  "subswap-provider-commandcode",
@@ -1646,6 +1648,25 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "subswap-provider-antigravity"
+version = "1.16.6"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64",
+ "chrono",
+ "fs2",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subswap-core",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

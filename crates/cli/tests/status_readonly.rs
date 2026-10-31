@@ -39,6 +39,8 @@ fn isolated_subswap(tmp: &tempfile::TempDir) -> Command {
         .env("KIMI_CODE_HOME", tmp.path().join("kimi"))
         .env("SUBSWAP_OPENCODE_HOME", tmp.path().join("opencode"))
         .env("SUBSWAP_COMMANDCODE_HOME", tmp.path().join("commandcode"))
+        .env("SUBSWAP_ANTIGRAVITY_HOME", tmp.path().join("antigravity"))
+        .env("SUBSWAP_ANTIGRAVITY_BASE", "http://127.0.0.1:1")
         .env(
             "SUBSWAP_CURSOR_STATE_DB_PATH",
             tmp.path().join("cursor").join("state.vscdb"),
@@ -51,9 +53,10 @@ fn isolated_subswap(tmp: &tempfile::TempDir) -> Command {
             "SUBSWAP_CURSOR_AGENT_CONFIG_PATH",
             tmp.path().join("cursor-agent").join("cli-config.json"),
         )
-        // macOS：Claude / Cursor 的钥匙串读写必须指向一次性 keychain。
+        // macOS：Claude / Cursor / Antigravity 的钥匙串读写必须指向一次性 keychain。
         .env("SUBSWAP_CLAUDE_KEYCHAIN_PATH", test_keychain_path(tmp))
         .env("SUBSWAP_CURSOR_KEYCHAIN_PATH", test_keychain_path(tmp))
+        .env("SUBSWAP_ANTIGRAVITY_KEYCHAIN_PATH", test_keychain_path(tmp))
         // 显式覆盖 metrics 路径，防止外部测试运行器注入的
         // `SUBSWAP_REQUEST_METRICS_PATH` 把计数写到别的任务文件。
         .env("SUBSWAP_REQUEST_METRICS_PATH", metrics_path(tmp))

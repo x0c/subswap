@@ -257,8 +257,32 @@ pub async fn run(
             }
             return finish(ctx, json).await;
         }
+        "antigravity" | "gemini" | "agy" => {
+            if email.is_some() || sso || device_auth || !extra_args.is_empty() {
+                bail!("login options are not supported for antigravity login; run `agy` and sign in first, then `subswap login antigravity`");
+            }
+            // agy 登录是交互式（`agy` TUI 内完成 Google OAuth）：约定用户先在 agy 里登录好，
+            // 这里只导入当前钥匙串凭证。
+            let account = ctx
+                .antigravity
+                .import_active(None)
+                .context("import Antigravity login; run `agy` and sign in first")?;
+            ctx.registry
+                .set_active("antigravity", &account.id)
+                .context("mark Antigravity login active")?;
+            ctx.audit.append(AuditEvent::ok(
+                "login",
+                "antigravity",
+                Some(account.id.0.as_str()),
+            ));
+            println!("login → antigravity/{}", account_ref(&account.id.0));
+            if let Err(e) = subswap_core::record_manual_swap("antigravity") {
+                tracing::warn!(err = %e, provider = "antigravity", "record manual hold failed");
+            }
+            return finish(ctx, json).await;
+        }
         other => {
-            bail!("unknown provider: {other} (expected claude, codex, kimi, cursor, opencode, opencode-api-key or commandcode)")
+            bail!("unknown provider: {other} (expected claude, codex, kimi, cursor, opencode, opencode-api-key, commandcode or antigravity)")
         }
     }
 }

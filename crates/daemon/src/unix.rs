@@ -37,6 +37,7 @@ use subswap_core::{
     ProviderRegistry, ProviderSnapshot, Quota, QuotaCache, QuotaFetchState, QuotaPoolSemantics,
     QuotaReading,
 };
+use subswap_provider_antigravity::AntigravityProvider;
 use subswap_provider_claude::ClaudeProvider;
 use subswap_provider_codex::CodexProvider;
 use subswap_provider_commandcode::CommandcodeProvider;
@@ -140,6 +141,7 @@ pub async fn run() -> Result<()> {
         store.clone(),
         registry.clone(),
     ));
+    let antigravity = Arc::new(AntigravityProvider::new(store.clone(), registry.clone()));
     let mut providers = ProviderRegistry::new();
     providers.register(claude.clone());
     providers.register(codex.clone());
@@ -148,6 +150,7 @@ pub async fn run() -> Result<()> {
     providers.register(opencode.clone());
     providers.register(opencode_api_key.clone());
     providers.register(commandcode.clone());
+    providers.register(antigravity.clone());
 
     let mut state = DaemonState::new();
     let mut adaptive = AdaptiveState::new();
@@ -181,6 +184,7 @@ pub async fn run() -> Result<()> {
             &opencode,
             &opencode_api_key,
             &commandcode,
+            &antigravity,
             &audit,
             &mut state,
             &mut adaptive,
@@ -252,6 +256,7 @@ async fn run_cycle(
     opencode: &Arc<OpencodeProvider>,
     opencode_api_key: &Arc<OpencodeApiKeyProvider>,
     commandcode: &Arc<CommandcodeProvider>,
+    antigravity: &Arc<AntigravityProvider>,
     audit: &AuditLog,
     state: &mut DaemonState,
     adaptive: &mut AdaptiveState,
@@ -305,6 +310,19 @@ async fn run_cycle(
             }
         };
     reconcile_file_blob_provider(commandcode, "commandcode").await;
+    // Antigravity capture-on-arrival（只 live→store，不刷新不写 live）。
+    {
+        let a = antigravity.clone();
+        match tokio::task::spawn_blocking(move || a.reconcile_active_from_live()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::debug!(err = %e, provider = "antigravity", "live-credential reconcile skipped")
+            }
+            Err(e) => {
+                tracing::debug!(err = %e, provider = "antigravity", "live-credential reconcile join failed")
+            }
+        }
+    }
     // Cursor 只有一份 live 凭证。此处必须在读额度前先将外部新登录账号入池；失败时
     // 本轮禁止覆盖 Cursor，避免旧账号池把用户刚完成的原生登录写回去。
     let cursor_sync_ready = match cursor.reconcile_active_from_live().await {
@@ -452,6 +470,7 @@ async fn run_cycle(
 
     // (c) Claude token 后台保活:对所有 Claude 账号检查 expires_at。
     keep_claude_tokens_alive(claude, data_dir, adaptive).await;
+    keep_antigravity_tokens_alive(antigravity, data_dir, adaptive).await;
     Ok(outcome)
 }
 
@@ -1048,6 +1067,48 @@ async fn keep_claude_tokens_alive(
                     account = %account.id,
                     err = %e,
                     "claude token refresh failed"
+                );
+            }
+        }
+    }
+}
+
+/// 扫 Antigravity 账号，临近过期的 parked 账号触发 refresh（active 由 agy 自己轮换）。
+async fn keep_antigravity_tokens_alive(
+    antigravity: &Arc<AntigravityProvider>,
+    data_dir: &std::path::Path,
+    adaptive: &mut AdaptiveState,
+) {
+    let accounts = match antigravity.list_accounts().await {
+        Ok(a) => a,
+        Err(e) => {
+            if adaptive.should_warn("antigravity-keepalive") {
+                tracing::warn!(err = %e, "antigravity list_accounts failed during keepalive");
+            }
+            return;
+        }
+    };
+    for account in accounts {
+        if account_checked_out(
+            data_dir.to_path_buf(),
+            "antigravity".to_string(),
+            account.id.0.clone(),
+        )
+        .await
+        {
+            tracing::debug!(account = %account.id, "skip keepalive: checked out by isolated session");
+            continue;
+        }
+        match antigravity.refresh_if_near_expiry(&account.id).await {
+            Ok(true) => {
+                tracing::info!(account = %account.id, "antigravity token refreshed");
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(
+                    account = %account.id,
+                    err = %e,
+                    "antigravity token refresh failed"
                 );
             }
         }

@@ -13,6 +13,7 @@
 | OpenCode Console official sign-in and Go monitoring | Console OAuth 登录识别/委托、Go 额度监控、secret 隔离约束 |
 | OpenCode Go | auth.json 的 opencode-go 项抽取/覆盖、用量端点、隔离运行、登录方式、开源号池辨析 |
 | Command Code | auth.json 路径、用量端点、隔离运行、登录方式 |
+| Antigravity / Gemini | agy 钥匙串 OAuth、quotaSummary 双池、refresh 复用、隔离不支持 |
 | Cursor | SQLite 状态与跨平台路径、登录导入切换事务、额度三池与刷新边界、自动切换约束 |
 | 文件型 OAuth 切换共享引擎 | `FileBlobProvider` 引擎与 `FileBlobRuntime` adapter 差异点 |
 
@@ -606,6 +607,66 @@ Go 订阅 = API key（`{"type":"api","key":"sk-..."}`），无 refresh，不刷�
 ### 删除（rm 连带原生登出）
 
 删的是当前 live 文件所属账号时一并删除 live 文件（持 `.subswap.lock`），否则只清本地。
+
+---
+
+## Antigravity / Gemini
+
+独立 `Provider`（`crates/providers/antigravity/`，不接文件型共享引擎；OAuth 活在系统钥匙串，无 env 覆盖机制，不支持 `run`/`shell`/`env` 隔离，同 Cursor/Console 边界）。
+
+### 本地凭证（agy 原生）
+
+| 项 | 值 |
+|---|---|
+| CLI 家目录 | `~/.gemini/antigravity-cli`（`SUBSWAP_ANTIGRAVITY_HOME` 覆盖，测试隔离用） |
+| 当前激活凭证 | macOS 钥匙串 generic password：service `gemini` / account `antigravity`（Go keyring 固定值，与 agy 一致） |
+| 内容形态 | `go-keyring-base64:<base64 JSON>`；JSON = `{"token":{"access_token":..,"refresh_token":..,"expiry":RFC3339},"auth_method":"consumer","id_token_email":..}` |
+| 读写约束 | macOS 经 `/usr/bin/security` fork 读写，禁止 `keyring` crate 写（ACL 中毒，见 Claude 节同理）；测试经 `SUBSWAP_ANTIGRAVITY_KEYCHAIN_PATH` 重定向到一次性 keychain |
+
+subswap 侧 blob（`CredentialStore` 字段 `oauth_json`）：`{refresh_token, access_token, expires_at(RFC3339), email, project_id?, managed_project_id?}`。主键 = 邮箱（缺失时 `ag-` + refresh SHA-256 前 16 hex）；label = 邮箱或 `ag-…末4`。
+
+### OAuth 刷新（复用非轮换）
+
+| 用途 | 方法 | URL |
+|---|---|---|
+| Token 刷新 | POST | `https://oauth2.googleapis.com/token`（`SUBSWAP_ANTIGRAVITY_TOKEN_URL` 覆盖，测试 mock 用） |
+
+- body `form-urlencoded`：`grant_type=refresh_token` + `refresh_token` + 官方 Antigravity OAuth 应用 `client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com` / `client_secret=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`（随公开客户端分发的公开值，与 agy 二进制 / opencode 插件一致，已实测与本机 keychain token 互通）。
+- Google refresh_token 长效复用（成功响应一般无新 refresh，无则保留旧值）；`invalid_grant` / 401 / 403 → `DeadToken`（进程内指纹守卫，不存 secret），透出 `needs re-login`。
+- active 只读不刷（由 agy 自己轮换）；parked 临近过期才刷；`activate` 预刷新 best-effort（失败只 warn，不断切换）；daemon 保活只对 parked。
+
+### 额度（主 + 兜底）
+
+| 用途 | 方法 | URL |
+|---|---|---|
+| 配额总览（主） | POST | `{prod,daily,autopush}/v1internal:retrieveUserQuotaSummary`（`SUBSWAP_ANTIGRAVITY_BASE` 覆盖单个 base，测试用） |
+| 模型余量（兜底/补 Gemini 池） | POST | 同上三端点 `/v1internal:fetchAvailableModels` |
+
+- 主通道 body `{}`（无 project 时）或 `{"project": <managed/project id>}`；UA 必须为 Antigravity UA（否则 403），附 `X-Goog-Api-Client` + `Client-Metadata`。
+- 端点顺序 prod → daily → autopush，按 `displayName` 合并（daily 偶发只回 Claude/GPT 组缺 Gemini 组，见 Cli-Proxy-API #499）；`bucketId`/`window` 去重，首个非空胜出。
+- 桶映射：`5h` → `FiveHour`，`weekly` → `SevenDay`，`monthly` → `Month`，`daily` → `Timed(1d)`，其余 → `Custom`；`remainingFraction`（0~1 余量）→ 已用% = `(1-remaining)*100`（`limit` 固定 100）；`resetTime` RFC3339 → `reset_at`；note = `<group> · <bucket>`（如 `Claude and GPT models · Five Hour Limit Remaining`）。
+- proto3 省略 0 值：有 `resetTime` 且非 `disabled` 的缺字段桶按耗尽（0）计；`disabled` weekly 整桶跳过（5h disabled 保留为 0）。
+- 缺 Gemini 组时用 models 兜底补 `Antigravity Gemini` Custom 窗口（min 余量）；主通道完全无组时回落 models 全量（`Antigravity Gemini` + `Antigravity Claude` Custom）。Custom 只在明确耗尽时触发自动切换（阈值只看 FiveHour）。
+- `retrieveUserQuota`（Gemini CLI 池）对 consumer 号常回 403 `SUBSCRIPTION_REQUIRED`，不作为额度源。
+- `401`/`403` → `needs re-login`（鉴权失败）；**不得**把 `429` 当死号（走统一失败退避，不重试）。
+- 自动切换：叠加语义（默认）；`5h` 超默认阈值切走，任一窗口明确耗尽切走；切换后须重启已开的 agy 会话（`post_swap_notice`）。
+
+### 切换 (activate)
+
+1. capture-on-leave：读 live → 找 owner → 回写 store（缺 access 的快照不覆盖完整副本）。
+2. 快照 keychain 原值；`compose` 新值经 `/usr/bin/security -U` 原地写（失败则删除重建，ACL 复位）。
+3. `registry.set_active`；失败回滚 keychain。
+4. 重复切当前号：只回灌，不覆写 live。
+
+### 登录 / 删除 / 隔离
+
+- `subswap login antigravity`（别名 `gemini` / `agy`）：用户先在 `agy` TUI 内完成 Google 登录，这里只导入当前钥匙串凭证；`--email`/`--sso`/`--device-auth`/透参不支持。
+- `rm`：删的是当前 live 才经官方删除 keychain item，否则只清本地（幂等）。
+- `run`/`shell`/`env`：明确拒绝（OAuth 在系统钥匙串，无 env 覆盖机制）。
+
+### 测试隔离
+
+`SUBSWAP_ANTIGRAVITY_HOME` / `SUBSWAP_ANTIGRAVITY_KEYCHAIN_PATH` / `SUBSWAP_ANTIGRAVITY_BASE`（`cli_surface.rs::isolated_subswap` 与 `status_readonly.rs` 已默认指向临时目录/一次性 keychain/不可达 localhost）；`SUBSWAP_ANTIGRAVITY_TOKEN_URL` 覆盖 refresh 端点（单测 mock 用）。
 
 ---
 
