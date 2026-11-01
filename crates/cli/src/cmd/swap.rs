@@ -8,11 +8,23 @@
 use std::io::{self, IsTerminal};
 
 use anyhow::Result;
+use serde::Serialize;
 use subswap_core::AuditEvent;
 
 use crate::app::AppContext;
 use crate::cmd::default::print_status_overview;
 use crate::cmd::resolve_account;
+
+/// `subswap --json swap <target>` 的结构化回执：恰好一个 JSON 对象。
+/// `notice` 直接取 Provider 能力声明（`post_swap_notice`），不按 provider 名分发；
+/// 无提醒时省略该字段，供 Apple 端 `Codable` 可选解码。
+#[derive(Serialize)]
+struct SwapReceipt<'a> {
+    provider: &'a str,
+    id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notice: Option<&'a str>,
+}
 
 pub async fn run(ctx: &AppContext, id_input: Option<&str>, json: bool) -> Result<()> {
     let Some(input) = id_input else {
@@ -35,13 +47,20 @@ pub async fn run(ctx: &AppContext, id_input: Option<&str>, json: bool) -> Result
             if let Err(e) = subswap_core::record_manual_swap(&acc.provider) {
                 tracing::warn!(err = %e, provider = %acc.provider, "record manual hold failed");
             }
-            println!("swap → {}/{}", acc.provider, acc.id);
-            if !json {
+            if json {
+                // 结构化回执：原生激活与审计/registry 落盘已在上面完成；只输出一个
+                // JSON 对象，不查 quota、不打状态表、不做 human ack，供 Apple 端消费。
+                let receipt = SwapReceipt {
+                    provider: acc.provider.as_str(),
+                    id: acc.id.0.as_str(),
+                    notice: p.post_swap_notice(),
+                };
+                println!("{}", serde_json::to_string(&receipt)?);
+            } else {
+                println!("swap → {}/{}", acc.provider, acc.id);
                 if let Some(notice) = p.post_swap_notice() {
                     println!("{notice}");
                 }
-            }
-            if !json {
                 print_status_overview(ctx).await?;
             }
             Ok(())

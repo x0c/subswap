@@ -96,6 +96,10 @@ eval "$(subswap env codex/bob@x.com)"   # 临时把当前 shell 指向某 codex 
 - **并发与全局切换**：同一账号可同时被多个隔离会话借用；隔离会话运行时，手动 `swap` 和自动切换仍可切换该账号。若恰逢 OAuth refresh token 轮换，低概率会使其中一个会话需要重新登录（为保证全局切换始终可用而接受）。daemon 仅会跳过该具体隔离中的 Claude 账号的后台保活，避免后台刷新与其抢刷。
 - **全局活账号告警**：对当前全局 active 账号起隔离会话会告警——若同时被非隔离客户端使用，可能作废其 refresh token。
 
+### Structured activation result (`swap --json`, adopted 2026-11-02)
+
+A successful `subswap --json swap <target>` writes exactly one JSON object to stdout: canonical `provider`, account `id`, and optional `notice` from the Provider capability. It does not print the human acknowledgement, query quota, render the post-action table, or start a status read. The confirmed native activation and its required audit/registry work complete before success is emitted. Non-JSON behavior is unchanged. Apple command receipts consume this result so provider-specific restart requirements stay owned by Rust instead of being hardcoded in Swift. Older non-structured CLI output may be parsed conservatively, but missing notices must not be invented from a provider-name branch.
+
 ### 写操作后回到状态面
 
 `add-api` / `login` / `swap <目标>` / `rm` 成功后，先打一行结果，再打印与无参 `subswap` 相同的账号余量表（编号、`*`、quota 块一致）。约束：
