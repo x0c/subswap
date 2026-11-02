@@ -5,6 +5,8 @@
   <a href="README.ko.md"><img src="https://img.shields.io/badge/%ED%95%9C%EA%B5%AD%EC%96%B4-gray" alt="한국어"></a>
 </p>
 
+<p align="center"><img src="docs/images/app-icon.png" width="128" height="128" alt="subswap icon"></p>
+
 <h1 align="center">subswap</h1>
 
 <p align="center"><strong>AI コーディングツールの残り利用枠を確認し、アカウントを切り替え。</strong></p>
