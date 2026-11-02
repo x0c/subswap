@@ -7,11 +7,15 @@
 //!   `security` 读）每次切换后反复弹授权框。沿用 Claude Provider 的 ACL 结论。
 
 use base64::Engine;
-use subswap_core::error::{Error, Result};
+#[cfg(target_os = "macos")]
+use subswap_core::error::Error;
+use subswap_core::error::Result;
 
 use crate::auth::OauthBlob;
 
+#[cfg(target_os = "macos")]
 const SERVICE: &str = "gemini";
+#[cfg(target_os = "macos")]
 const ACCOUNT: &str = "antigravity";
 const PREFIX: &str = "go-keyring-base64:";
 
@@ -125,25 +129,12 @@ pub fn find_password() -> Result<Option<String>> {
     Ok(None)
 }
 #[cfg(not(target_os = "macos"))]
-pub fn set_password(_: &str) -> Result<()> {
-    Err(Error::Credential(
-        "Antigravity keychain write is only supported on macOS in this build".into(),
-    ))
-}
-#[cfg(not(target_os = "macos"))]
 pub fn delete_password() -> Result<()> {
-    Ok(())
-}
-#[cfg(not(target_os = "macos"))]
-pub fn snapshot() -> Result<Option<String>> {
-    Ok(None)
-}
-#[cfg(not(target_os = "macos"))]
-pub fn restore(_: Option<String>) -> Result<()> {
     Ok(())
 }
 
 /// 由 OauthBlob 合成 keychain 明文（`go-keyring-base64:` + base64）。
+#[cfg(any(target_os = "macos", test))]
 pub fn compose_keychain_value(blob: &OauthBlob) -> String {
     let expiry = blob
         .expires_at

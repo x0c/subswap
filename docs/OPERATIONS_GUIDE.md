@@ -21,6 +21,14 @@
 - 真实账号隔离：新增会触发 Claude OAuth、Codex 登录状态或 Cursor 命令行钥匙串的集成测试时，必须沿用 `crates/cli/tests/cli_surface.rs::isolated_subswap` 的隔离环境，特别是 `SUBSWAP_CLAUDE_KEYCHAIN_PATH` 与 `SUBSWAP_CURSOR_KEYCHAIN_PATH`。
 - macOS 钥匙串：测试用一次性 keychain，不得触碰真实 `Claude Code-credentials` 或 `cursor-access-token` / `cursor-refresh-token` 登录钥匙串。
 
+Release uses `strip = true`. If the bundled `rust-objcopy` aborts with a missing LLVM dylib, follow the [shared Rust stripping readiness procedure](~/.config/agentsync/docs/AGENT_WORKSPACE_ENVIRONMENT_GUIDE.md#rust-release-stripping-missing-bundled-llvm-runtime), verify the selected tool executes, and rebuild. Do not accept an unverified strip step or disable the Release profile setting.
+
+## Cross-platform activation gate (2026-11-02)
+
+The structured activation receipt is a three-platform CLI contract. Its full-workspace CI exposed an existing Antigravity platform-gating defect: macOS-only activation and rollback code remained reachable in the Linux/Windows compilation unit, producing unreachable-code and unused-item errors under `-D warnings`. Keep native activation and its rollback in one macOS-only boundary; unsupported platforms must return the existing explicit error without changing credentials or registry state. Do not suppress the diagnostics or weaken CI. Re-run the isolated receipt tests and complete platform gates after the correction.
+
+The same delivery surfaced four open upstream rustls advisories in the locked 0.23.45 HTTP dependency: [Brotli allocation](https://github.com/rustls/rustls/security/advisories/GHSA-h2v8-394m-p7vv), [session Debug secrets](https://github.com/rustls/rustls/security/advisories/GHSA-c8m5-c952-6cm4), [key-exchange hints](https://github.com/rustls/rustls/security/advisories/GHSA-w44r-93j7-qv28), and [ECH rejection](https://github.com/rustls/rustls/security/advisories/GHSA-vp88-798v-h67f). The [upstream 0.23.46 release](https://github.com/rustls/rustls/releases/tag/v/0.23.46) fixes all four. Apply only that patch-level lockfile update, without enabling TLS features or changing Provider authentication; then repeat the full workspace/three-platform gates and install the rebuilt CLI/daemon. Alert presence establishes a vulnerable dependency version, not evidence that local credentials were exposed.
+
 ## 三平台测试隔离
 
 CLI 集成测试统一经 `isolated_subswap` 构造临时环境，不能只改 `HOME` 或 XDG 目录：Windows 的系统目录解析不遵循 XDG 覆盖，而且 Cursor 的平台默认数据库路径也不受 `HOME` 或 `SUBSWAP_HOME` 控制。

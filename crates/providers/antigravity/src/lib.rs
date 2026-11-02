@@ -401,105 +401,113 @@ impl Provider for AntigravityProvider {
     }
 
     async fn activate(&self, id: &AccountId) -> Result<()> {
-        let account =
-            self.registry
-                .find(PROVIDER_ID, id)?
-                .ok_or_else(|| Error::AccountNotFound {
+        // Antigravity 切换写 macOS 系统钥匙串：非 macOS 构建保持明确不支持。
+        // 只读 precedence 检查后直接返回既有错误，不动 registry/store/原生客户端。
+        #[cfg(not(target_os = "macos"))]
+        {
+            if self.registry.find(PROVIDER_ID, id)?.is_none() {
+                return Err(Error::AccountNotFound {
                     provider: PROVIDER_ID.into(),
                     id: id.to_string(),
-                })?;
-        let mut target = self.blob_for_account(&account)?;
-        // best-effort 预刷新：access 临近过期且有 refresh 时刷一次；失败不阻塞切换。
-        if target.access_expired(5 * 60 * 1000)
-            && !target.refresh_token.trim().is_empty()
-            && !self.is_refresh_dead(&target.refresh_token)
+                });
+            }
+            return Err(Error::Provider(
+                "Antigravity swap is only supported on macOS in this build".into(),
+            ));
+        }
+
+        // macOS 激活边界（读目标 → 预刷新 → 快照/写/回滚 → registry 落 active）：
+        // 整个块只在 macOS 编译。
+        #[cfg(target_os = "macos")]
         {
-            match oauth::refresh_blob(&target).await {
-                Ok(oauth::RefreshOutcome::Refreshed(n)) => {
-                    target = n.clone();
-                    let _ = self
-                        .store
-                        .set(PROVIDER_ID, &id.0, STORE_FIELD, &n.to_blob());
-                }
-                Ok(oauth::RefreshOutcome::DeadToken(_)) => {
-                    self.mark_refresh_dead(&target.refresh_token);
-                    tracing::warn!(account = %id, "Antigravity refresh token dead; switching with stored access anyway");
-                }
-                Err(e) => {
-                    tracing::warn!(err = %e, account = %id, "Antigravity pre-refresh failed; switching anyway");
-                }
-            }
-        }
-        // 重复切当前号：只回灌，不覆写 live。
-        if let Ok(live_id) = self.live_account_id() {
-            if &live_id == id {
-                let s = self.clone();
-                tokio::task::spawn_blocking(move || {
-                    if let Err(e) = s.capture_live_into_store() {
-                        tracing::warn!(err = %e, "antigravity active-account capture failed");
+            let account =
+                self.registry
+                    .find(PROVIDER_ID, id)?
+                    .ok_or_else(|| Error::AccountNotFound {
+                        provider: PROVIDER_ID.into(),
+                        id: id.to_string(),
+                    })?;
+            let mut target = self.blob_for_account(&account)?;
+            // best-effort 预刷新：access 临近过期且有 refresh 时刷一次；失败不阻塞切换。
+            if target.access_expired(5 * 60 * 1000)
+                && !target.refresh_token.trim().is_empty()
+                && !self.is_refresh_dead(&target.refresh_token)
+            {
+                match oauth::refresh_blob(&target).await {
+                    Ok(oauth::RefreshOutcome::Refreshed(n)) => {
+                        target = n.clone();
+                        let _ = self
+                            .store
+                            .set(PROVIDER_ID, &id.0, STORE_FIELD, &n.to_blob());
                     }
-                })
-                .await
-                .map_err(|e| Error::Provider(format!("spawn_blocking join failed: {e}")))?;
-                tracing::info!(account = %id, "Antigravity account already active; live credentials preserved");
-                return Ok(());
-            }
-        }
-        let home = self.home.clone();
-        let store = self.store.clone();
-        let registry = self.registry.clone();
-        let id_owned = id.clone();
-        tokio::task::spawn_blocking(move || {
-            // capture-on-leave。
-            let tmp = AntigravityProvider {
-                store: store.clone(),
-                registry: registry.clone(),
-                home: home.clone(),
-                dead_refresh: Arc::new(Mutex::new(HashSet::new())),
-            };
-            if let Err(e) = tmp.capture_live_into_store() {
-                tracing::warn!(err = %e, "antigravity capture-on-leave failed; continuing swap");
-            }
-            #[cfg(target_os = "macos")]
-            let backup = keychain::snapshot()?;
-            #[cfg(not(target_os = "macos"))]
-            let backup: Option<String> = None;
-            let value = keychain::compose_keychain_value(&target);
-            // 先写 keychain（失败直接回滚 registry 不动）。
-            #[cfg(target_os = "macos")]
-            keychain::set_password(&value)?;
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = value;
-                return Err(Error::Provider(
-                    "Antigravity swap is only supported on macOS in this build".into(),
-                ));
-            }
-            // 再更新 registry active；失败回滚 keychain。
-            if let Err(e) = registry.set_active(PROVIDER_ID, &id_owned) {
-                #[cfg(target_os = "macos")]
-                if let Err(rb) = keychain::restore(backup) {
-                    tracing::error!(err = %rb, "Antigravity keychain rollback failed");
+                    Ok(oauth::RefreshOutcome::DeadToken(_)) => {
+                        self.mark_refresh_dead(&target.refresh_token);
+                        tracing::warn!(account = %id, "Antigravity refresh token dead; switching with stored access anyway");
+                    }
+                    Err(e) => {
+                        tracing::warn!(err = %e, account = %id, "Antigravity pre-refresh failed; switching anyway");
+                    }
                 }
-                return Err(e);
             }
-            // flock 串行化（与其他 subswap 进程互斥），沿用文件型引擎的锁位置。
-            let lock_path = home.join(".subswap.lock");
-            if let Ok(lock_file) = std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(false)
-                .open(&lock_path)
-            {
-                let _ = fs2::FileExt::lock_exclusive(&lock_file);
-                let _ = fs2::FileExt::unlock(&lock_file);
+            // 重复切当前号：只回灌，不覆写 live。
+            if let Ok(live_id) = self.live_account_id() {
+                if &live_id == id {
+                    let s = self.clone();
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = s.capture_live_into_store() {
+                            tracing::warn!(err = %e, "antigravity active-account capture failed");
+                        }
+                    })
+                    .await
+                    .map_err(|e| Error::Provider(format!("spawn_blocking join failed: {e}")))?;
+                    tracing::info!(account = %id, "Antigravity account already active; live credentials preserved");
+                    return Ok(());
+                }
             }
-            tracing::info!(account = %id_owned, "Antigravity swap done");
+            let home = self.home.clone();
+            let store = self.store.clone();
+            let registry = self.registry.clone();
+            let id_owned = id.clone();
+            tokio::task::spawn_blocking(move || {
+                // capture-on-leave。
+                let tmp = AntigravityProvider {
+                    store: store.clone(),
+                    registry: registry.clone(),
+                    home: home.clone(),
+                    dead_refresh: Arc::new(Mutex::new(HashSet::new())),
+                };
+                if let Err(e) = tmp.capture_live_into_store() {
+                    tracing::warn!(err = %e, "antigravity capture-on-leave failed; continuing swap");
+                }
+                let backup = keychain::snapshot()?;
+                let value = keychain::compose_keychain_value(&target);
+                // 先写 keychain（失败直接返回，registry 不动）。
+                keychain::set_password(&value)?;
+                // 再更新 registry active；失败回滚 keychain。
+                if let Err(e) = registry.set_active(PROVIDER_ID, &id_owned) {
+                    if let Err(rb) = keychain::restore(backup) {
+                        tracing::error!(err = %rb, "Antigravity keychain rollback failed");
+                    }
+                    return Err(e);
+                }
+                // flock 串行化（与其他 subswap 进程互斥），沿用文件型引擎的锁位置。
+                let lock_path = home.join(".subswap.lock");
+                if let Ok(lock_file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(false)
+                    .open(&lock_path)
+                {
+                    let _ = fs2::FileExt::lock_exclusive(&lock_file);
+                    let _ = fs2::FileExt::unlock(&lock_file);
+                }
+                tracing::info!(account = %id_owned, "Antigravity swap done");
+                Ok(())
+            })
+            .await
+            .map_err(|e| Error::Provider(format!("spawn_blocking join failed: {e}")))??;
             Ok(())
-        })
-        .await
-        .map_err(|e| Error::Provider(format!("spawn_blocking join failed: {e}")))??;
-        Ok(())
+        }
     }
 
     async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>> {
@@ -590,4 +598,121 @@ pub fn blob_from_refresh(refresh: &str, email: Option<String>) -> String {
         managed_project_id: None,
     }
     .to_blob()
+}
+
+/// 非 macOS 回归：`activate` 必须返回既有不支持错误，且不动 registry/store/客户端。
+/// fresh access fixture 验证平台边界本身；expired parked fixture 验证即使满足
+/// pre-refresh 条件也不触网、不轮换 token。
+#[cfg(test)]
+#[cfg(not(target_os = "macos"))]
+mod non_mac_activation_tests {
+    use super::*;
+
+    fn fixture_with_expiry(
+        tmp: &tempfile::TempDir,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> (AntigravityProvider, AccountId, String) {
+        let store = Arc::new(subswap_core::FileStore::new(
+            tmp.path().join("credentials.json"),
+        ));
+        let registry = Arc::new(AccountRegistry::new(tmp.path().join("registry.toml")));
+        let provider = AntigravityProvider::new(store.clone(), registry.clone());
+        let blob = OauthBlob {
+            refresh_token: "1//fixture-refresh".into(),
+            access_token: "ya29.fixture".into(),
+            expires_at: Some(expires_at),
+            email: Some("fixture@example.com".into()),
+            project_id: None,
+            managed_project_id: None,
+        };
+        let raw = blob.to_blob();
+        let id = AccountId("fixture@example.com".into());
+        store.set(PROVIDER_ID, &id.0, STORE_FIELD, &raw).unwrap();
+        registry
+            .upsert(Account {
+                provider: PROVIDER_ID.into(),
+                id: id.clone(),
+                label: "fixture@example.com".into(),
+                active: false,
+                created_at: chrono::Utc::now(),
+                last_used_at: None,
+                priority: 100,
+                extra: serde_json::Map::new(),
+            })
+            .unwrap();
+        (provider, id, raw)
+    }
+
+    fn fixture(tmp: &tempfile::TempDir) -> (AntigravityProvider, AccountId, String) {
+        fixture_with_expiry(tmp, chrono::Utc::now() + chrono::Duration::hours(2))
+    }
+
+    #[tokio::test]
+    async fn unsupported_activation_returns_existing_error_without_mutation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (provider, id, raw) = fixture(&tmp);
+        let err = provider.activate(&id).await.unwrap_err().to_string();
+        assert!(
+            err.contains("only supported on macOS"),
+            "must keep the existing explicit error, got: {err}"
+        );
+        // registry 不动：账号仍在且保持 parked。
+        let kept = provider.registry.find(PROVIDER_ID, &id).unwrap().unwrap();
+        assert!(!kept.active, "unsupported swap must not flip active");
+        // store 不动：blob 原样。
+        let kept_raw = provider
+            .store
+            .get(PROVIDER_ID, &id.0, STORE_FIELD)
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept_raw, raw, "unsupported swap must not touch store");
+        // 客户端不动：桩 keychain 始终无 live。
+        assert!(crate::keychain::find_password().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn unsupported_activation_keeps_account_not_found_precedence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (provider, _, _) = fixture(&tmp);
+        let ghost = AccountId("ghost@example.com".into());
+        let err = provider.activate(&ghost).await.unwrap_err().to_string();
+        assert!(
+            err.contains("account not found") && err.contains("ghost@example.com"),
+            "unknown accounts must still resolve first, got: {err}"
+        );
+    }
+
+    /// 过期 parked 回归：access 已过期且有 refresh（macOS 路径会走 pre-refresh），
+    /// 非 macOS 仍必须在任何刷新/网络/capture 之前返回不支持错误；blob 与 registry 原样。
+    /// 超时守卫：若实现回退到走网络刷新，测试快速失败而非挂起。
+    #[tokio::test]
+    async fn unsupported_activation_never_refreshes_expired_parked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (provider, id, raw) =
+            fixture_with_expiry(&tmp, chrono::Utc::now() - chrono::Duration::hours(1));
+        let res = tokio::time::timeout(std::time::Duration::from_secs(10), provider.activate(&id))
+            .await
+            .expect("unsupported activate must return promptly without network");
+        let err = res.unwrap_err().to_string();
+        assert!(
+            err.contains("only supported on macOS"),
+            "expired parked must still hit the explicit unsupported error, got: {err}"
+        );
+        // store 不动：过期 blob 原样（未被刷新轮换）。
+        let kept_raw = provider
+            .store
+            .get(PROVIDER_ID, &id.0, STORE_FIELD)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            kept_raw, raw,
+            "unsupported swap must not rotate expired token"
+        );
+        // registry 不动：仍在且保持 parked。
+        let kept = provider.registry.find(PROVIDER_ID, &id).unwrap().unwrap();
+        assert!(!kept.active, "unsupported swap must not flip active");
+        assert_eq!(kept.label, "fixture@example.com");
+        // 客户端不动：桩 keychain 始终无 live。
+        assert!(crate::keychain::find_password().unwrap().is_none());
+    }
 }
