@@ -374,6 +374,15 @@ async fn wait_for_coalesced(wait: &CoalesceWait<'_>) -> Coalesced {
                             .next_attempt_at
                             .is_some_and(|deadline| deadline > Utc::now());
                     if fresh {
+                        // 空额度是合法成功（例如无 quota 的手动 API 账号），直接合并；
+                        // 只有「原有窗口但全部过期」才视为 reset 后失效。
+                        if record.quotas.is_empty() {
+                            emit(emit_metrics, provider_id, account_id, "coalesced", None).await;
+                            return Coalesced::Reading(QuotaReading {
+                                quotas: Vec::new(),
+                                observed_at,
+                            });
+                        }
                         let quotas = crate::quota_cache::current_quotas(
                             &record.quotas,
                             observed_at,
@@ -488,6 +497,15 @@ async fn fetch_with_lock(
                     let Some(observed_at) = record.observed_at else {
                         return Err(Error::QuotaFetch("quota collection state invalid".into()));
                     };
+                    // 空额度是合法成功（例如无 quota 的手动 API 账号），直接命中；
+                    // 只有「原有窗口但全部过期」才视为 reset 后失效。
+                    if record.quotas.is_empty() {
+                        emit(emit_metrics, provider_id, account_id, "cache_hit", None).await;
+                        return Ok(QuotaReading {
+                            quotas: Vec::new(),
+                            observed_at,
+                        });
+                    }
                     let quotas =
                         crate::quota_cache::current_quotas(&record.quotas, observed_at, Utc::now());
                     if quotas.is_empty() {
@@ -1402,6 +1420,34 @@ mod tests {
             .unwrap();
         assert_eq!(provider.calls(), 1);
         assert_eq!(second.observed_at, first.observed_at);
+    }
+
+    /// 无 quota 窗口的成功记录（如自定义 API 账号）是合法缓存命中，
+    /// 不能被误判为「窗口 reset 后失效」而报错。
+    #[tokio::test]
+    async fn empty_success_record_is_cache_hit_not_expired() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_path = tmp.path().join("quota_cache.json");
+        let provider = MockProvider::new("mock", Behavior::Fail("must not be called"));
+        let cfg = test_settings();
+
+        let dir = coordination_dir(&cache_path);
+        fs::create_dir_all(&dir).unwrap();
+        let record = Record {
+            state: CollectionState::Success,
+            observed_at: Some(Utc::now()),
+            next_attempt_at: Some(Utc::now() + Duration::hours(1)),
+            failures: 0,
+            quotas: Vec::new(),
+            error: None,
+        };
+        write_record(&record_path(&dir, &account_stem("mock", "a")), &record).unwrap();
+
+        let reading = collect_quota_at(&provider, &AccountId("a".into()), &cache_path, &cfg)
+            .await
+            .unwrap();
+        assert!(reading.quotas.is_empty());
+        assert_eq!(provider.calls(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

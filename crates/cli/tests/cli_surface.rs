@@ -287,6 +287,50 @@ fn add_api_accepts_legacy_model_as_the_only_model_flag() {
 }
 
 #[test]
+fn bare_number_is_a_swap_shortcut() {
+    let tmp = tempfile::tempdir().unwrap();
+    setup_test_keychain(&tmp);
+    write_fast_quota_timeout(&tmp);
+    let claude = tmp.path().join("claude");
+    fs::create_dir_all(&claude).unwrap();
+    write(&claude.join("settings.json"), r#"{"env":{}}"#);
+    for id in ["first", "second"] {
+        assert_success(
+            isolated_subswap(&tmp)
+                .args([
+                    "add-api",
+                    "--preset",
+                    "custom",
+                    "--id",
+                    id,
+                    "--name",
+                    id,
+                    "--endpoint",
+                    "https://example.com",
+                    "--api-key",
+                    "secret",
+                    "--auth",
+                    "bearer",
+                    "--model",
+                    "m",
+                    "--yes",
+                ])
+                .output()
+                .unwrap(),
+        );
+    }
+    // 裸数字与 `swap <N>` 同语义：按默认入口的全局编号切换。
+    let stdout = assert_success(isolated_subswap(&tmp).args(["2"]).output().unwrap());
+    assert!(stdout.contains("swap → claude/second"), "{stdout}");
+    let state: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(claude.join(".subswap-api.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["account_id"], "second");
+
+    teardown_test_keychain(&tmp);
+}
+
+#[test]
 fn default_with_empty_home_is_quiet_and_does_not_probe_real_accounts() {
     let tmp = tempfile::tempdir().unwrap();
     let output = isolated_subswap(&tmp).output().unwrap();

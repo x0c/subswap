@@ -5,7 +5,7 @@
 //!   active is past threshold, render a one-screen status.
 //! - `subswap login <provider>` — run the native provider login, then import/overwrite it.
 //! - `subswap add-api` — interactively add a Claude Code compatible API endpoint.
-//! - `subswap swap [<id|N>]` — escape hatch: force-swap. Never depends on quota.
+//! - `subswap swap [<id|N>]` / 快捷 `subswap [<id|N>]` — escape hatch: force-swap. Never depends on quota.
 //!   With no argument, prints the numbered listing instead of swapping.
 //!   A successful swap then reprints the same quota table as the default entry.
 //! - `subswap rm <id|N>`     — remove an account (registry + keyring), then reprint
@@ -46,6 +46,11 @@ struct Cli {
 
     #[command(subcommand)]
     cmd: Option<Cmd>,
+
+    /// 快捷 `subswap <id|N>` 等价于 `subswap swap <id|N>`。与子命令冲突时子命令优先，
+    /// 因此 `subswap status` 仍是 status 子命令，不会被当成账号引用。
+    #[arg(index = 1)]
+    target: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -223,7 +228,11 @@ async fn main() -> Result<()> {
     let ctx = AppContext::build()?;
 
     match cli.cmd {
-        None => cmd::default::run(&ctx, cli.json).await,
+        None => match cli.target.as_deref() {
+            // 快捷 `subswap <id|N>`：与 `subswap swap <id|N>` 完全同语义（含 --json 回执）。
+            Some(target) => cmd::swap::run(&ctx, Some(target), cli.json).await,
+            None => cmd::default::run(&ctx, cli.json).await,
+        },
         Some(Cmd::AddApi {
             preset,
             id,

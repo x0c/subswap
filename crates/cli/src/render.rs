@@ -248,7 +248,13 @@ fn render_row(awq: &AccountWithQuotas, index: usize, layout: RenderLayout, color
     let body = match &awq.fetch_state {
         QuotaFetchState::Loading => style(color, "2", "quota loading"),
         QuotaFetchState::Failed(err) => {
-            let text = format!("quota {}", compact_error(err));
+            let compact = compact_error(err);
+            // compact 本身可能已是 `quota ...` 开头（如协调器错误），避免拼成 `quota quota ...`。
+            let text = if compact.strip_prefix("quota ").is_some() || compact == "quota" {
+                compact
+            } else {
+                format!("quota {compact}")
+            };
             // auth/rate-limit 用红，其他错误（network/timeout）也用红——
             // 失败状态本身就是高 signal，不需要再细分。
             style(color, "31", &text)
@@ -703,6 +709,26 @@ mod tests {
             compact_error("quota fetch: 429 rate limited: usage endpoint throttled"),
             "429 rate limited"
         );
+    }
+
+    #[test]
+    fn failed_state_does_not_duplicate_quota_prefix() {
+        // 协调器错误自带 `quota` 前缀时，不能拼成 `quota quota ...`。
+        let snap = ProviderSnapshot {
+            provider: "claude".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
+            accounts: vec![make_awq(
+                "a@x.com",
+                false,
+                QuotaFetchState::Failed(
+                    "quota fetch: quota reading expired after reset; waiting for the next refresh"
+                        .into(),
+                ),
+            )],
+        };
+        let text = render_to_string(&[snap], &[], false);
+        assert!(text.contains("quota fetch"), "{text}");
+        assert!(!text.contains("quota quota"), "{text}");
     }
 
     fn make_awq(id: &str, active: bool, fetch: QuotaFetchState) -> AccountWithQuotas {

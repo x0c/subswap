@@ -8,7 +8,7 @@
 | `subswap login <kimi\|cursor\|commandcode>` | **不驱动登录**：用户先在对应客户端登录（Command Code 也可把 API key 写在 `--` 后面），本命令只导入当前状态并标记为 active |
 | `subswap login opencode` | 导入已登录的官方 Console 账号；未登录时调官方命令（V2 `opencode auth login opencode` / V1 `opencode console login`）登录后导入。不会把 Go API key 当成官方账号 |
 | `subswap login opencode-api-key` | 单独导入 Go API key（可用 `-- <key>`）；仅手动切换和监控余量，不参与自动换号。别名 `opencode-go` |
-| `subswap swap [<id\|N>]` | 手动切换；`<id>` 用 id/label/`<provider>/<id>`，`<N>` 用默认入口列出的全局序号。无参只打印编号清单（不查 quota） |
+| `subswap swap [<id\|N>]`（快捷 `subswap [<id\|N>]`） | 手动切换；`<id>` 用 id/label/`<provider>/<id>`，`<N>` 用默认入口列出的全局序号。无参只打印编号清单（不查 quota）。裸数字/引用与 `swap` 完全同语义 |
 | `subswap rm <id\|N>` | 删除账号：清 subswap 记录（registry + keyring），引用形式同 `swap`。**永不因 active / `manual_only` /「请先 swap」而拒绝**——当前正在用的自定义 API 号会先退出 API 模式（恢复 `settings.json` 受管字段并清 `.subswap-api.json`）再删。删的是该 provider 当前原生登录账号时，尽力从原生客户端登出/断开（codex/kimi/commandcode 删 live 文件；claude 移除 oauthAccount 并清钥匙串/file 凭证；cursor 清桌面库或 agent 凭证，桌面运行中先请它正常退出且不再拉起；opencode 系经官方 `auth logout`，V1 `opencode-api-key` 清 live slot）；删的是 parked 账号时只清本地。原生登出失败只警告，仍清本地；若客户端仍登录，下次入口可能再导入。要重新纳入已删的号，用对应 provider 的 `login` |
 | `subswap run <provider> <id> [-- args]` | 账号隔离启动：把该账号凭证投影到私有目录，设隔离环境变量后启动原生 CLI（codex/claude/kimi/commandcode/OpenCode V1 API Key），**不动全局活账号**；退出时吸收轮换后的凭证。Cursor、OpenCode 官方账号与 V2 API Key 不支持此模式 |
 | `subswap shell <id>` | 起一个导出好隔离环境变量的子 shell，交互里连跑多条命令；provider 从账号推断；退出时吸收凭证 |
