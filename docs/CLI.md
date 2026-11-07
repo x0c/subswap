@@ -126,7 +126,8 @@ A successful `subswap --json swap <target>` writes exactly one JSON object to st
 `https://ark.cn-beijing.volces.com/api/coding`、Bearer Key、三档统一的 `ark-code-latest`。
 与 Claude OAuth / 自定义 API 互切时保存并恢复受管 env；删除当前 Volcengine 账号也会退出
 其 API 模式。Key 按固定订阅 `flat` 展示，全部 `manual_only`；额度优先用 AK/SK 直查
-（`login -- <key> --ak-id <AK> --ak-secret <SK>` 或只补 AK/SK），未订阅时试 `arkcli`
+（`login -- <key> --ak-id <AK> --ak-secret <SK>` 或只补 AK/SK，先查 `GetCodingPlanUsage`
+百分比、空时再试 `GetAFPUsage` 绝对值），未订阅时试 `arkcli`（15s 超时）
 兜底，否则显示 `custom` 不伪造余量。`subswap run volcengine <id> -- <claude 参数>` 以进程级环境变量隔离启动 Claude
 Code，不改全局 active；`shell` / `env` 同样支持。
 

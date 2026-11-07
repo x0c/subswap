@@ -1,8 +1,11 @@
 //! 火山方舟 Coding Plan 额度查询。
 //!
 //! 推理 Bearer Key 拿不到用量（实测无 `x-ratelimit-*` 头），必须走控制面 OpenAPI
-//! `GetCodingPlanUsage`（Coding Plan，回百分比）与 `GetAFPUsage`（Agent Plan，回绝对值），
+//! `GetCodingPlanUsage`（Coding Plan，回百分比，优先）与 `GetAFPUsage`（Agent Plan，回绝对值，兜底），
 //! 经火山签名 V4（AK/SK）鉴权。AK/SK 与推理 Key 是两套凭据，分开存放。
+//! 签名按官方 Java/Python/PHP demo 与 magpie 实现：空请求体按 `{}` 哈希，
+//! `Content-Type: application/json`，SignedHeaders 排序为
+//! `content-type;host;x-content-sha256;x-date`，query 仅 `Action`/`Version`。
 
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
@@ -151,7 +154,10 @@ fn is_auth_code(code: &str) -> bool {
         || lower.contains("unauthorized")
         || lower.contains("forbidden")
         || lower.contains("credential")
-        || lower.contains("token")
+        || lower.contains("invalidtoken")
+        || lower.contains("expiredtoken")
+        || lower.contains("tokenexpired")
+        || lower.contains("tokeninvalid")
         || lower.contains("invalidauthorization")
         || lower.contains("invalidaccesskey")
         || lower.contains("invalidsecret")
@@ -178,7 +184,9 @@ fn is_rate_limit_code(code: &str) -> bool {
         || lower.contains("flowcontrol")
 }
 
-/// 未订阅/未开通：签名通过但账号无 Coding Plan 订阅，调用方可再试 arkcli（另一身份的订阅）。
+/// 未订阅/未开通：签名通过但账号无 Coding Plan 订阅，调用方可再试另一通道。
+/// 只认明确的订阅语义；`ResourceNotFound` 这类通用码按 Soft 处理，避免把
+/// “Action 写错”等实现 bug 误判成未订阅而静默吞掉。
 fn is_not_subscribed_code(code: &str) -> bool {
     let lower = code.to_lowercase();
     lower.contains("notsubscribed")
@@ -186,11 +194,8 @@ fn is_not_subscribed_code(code: &str) -> bool {
         || lower.contains("unsubscribed")
         || lower.contains("notpurchased")
         || lower.contains("not_purchased")
-        || lower.contains("notopened")
-        || lower.contains("not_opened")
         || lower.contains("subscriptionnotfound")
         || lower.contains("productnotsubscribed")
-        || lower.contains("resourcenotfound")
 }
 
 async fn openapi_call(
@@ -203,7 +208,9 @@ async fn openapi_call(
     let canonical = canonical_query(action);
     let (scheme, host) = openapi_endpoint();
     let url = format!("{scheme}://{host}/?{canonical}");
-    let body: &[u8] = b"";
+    // 控制面 JSON API 空请求体按 `{}` 发送（`{}` 哈希参与签名），与 magpie/dsh/ark-cli 一致；
+    // 空串哈希会导致签名与服务端期望不一致。
+    let body: &[u8] = b"{}";
     let (authorization, x_date, body_hash) = sign(
         access_key_id,
         secret_access_key,
@@ -217,6 +224,7 @@ async fn openapi_call(
         .header("X-Date", x_date)
         .header("X-Content-Sha256", body_hash)
         .header("Content-Type", CONTENT_TYPE)
+        .header("Accept", "application/json")
         .header("Authorization", authorization)
         .body(body.to_vec())
         .timeout(std::time::Duration::from_secs(15))
@@ -296,27 +304,58 @@ async fn openapi_call(
     CallOutcome::Body(body)
 }
 
-/// 重置时间兼容秒/毫秒/字符串；0 或负数视为无重置时间。
+/// 重置时间兼容秒/毫秒/浮点/数字字符串/RFC3339；0 或负数视为无重置时间。
 fn parse_reset(value: &serde_json::Value) -> Option<DateTime<Utc>> {
     if let Some(text) = value.as_str() {
-        if text.trim().is_empty() {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
             return None;
         }
-        return DateTime::parse_from_rfc3339(text)
-            .ok()
-            .map(|dt| dt.with_timezone(&Utc));
+        if let Ok(dt) = DateTime::parse_from_rfc3339(trimmed) {
+            return Some(dt.with_timezone(&Utc));
+        }
+        // 数字字符串（如 `"1753189560000"`）：按数值走统一分支。
+        if let Ok(num) = trimmed.parse::<f64>() {
+            if num.is_finite() {
+                return reset_from_f64(num);
+            }
+        }
+        return None;
     }
-    let num = value.as_i64()?;
+    if let Some(num) = value.as_i64() {
+        return reset_from_i64(num);
+    }
+    if let Some(num) = value.as_u64() {
+        if num <= i64::MAX as u64 {
+            return reset_from_i64(num as i64);
+        }
+        return None;
+    }
+    if let Some(num) = value.as_f64() {
+        return reset_from_f64(num);
+    }
+    None
+}
+
+/// 整数时间戳：秒级 < 1e12，毫秒级 >= 1e12；0/负数无重置时间。
+fn reset_from_i64(num: i64) -> Option<DateTime<Utc>> {
     if num <= 0 {
         return None;
     }
-    // 秒级 < 1e12，毫秒级 >= 1e12。
     let (secs, nsecs) = if num < 1_000_000_000_000 {
         (num, 0)
     } else {
         (num / 1000, ((num % 1000) * 1_000_000) as u32)
     };
     DateTime::from_timestamp(secs, nsecs)
+}
+
+/// 浮点时间戳：先取整再按整数规则处理；非有限/<=0 无重置时间。
+fn reset_from_f64(num: f64) -> Option<DateTime<Utc>> {
+    if !num.is_finite() || num <= 0.0 {
+        return None;
+    }
+    reset_from_i64(num.trunc() as i64)
 }
 
 fn parse_f64(value: &serde_json::Value) -> Option<f64> {
@@ -430,6 +469,9 @@ fn parse_afp_tiers(id: &AccountId, result: &serde_json::Value) -> Vec<Quota> {
 }
 
 /// 经 AK/SK 直查控制面；返回 `None` 表示未订阅（调用方再试 arkcli 兜底）。
+/// 本 Provider 是 Coding Plan（`/api/coding`），优先查 `GetCodingPlanUsage`；
+/// 仅当 Coding Plan 无订阅/空时再试 `GetAFPUsage`（双订阅账号必须先看 Coding Plan，
+/// 否则 Agent Plan 有数据会掩盖 Coding Plan，见 cc-switch#6499）。
 async fn query_via_aksk(
     client: &reqwest::Client,
     id: &AccountId,
@@ -441,33 +483,10 @@ async fn query_via_aksk(
     let region = "cn-beijing";
     let mut soft_errors = Vec::new();
     let mut empty_bodies = Vec::new();
+    let mut auth_errors: Vec<String> = Vec::new();
+    let mut transient_errors: Vec<String> = Vec::new();
 
-    match openapi_call(client, region, access_key_id, secret_access_key, "GetAFPUsage").await {
-        CallOutcome::Body(body) => {
-            let result = body.get("Result").unwrap_or(&body);
-            let tiers = parse_afp_tiers(id, result);
-            if !tiers.is_empty() {
-                return Ok(Some(tiers));
-            }
-            empty_bodies.push("GetAFPUsage empty".to_string());
-        }
-        CallOutcome::NotSubscribed(detail) => {
-            empty_bodies.push(format!("GetAFPUsage not subscribed: {detail}"));
-        }
-        CallOutcome::Auth(detail) => {
-            return Err(Error::QuotaFetch(format!(
-                "volcengine AK/SK auth failed: {detail}; check AccessKey permission (ark:GetAFPUsage, ark:GetCodingPlanUsage)"
-            )));
-        }
-        CallOutcome::RateLimited { message, retry_at } => {
-            return Err(Error::QuotaRateLimited { message, retry_at });
-        }
-        CallOutcome::Transient(detail) => {
-            return Err(Error::QuotaFetch(format!("volcengine GetAFPUsage: {detail}")));
-        }
-        CallOutcome::Soft(detail) => soft_errors.push(format!("GetAFPUsage: {detail}")),
-    }
-
+    // 1) Coding Plan 优先：session/weekly/monthly 百分比。
     match openapi_call(
         client,
         region,
@@ -489,27 +508,83 @@ async fn query_via_aksk(
             empty_bodies.push(format!("GetCodingPlanUsage not subscribed: {detail}"));
         }
         CallOutcome::Auth(detail) => {
-            return Err(Error::QuotaFetch(format!(
-                "volcengine AK/SK auth failed: {detail}; check AccessKey permission (ark:GetCodingPlanUsage)"
-            )));
+            auth_errors.push(format!("GetCodingPlanUsage: {detail}"));
+        }
+        CallOutcome::RateLimited { message, retry_at } => {
+            // 限流直接停，不再打第二个 Action 添堵。
+            return Err(Error::QuotaRateLimited { message, retry_at });
+        }
+        CallOutcome::Transient(detail) => {
+            transient_errors.push(format!("GetCodingPlanUsage: {detail}"));
+        }
+        CallOutcome::Soft(detail) => soft_errors.push(format!("GetCodingPlanUsage: {detail}")),
+    }
+
+    // 2) AFP 兜底：双订阅/单 Agent Plan 账号仍能看到绝对值。
+    match openapi_call(client, region, access_key_id, secret_access_key, "GetAFPUsage").await {
+        CallOutcome::Body(body) => {
+            let result = body.get("Result").unwrap_or(&body);
+            let tiers = parse_afp_tiers(id, result);
+            if !tiers.is_empty() {
+                return Ok(Some(tiers));
+            }
+            empty_bodies.push("GetAFPUsage empty".to_string());
+        }
+        CallOutcome::NotSubscribed(detail) => {
+            empty_bodies.push(format!("GetAFPUsage not subscribed: {detail}"));
+        }
+        CallOutcome::Auth(detail) => {
+            auth_errors.push(format!("GetAFPUsage: {detail}"));
         }
         CallOutcome::RateLimited { message, retry_at } => {
             return Err(Error::QuotaRateLimited { message, retry_at });
         }
         CallOutcome::Transient(detail) => {
-            return Err(Error::QuotaFetch(format!("volcengine GetCodingPlanUsage: {detail}")));
+            transient_errors.push(format!("GetAFPUsage: {detail}"));
         }
-        CallOutcome::Soft(detail) => soft_errors.push(format!("GetCodingPlanUsage: {detail}")),
+        CallOutcome::Soft(detail) => soft_errors.push(format!("GetAFPUsage: {detail}")),
     }
 
     if empty_bodies.len() == 2 {
         // 签名通过但两边都无订阅：明确未订阅，调用方可再试 arkcli。
         return Ok(None);
     }
+    if !auth_errors.is_empty() && soft_errors.is_empty() && transient_errors.is_empty() {
+        // 两边都鉴权失败（或一边鉴权、一边空）：凭据问题，提示换 AK/SK。
+        return Err(Error::QuotaFetch(format!(
+            "volcengine AK/SK auth failed: {}; check AccessKey permission (ark:GetCodingPlanUsage, ark:GetAFPUsage)",
+            auth_errors.join("; ")
+        )));
+    }
+    if !transient_errors.is_empty()
+        && auth_errors.is_empty()
+        && soft_errors.is_empty()
+        && empty_bodies.is_empty()
+    {
+        return Err(Error::QuotaFetch(format!(
+            "volcengine {}",
+            transient_errors.join("; ")
+        )));
+    }
     if !soft_errors.is_empty() {
+        let mut details = soft_errors;
+        details.extend(auth_errors);
+        details.extend(transient_errors);
         return Err(Error::QuotaFetch(format!(
             "volcengine usage query failed: {}",
-            soft_errors.join("; ")
+            details.join("; ")
+        )));
+    }
+    if !transient_errors.is_empty() {
+        return Err(Error::QuotaFetch(format!(
+            "volcengine {}",
+            transient_errors.join("; ")
+        )));
+    }
+    if !auth_errors.is_empty() {
+        return Err(Error::QuotaFetch(format!(
+            "volcengine AK/SK auth failed: {}; check AccessKey permission (ark:GetCodingPlanUsage, ark:GetAFPUsage)",
+            auth_errors.join("; ")
         )));
     }
     Ok(None)
@@ -517,7 +592,9 @@ async fn query_via_aksk(
 
 /// arkcli 兜底：`arkcli usage plan --product coding-plan --format json`（SSO 登录态）。
 /// 返回 `None` 表示不可用（未安装/未登录/未订阅），调用方保持空额度。
+/// stdin 必须接 null，避免 arkcli 在未登录时阻塞等输入；调用方再包一层超时。
 fn query_via_arkcli_blocking(id: &AccountId) -> Option<Vec<Quota>> {
+    use std::process::Stdio;
     let output = std::process::Command::new("arkcli")
         .args([
             "usage",
@@ -527,6 +604,7 @@ fn query_via_arkcli_blocking(id: &AccountId) -> Option<Vec<Quota>> {
             "--format",
             "json",
         ])
+        .stdin(Stdio::null())
         .output()
         .ok()?;
     if !output.status.success() {
@@ -548,7 +626,19 @@ fn query_via_arkcli_blocking(id: &AccountId) -> Option<Vec<Quota>> {
         let Some(window) = coding_window(label) else {
             continue;
         };
-        let percent = period.get("percent").and_then(parse_f64)?;
+        // CodingPlan 后端只返 Percent；兼容 used/total 形态（omitempty 缺省时兜底算百分比）。
+        let percent = period
+            .get("percent")
+            .and_then(parse_f64)
+            .or_else(|| {
+                let used = period.get("used").and_then(parse_f64)?;
+                let total = period.get("total").and_then(parse_f64)?;
+                if total > 0.0 {
+                    Some(used / total * 100.0)
+                } else {
+                    None
+                }
+            })?;
         let reset_at = period.get("reset_at").and_then(parse_reset);
         quotas.push(percent_quota(id, window, percent, reset_at));
     }
@@ -568,8 +658,10 @@ pub(super) async fn fetch_quota(
     let ak = access_key_id.unwrap_or_default();
     let sk = secret_access_key.unwrap_or_default();
     if !ak.trim().is_empty() && !sk.trim().is_empty() {
-        let client = reqwest::Client::new();
-        match query_via_aksk(&client, &id, ak.trim(), sk.trim()).await {
+        // 复用全局 Client（连接池），避免每次额度轮询重建 TLS/连接池。
+        static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+        let client = CLIENT.get_or_init(reqwest::Client::new);
+        match query_via_aksk(client, &id, ak.trim(), sk.trim()).await {
             Ok(Some(quotas)) => return Ok(quotas),
             Ok(None) => {
                 // 已鉴权但无订阅：仍试 arkcli（可能是另一身份的订阅）。
@@ -578,11 +670,18 @@ pub(super) async fn fetch_quota(
         }
     }
     let id_for_cli = id.clone();
-    let fallback = tokio::task::spawn_blocking(move || query_via_arkcli_blocking(&id_for_cli))
-        .await
-        .map_err(|err| {
-            subswap_core::error::Error::Provider(format!("volcengine arkcli task failed: {err}"))
-        })?;
+    // arkcli 可能阻塞等输入/网络：15s 超时后按不可用处理，保持空额度。
+    let fallback = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        tokio::task::spawn_blocking(move || query_via_arkcli_blocking(&id_for_cli)),
+    )
+    .await
+    .map_err(|_| {
+        subswap_core::error::Error::QuotaFetch("volcengine arkcli timed out".into())
+    })?
+    .map_err(|err| {
+        subswap_core::error::Error::Provider(format!("volcengine arkcli task failed: {err}"))
+    })?;
     if let Some(quotas) = fallback {
         return Ok(quotas);
     }
@@ -622,17 +721,17 @@ mod tests {
     #[test]
     fn sign_uses_sorted_signed_headers_and_scope() {
         // 固定时间 + 固定 host，验证 SignedHeaders 排序与 scope 格式；
-        // 空 body 哈希必须等于空字符串 SHA-256（官方 Go/Python SDK 默认行为）。
+        // 空请求体按 `{}` 哈希（与 magpie/dsh/ark-cli 一致），不是空串哈希。
         let now = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
             .unwrap()
             .with_timezone(&chrono::Utc);
         let canonical = canonical_query("GetCodingPlanUsage");
         let (auth, x_date, body_hash) =
-            sign("EXAMPLEKEYID", "EXAMPLESECRET", "cn-beijing", &canonical, b"", now);
+            sign("EXAMPLEKEYID", "EXAMPLESECRET", "cn-beijing", &canonical, b"{}", now);
         assert_eq!(x_date, "20260101T000000Z");
         assert_eq!(
             body_hash,
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
         );
         assert!(
             auth.contains("SignedHeaders=content-type;host;x-content-sha256;x-date"),
@@ -684,12 +783,19 @@ mod tests {
     fn reset_handles_seconds_millis_and_zero() {
         assert!(parse_reset(&serde_json::json!(0)).is_none());
         assert!(parse_reset(&serde_json::json!(-5)).is_none());
+        assert!(parse_reset(&serde_json::json!(-1)).is_none());
         let from_secs = parse_reset(&serde_json::json!(1784287365)).unwrap();
         let from_millis = parse_reset(&serde_json::json!(1784287365000i64)).unwrap();
         assert_eq!(from_secs, from_millis);
         let from_rfc = parse_reset(&serde_json::json!("2026-07-17T19:22:45+08:00")).unwrap();
         // 同一时刻（UTC 11:22:45），只比较时间戳不比较显示时区。
         assert_eq!(from_rfc.timestamp(), from_secs.timestamp());
+        // 数字字符串毫秒与浮点秒都兼容（AFP 回 string ms、CodingPlan 回 float 的防御）。
+        let from_str_ms = parse_reset(&serde_json::json!("1784287365000")).unwrap();
+        assert_eq!(from_str_ms, from_secs);
+        let from_float = parse_reset(&serde_json::json!(1784287365.0)).unwrap();
+        assert_eq!(from_float.timestamp(), from_secs.timestamp());
+        assert!(parse_reset(&serde_json::json!("not-a-time")).is_none());
     }
 
     #[test]
@@ -723,5 +829,156 @@ mod tests {
         }
         assert_eq!(quotas.len(), 3);
         assert_eq!(quotas[0].used, 41);
+    }
+
+    #[test]
+    fn auth_and_unsubscribed_classification_is_tight() {
+        // `token` 裸词不再当鉴权，避免把参数错误误判成 needs re-login。
+        assert!(!is_auth_code("InvalidParameter: token limit"));
+        assert!(is_auth_code("InvalidToken"));
+        assert!(is_auth_code("SignatureDoesNotMatch"));
+        // 通用 ResourceNotFound 按 Soft 处理，不吞实现 bug。
+        assert!(!is_not_subscribed_code("ResourceNotFound"));
+        assert!(is_not_subscribed_code("NotSubscribed"));
+        assert!(is_not_subscribed_code("ProductNotSubscribed"));
+    }
+
+    #[test]
+    fn coding_window_covers_known_labels() {
+        use subswap_core::QuotaWindow;
+        assert_eq!(coding_window("session"), Some(QuotaWindow::FiveHour));
+        assert_eq!(coding_window("5h"), Some(QuotaWindow::FiveHour));
+        assert_eq!(coding_window("weekly"), Some(QuotaWindow::SevenDay));
+        assert_eq!(coding_window("monthly"), Some(QuotaWindow::Month));
+        assert_eq!(coding_window("daily"), None);
+    }
+
+    /// Mock 网关端到端：CodingPlan 优先于 AFP，且请求体为 `{}`、签名头排序正确。
+    /// 用标准库 TcpListener 做最小 HTTP mock，避免新增 `wiremock` 依赖；
+    /// 通过 `SUBSWAP_VOLCENGINE_OPENAPI_BASE` 覆盖网关指向 127.0.0.1。
+    #[tokio::test]
+    async fn coding_plan_preferred_over_afp_via_mock_gateway() {
+        use std::io::{Read, Write};
+        use std::sync::{Arc, Mutex};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_server = seen.clone();
+
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                listener.set_nonblocking(false).ok();
+                let (mut stream, _) = match listener.accept() {
+                    Ok(pair) => pair,
+                    Err(_) => break,
+                };
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .ok();
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 4096];
+                // 先读到 headers 结束，再按 Content-Length 补齐 body。
+                let mut header_end = None;
+                while header_end.is_none() {
+                    match stream.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            raw.extend_from_slice(&buf[..n]);
+                            if let Some(pos) = find_headers_end(&raw) {
+                                header_end = Some(pos);
+                                break;
+                            }
+                            if raw.len() > 32 * 1024 {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let header_end = header_end.unwrap_or(raw.len());
+                let header_text = String::from_utf8_lossy(&raw[..header_end]).to_string();
+                let content_len = header_text
+                    .lines()
+                    .find_map(|line| {
+                        let lower = line.to_lowercase();
+                        lower.strip_prefix("content-length:").map(|v| {
+                            v.trim().parse::<usize>().unwrap_or(0)
+                        })
+                    })
+                    .unwrap_or(0);
+                let mut body_len = raw.len().saturating_sub(header_end);
+                while body_len < content_len {
+                    match stream.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            raw.extend_from_slice(&buf[..n]);
+                            body_len += n;
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let request_text = String::from_utf8_lossy(&raw).to_string();
+                seen_server.lock().unwrap().push(request_text.clone());
+
+                let is_coding = request_text.contains("Action=GetCodingPlanUsage");
+                let payload = if is_coding {
+                    r#"{"ResponseMetadata":{},"Result":{"Status":"Running","QuotaUsage":[{"Level":"session","Percent":10.5,"ResetTimestamp":1784278625}]}}"#
+                } else {
+                    r#"{"ResponseMetadata":{},"Result":{"AFPFiveHour":{"Quota":2000,"Used":1000,"ResetTime":1784287365000}}}"#
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    payload.len(),
+                    payload
+                );
+                let _ = stream.write_all(response.as_bytes());
+                if is_coding {
+                    // CodingPlan 已命中：本 Provider 不应再打 AFP，直接结束 mock。
+                    break;
+                }
+            }
+        });
+
+        let prev = std::env::var("SUBSWAP_VOLCENGINE_OPENAPI_BASE").ok();
+        unsafe {
+            std::env::set_var(
+                "SUBSWAP_VOLCENGINE_OPENAPI_BASE",
+                format!("http://127.0.0.1:{port}"),
+            );
+        }
+        let id = AccountId("ark-test".into());
+        let client = reqwest::Client::new();
+        let result = query_via_aksk(&client, &id, "AK", "SK").await;
+        if let Some(value) = prev {
+            unsafe {
+                std::env::set_var("SUBSWAP_VOLCENGINE_OPENAPI_BASE", value);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("SUBSWAP_VOLCENGINE_OPENAPI_BASE");
+            }
+        }
+        let _ = server.join();
+
+        let quotas = result.unwrap().expect("coding plan should win");
+        assert_eq!(quotas.len(), 1);
+        assert_eq!(quotas[0].used, 11);
+        let requests = seen.lock().unwrap();
+        assert_eq!(requests.len(), 1, "AFP must not be queried when CodingPlan hits");
+        let req = &requests[0];
+        assert!(req.contains("Action=GetCodingPlanUsage"), "unexpected request: {req}");
+        assert!(
+            req.contains("SignedHeaders=content-type;host;x-content-sha256;x-date"),
+            "unexpected auth order: {req}"
+        );
+        assert!(req.contains("content-type: application/json"), "unexpected ct: {req}");
+        assert!(req.ends_with("{}"), "body must be {{}}, got tail: {}", &req[req.len().saturating_sub(32)..]);
+    }
+
+    fn find_headers_end(raw: &[u8]) -> Option<usize> {
+        raw.windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map(|pos| pos + 4)
     }
 }
