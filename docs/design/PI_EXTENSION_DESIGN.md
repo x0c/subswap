@@ -53,7 +53,7 @@ Machine configuration after acceptance:
 Verification:
 
 - `cargo test --workspace` passed, including the new `auth_projection` integration tests for Codex access-only output and Volcengine environment output.
-- `integrations/pi`: strict `tsc --noEmit` passed; 12 node tests passed, covering same-pool rotation, no replay after output, loop prevention, manual-only keys, abort handling, conservative error classification, caching/invalidation, and secret-free errors.
+- `integrations/pi`: strict `tsc --noEmit` passed; 15 node tests passed, covering same-pool rotation, no replay after output, loop prevention, manual-only keys, abort handling, conservative error classification, caching/invalidation, legacy alias migration, and secret-free errors.
 - A fresh installed `pi --list-models` listed `subswap-codex` and `subswap-volcengine` without an explicit extension path. A default `pi -p` request selected `subswap-volcengine/kimi-k3.1-pro` and surfaced the real upstream 5-hour quota 429 rather than an unknown-provider or plugin error.
 - Full-chain failover acceptance used a temporary Subswap home with the active Volcengine key replaced by an invalid key, a local OpenAI-compatible mock, and the real `subswap` binary. The mock observed exactly `invalid` then `valid`; Pi exited `0` with `MOCK_OK` and no stderr.
 
