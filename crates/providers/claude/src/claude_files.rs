@@ -69,6 +69,9 @@ pub struct OauthAccount {
 /// 自定义 API 激活状态。`restore_env` 保存切入 API 前已有的受管字段，切回 OAuth 时原样恢复。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiState {
+    /// 当前 API 模式所属的独立 Provider；旧版哨兵缺省为 `claude`。
+    #[serde(default = "default_api_state_provider")]
+    pub provider: String,
     pub account_id: String,
     /// 切入 API 模式时 `~/.claude/global.json` 里的 oauthAccount.emailAddress。
     /// 用于检测是否有外部 /login 发生（与 account_id 无关，account_id 是自定义 ID 不是邮箱）。
@@ -77,6 +80,17 @@ pub struct ApiState {
     pub oauth_email: Option<String>,
     #[serde(default)]
     pub restore_env: serde_json::Map<String, serde_json::Value>,
+}
+
+fn default_api_state_provider() -> String {
+    "claude".into()
+}
+
+impl ApiState {
+    /// 哨兵是否属于指定 Provider；旧版无 `provider` 字段时归 Claude。
+    pub fn belongs_to(&self, provider: &str) -> bool {
+        self.provider == provider
+    }
 }
 
 /// 读取整个 credentials.json。

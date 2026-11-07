@@ -12,10 +12,11 @@ use subswap_provider_antigravity::AntigravityProvider;
 use subswap_provider_claude::ClaudeProvider;
 use subswap_provider_codex::CodexProvider;
 use subswap_provider_commandcode::CommandcodeProvider;
-use subswap_provider_common::IsolatedProvider;
+use subswap_provider_common::{EnvIsolatedProvider, IsolatedProvider};
 use subswap_provider_cursor::CursorProvider;
 use subswap_provider_kimi::KimiProvider;
 use subswap_provider_opencode::{OpencodeApiKeyProvider, OpencodeProvider};
+use subswap_provider_volcengine::VolcengineProvider;
 
 pub struct AppContext {
     pub store: Arc<dyn CredentialStore>,
@@ -28,11 +29,15 @@ pub struct AppContext {
     pub opencode_api_key: Arc<OpencodeApiKeyProvider>,
     pub commandcode: Arc<CommandcodeProvider>,
     pub antigravity: Arc<AntigravityProvider>,
+    pub volcengine: Arc<VolcengineProvider>,
     pub providers: ProviderRegistry,
     /// 隔离运行（`run`/`shell`/`env`）查表：provider id → 通用隔离抽象。
     /// Claude 不在此表中，走 `run.rs` 里的专用分支（macOS 钥匙串 / API 账号逻辑不适配此通用形状）。
     /// 新增一个文件型 provider 只需在这里插一行，无需再改 `run.rs` 的 dispatch 逻辑。
     pub isolated: HashMap<&'static str, Arc<dyn IsolatedProvider>>,
+    /// 进程 env 隔离（`run`/`shell`/`env`）：API Key 直接注入子进程，无需物化目录。
+    /// Claude 自定义 API 与 Volcengine 共用该机制，按 provider 查表，不按名分发。
+    pub env_isolated: HashMap<&'static str, Arc<dyn EnvIsolatedProvider>>,
     pub audit: AuditLog,
 }
 
@@ -67,6 +72,10 @@ impl AppContext {
             store.clone(),
             registry.clone(),
         ));
+        let volcengine = Arc::new(subswap_provider_volcengine::new(
+            store.clone(),
+            registry.clone(),
+        ));
 
         let mut providers = ProviderRegistry::new();
         providers.register(claude.clone());
@@ -77,12 +86,17 @@ impl AppContext {
         providers.register(opencode_api_key.clone());
         providers.register(commandcode.clone());
         providers.register(antigravity.clone());
+        providers.register(volcengine.clone());
 
         let mut isolated: HashMap<&'static str, Arc<dyn IsolatedProvider>> = HashMap::new();
         isolated.insert("codex", codex.clone());
         isolated.insert("kimi", kimi.clone());
         isolated.insert("opencode-api-key", opencode.go_engine());
         isolated.insert("commandcode", commandcode.clone());
+
+        let mut env_isolated: HashMap<&'static str, Arc<dyn EnvIsolatedProvider>> = HashMap::new();
+        env_isolated.insert("claude", claude.clone());
+        env_isolated.insert("volcengine", volcengine.clone());
 
         let audit = AuditLog::from_default_paths()?;
 
@@ -97,8 +111,10 @@ impl AppContext {
             opencode_api_key,
             commandcode,
             antigravity,
+            volcengine,
             providers,
             isolated,
+            env_isolated,
             audit,
         })
     }

@@ -8,6 +8,7 @@
 | `subswap login <kimi\|cursor\|commandcode>` | **不驱动登录**：用户先在对应客户端登录（Command Code 也可把 API key 写在 `--` 后面），本命令只导入当前状态并标记为 active |
 | `subswap login opencode` | 导入已登录的官方 Console 账号；未登录时调官方命令（V2 `opencode auth login opencode` / V1 `opencode console login`）登录后导入。不会把 Go API key 当成官方账号 |
 | `subswap login opencode-api-key` | 单独导入 Go API key（可用 `-- <key>`）；仅手动切换和监控余量，不参与自动换号。别名 `opencode-go` |
+| `subswap login volcengine` | 独立导入火山方舟 Coding Plan API Key（可用 `-- <key>`；不带 Key 时读取当前官方端点配置）；单独账号分组，仅手动切换。别名 `ark` |
 | `subswap swap [<id\|N>]`（快捷 `subswap [<id\|N>]`） | 手动切换；`<id>` 用 id/label/`<provider>/<id>`，`<N>` 用默认入口列出的全局序号。无参只打印编号清单（不查 quota）。裸数字/引用与 `swap` 完全同语义 |
 | `subswap rm <id\|N>` | 删除账号：清 subswap 记录（registry + keyring），引用形式同 `swap`。**永不因 active / `manual_only` /「请先 swap」而拒绝**——当前正在用的自定义 API 号会先退出 API 模式（恢复 `settings.json` 受管字段并清 `.subswap-api.json`）再删。删的是该 provider 当前原生登录账号时，尽力从原生客户端登出/断开（codex/kimi/commandcode 删 live 文件；claude 移除 oauthAccount 并清钥匙串/file 凭证；cursor 清桌面库或 agent 凭证，桌面运行中先请它正常退出且不再拉起；opencode 系经官方 `auth logout`，V1 `opencode-api-key` 清 live slot）；删的是 parked 账号时只清本地。原生登出失败只警告，仍清本地；若客户端仍登录，下次入口可能再导入。要重新纳入已删的号，用对应 provider 的 `login` |
 | `subswap run <provider> <id> [-- args]` | 账号隔离启动：把该账号凭证投影到私有目录，设隔离环境变量后启动原生 CLI（codex/claude/kimi/commandcode/OpenCode V1 API Key），**不动全局活账号**；退出时吸收轮换后的凭证。Cursor、OpenCode 官方账号与 V2 API Key 不支持此模式 |
@@ -114,6 +115,19 @@ A successful `subswap --json swap <target>` writes exactly one JSON object to st
 隐藏一次性命令：`subswap migrate-local` —— 从旧版本地账号目录搬到 subswap；`--help` 不可见。
 
 辅助二进制 `subswapd`：默认入口自动 detach 拉起，负责周期 quota 轮询 / 自动切换 / Claude token 后台保活。Unix-only；Windows 只提供前台 CLI；macOS 默认不自动拉起（避免 Keychain 额外授权弹窗）。启用 macOS 自动拉起：`SUBSWAP_AUTO_DAEMON=1`。单实例靠 `<state>/subswapd.pid` 文件锁。关掉：`pkill subswapd`；禁止自动拉起：`SUBSWAP_NO_DAEMON=1`。**在 macOS 未启用自动拉起时，Codex/其它 provider 的后台自动切号不会跑**——只有主动执行无参 `subswap` 才会采样并自动切；切完仍须重启已打开的 Codex 才生效（上一节）。
+
+## 火山方舟 Coding Plan
+
+`volcengine` 是与 `claude` / `codex` / `opencode` 同层级的独立 Provider，不是 Claude
+`add-api` 预设。用 `subswap login volcengine -- <api-key>` 导入并激活，账号 id 为
+`ark-<指纹>`；之后可用通用编号或 `volcengine/<id>` 执行 `swap` / `rm`。
+
+切换写入 Claude Code 的 Anthropic 兼容配置：官方端点
+`https://ark.cn-beijing.volces.com/api/coding`、Bearer Key、三档统一的 `ark-code-latest`。
+与 Claude OAuth / 自定义 API 互切时保存并恢复受管 env；删除当前 Volcengine 账号也会退出
+其 API 模式。Key 按固定订阅 `flat` 展示，全部 `manual_only`；没有公开 quota API，因此不显示
+伪造余量。`subswap run volcengine <id> -- <claude 参数>` 以进程级环境变量隔离启动 Claude
+Code，不改全局 active；`shell` / `env` 同样支持。
 
 ## OpenCode
 

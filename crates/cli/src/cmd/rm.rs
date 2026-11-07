@@ -40,6 +40,10 @@ pub async fn run(ctx: &AppContext, id_input: &str, json: bool) -> Result<()> {
             "antigravity",
             ctx.antigravity.disconnect_official(&acc.id).await,
         ),
+        "volcengine" => try_official_disconnect(
+            "volcengine",
+            ctx.volcengine.disconnect_official(&acc.id).await,
+        ),
         _ => None,
     };
 
@@ -52,6 +56,7 @@ pub async fn run(ctx: &AppContext, id_input: &str, json: bool) -> Result<()> {
         "opencode-api-key" => ctx.opencode_api_key.live_account_id().ok(),
         "commandcode" => ctx.commandcode.live_account_id().ok(),
         "antigravity" => ctx.antigravity.live_account_id().ok(),
+        "volcengine" => ctx.volcengine.live_account_id().ok(),
         _ => None,
     }
     .is_some_and(|live| live == acc.id);

@@ -1601,6 +1601,7 @@ dependencies = [
  "subswap-provider-cursor",
  "subswap-provider-kimi",
  "subswap-provider-opencode",
+ "subswap-provider-volcengine",
  "tempfile",
  "tokio",
  "tracing",
@@ -1645,6 +1646,7 @@ dependencies = [
  "subswap-provider-cursor",
  "subswap-provider-kimi",
  "subswap-provider-opencode",
+ "subswap-provider-volcengine",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1806,6 +1808,21 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "subswap-provider-volcengine"
+version = "1.16.6"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde_json",
+ "sha2",
+ "subswap-core",
+ "subswap-provider-claude",
+ "subswap-provider-common",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

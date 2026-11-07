@@ -26,14 +26,15 @@ use subswap_core::{
     Account, AccountId, AccountRegistry, BillingKind, ClientTarget, CredentialStore,
     OfficialDisconnect, Provider, Quota, QuotaStatus, QuotaWindow,
 };
+use subswap_provider_common::EnvIsolatedProvider;
 
-use crate::claude_files::{
+pub use crate::claude_files::{
     capture_managed_env, mark_onboarding_complete, read_api_state, read_credentials,
     read_oauth_account, read_settings, remove_api_state, remove_oauth_account_from_global,
     restore_oauth_env_in_settings, write_api_env_into_settings, write_api_state, write_credentials,
     write_oauth_account_into_global, ApiState, CredentialsFile, OauthAccount, MANAGED_API_ENV_KEYS,
 };
-use crate::paths::{
+pub use crate::paths::{
     api_state_path, claude_home, credentials_path, global_config_path, settings_path,
 };
 
@@ -64,7 +65,8 @@ pub struct ClaudeApiConfig {
 }
 
 impl ClaudeApiConfig {
-    fn env(&self, api_key: &str) -> Result<serde_json::Map<String, serde_json::Value>> {
+    /// 生成可写入 Claude settings 或直接注入子进程的受管环境变量。
+    pub fn env(&self, api_key: &str) -> Result<serde_json::Map<String, serde_json::Value>> {
         if !matches!(
             self.auth_field.as_str(),
             "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_API_KEY"
@@ -223,10 +225,13 @@ impl ClaudeProvider {
     ///
     /// 操作顺序：先恢复 settings.json，后删除哨兵文件。恢复失败则哨兵保留，下次入口重试。
     fn reconcile_api_external_login(&self) -> Result<()> {
-        // 不在 API 模式则无需调和。
+        // 不在 API 模式则无需调和；API 模式归其他独立 Provider（volcengine）时由对方处理。
         let Some(api_state) = read_api_state(&api_state_path(&self.claude_home))? else {
             return Ok(());
         };
+        if !api_state.belongs_to(PROVIDER_ID) {
+            return Ok(());
+        }
         // 旧版哨兵文件没有记录 oauth_email（account_id 是自定义 API ID 而非 OAuth 邮箱），
         // 无可比较信息，跳过 reconcile 避免误判。
         let Some(saved_email) = &api_state.oauth_email else {
@@ -258,6 +263,14 @@ impl ClaudeProvider {
         if let Some(account) = self.active_api_account()? {
             return Ok(account);
         }
+        // API 模式归其他独立 Provider 时，Claude OAuth 不算 live，避免与对方双 active。
+        if let Some(state) = read_api_state(&api_state_path(&self.claude_home))? {
+            if !state.belongs_to(PROVIDER_ID) {
+                return Err(Error::Provider(
+                    "Claude API mode belongs to another provider".into(),
+                ));
+            }
+        }
         let creds = self.read_live_credentials()?;
         let oauth_account = read_oauth_account(&global_config_path(&self.claude_home))?
             .ok_or_else(|| Error::Provider(
@@ -274,6 +287,14 @@ impl ClaudeProvider {
         if let Some(account) = self.active_api_account()? {
             return Ok(account.id);
         }
+        // API 模式归其他独立 Provider 时，Claude OAuth 不算 live，避免与对方双 active。
+        if let Some(state) = read_api_state(&api_state_path(&self.claude_home))? {
+            if !state.belongs_to(PROVIDER_ID) {
+                return Err(Error::Provider(
+                    "Claude API mode belongs to another provider".into(),
+                ));
+            }
+        }
         let oauth_account = read_oauth_account(&global_config_path(&self.claude_home))?
             .ok_or_else(|| {
                 Error::Provider(
@@ -289,6 +310,13 @@ impl ClaudeProvider {
         self.reconcile_api_external_login()?;
         if let Some(account) = self.active_api_account()? {
             return Ok(account);
+        }
+        if let Some(state) = read_api_state(&api_state_path(&self.claude_home))? {
+            if !state.belongs_to(PROVIDER_ID) {
+                return Err(Error::Provider(
+                    "Claude API mode belongs to another provider".into(),
+                ));
+            }
         }
         let oauth_account = read_oauth_account(&global_config_path(&self.claude_home))?
             .ok_or_else(|| Error::Provider(
@@ -487,6 +515,9 @@ impl ClaudeProvider {
         let Some(state) = read_api_state(&api_state_path(&self.claude_home))? else {
             return Ok(None);
         };
+        if !state.belongs_to(PROVIDER_ID) {
+            return Ok(None);
+        }
         let id = AccountId(state.account_id);
         let account = self.registry.find(PROVIDER_ID, &id)?.ok_or_else(|| {
             Error::Provider(format!(
@@ -528,6 +559,7 @@ impl ClaudeProvider {
                 .map(|a| a.email_address)
         });
         let state = ApiState {
+            provider: PROVIDER_ID.into(),
             account_id: id.0.clone(),
             oauth_email,
             restore_env,
@@ -701,7 +733,7 @@ fn exit_api_mode_for_account(claude_home: &Path, id: &AccountId) -> Result<Offic
     let state_path = api_state_path(claude_home);
     let settings = settings_path(claude_home);
     match read_api_state(&state_path)? {
-        Some(state) if state.account_id == id.0 => {
+        Some(state) if state.belongs_to(PROVIDER_ID) && state.account_id == id.0 => {
             restore_oauth_env_in_settings(&settings, &state.restore_env)?;
             remove_api_state(&state_path)?;
             Ok(OfficialDisconnect::AlreadyGone)
@@ -946,6 +978,25 @@ impl Provider for ClaudeProvider {
     /// OAuth 凭证 + 自定义 API Key 共存于凭证仓库。
     fn credential_store_fields(&self) -> &'static [&'static str] {
         &["credentials_json", "api_key"]
+    }
+}
+
+#[async_trait]
+impl EnvIsolatedProvider for ClaudeProvider {
+    fn provider_id(&self) -> &'static str {
+        PROVIDER_ID
+    }
+
+    fn native_cli(&self) -> &'static str {
+        "claude"
+    }
+
+    async fn isolation_env(&self, id: &AccountId) -> Result<Option<Vec<(String, String)>>> {
+        let provider = self.clone();
+        let id = id.clone();
+        tokio::task::spawn_blocking(move || provider.api_run_env_vars(&id))
+            .await
+            .map_err(|e| Error::Provider(format!("Claude env isolation join failed: {e}")))?
     }
 }
 
@@ -2772,6 +2823,7 @@ mod tests {
             write_api_state(
                 &api_state_path(&self.home),
                 &ApiState {
+                    provider: PROVIDER_ID.into(),
                     account_id: account_id.into(),
                     oauth_email: oauth_email.map(str::to_string),
                     restore_env,

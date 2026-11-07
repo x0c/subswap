@@ -281,8 +281,50 @@ pub async fn run(
             }
             return finish(ctx, json).await;
         }
+        "volcengine" | "ark" => {
+            if email.is_some() || sso || device_auth {
+                bail!("--email/--sso/--device-auth are not supported for volcengine login");
+            }
+            if extra_args.len() > 1 {
+                bail!("expected one Volcengine Coding Plan API key after `--`");
+            }
+            let account = if let Some(key) = extra_args
+                .first()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                let imported = ctx.volcengine.import_key(key, None)?;
+                ctx.volcengine
+                    .activate(&imported.id)
+                    .await
+                    .context("activate Volcengine Coding Plan account")?;
+                imported
+            } else {
+                let imported = ctx.volcengine.import_active().context(
+                    "no Volcengine Coding Plan configuration in Claude settings; pass an API key after `--`",
+                )?;
+                ctx.volcengine
+                    .activate(&imported.id)
+                    .await
+                    .context("activate Volcengine Coding Plan account")?;
+                imported
+            };
+            ctx.registry
+                .find("volcengine", &account.id)?
+                .context("Volcengine login did not persist")?;
+            ctx.audit.append(AuditEvent::ok(
+                "login",
+                "volcengine",
+                Some(account.id.0.as_str()),
+            ));
+            println!("login → volcengine/{}", account_ref(&account.id.0));
+            if let Err(e) = subswap_core::record_manual_swap("volcengine") {
+                tracing::warn!(err = %e, provider = "volcengine", "record manual hold failed");
+            }
+            return finish(ctx, json).await;
+        }
         other => {
-            bail!("unknown provider: {other} (expected claude, codex, kimi, cursor, opencode, opencode-api-key, commandcode or antigravity)")
+            bail!("unknown provider: {other} (expected claude, codex, kimi, cursor, opencode, opencode-api-key, commandcode, volcengine or antigravity)")
         }
     }
 }

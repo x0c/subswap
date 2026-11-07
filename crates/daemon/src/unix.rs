@@ -142,6 +142,10 @@ pub async fn run() -> Result<()> {
         registry.clone(),
     ));
     let antigravity = Arc::new(AntigravityProvider::new(store.clone(), registry.clone()));
+    let volcengine = Arc::new(subswap_provider_volcengine::new(
+        store.clone(),
+        registry.clone(),
+    ));
     let mut providers = ProviderRegistry::new();
     providers.register(claude.clone());
     providers.register(codex.clone());
@@ -151,6 +155,7 @@ pub async fn run() -> Result<()> {
     providers.register(opencode_api_key.clone());
     providers.register(commandcode.clone());
     providers.register(antigravity.clone());
+    providers.register(volcengine.clone());
 
     let mut state = DaemonState::new();
     let mut adaptive = AdaptiveState::new();

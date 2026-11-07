@@ -111,7 +111,7 @@ subswap env <id>                  # ✅ 打印 export，供 eval
 
 - **macOS item service 名**：§2.1 公式已对 claude 2.1.177 钉死，且 2026-06-15 实机验证可读。上游改命名仍会破坏植入 → 须版本兜底 / `security find-generic-password` 自检。
 - **私有目录明文凭证**：Linux `.credentials.json`、macOS 命名空间 item → 权限 `0600`、目录 `0700`；会话结束清理或保留（待定）。
-- **manual_only API 账号**：进程级 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 天然适配隔离；仍受 `manual_only`（不参与自动切换）。
+- **manual_only API 账号**：进程级 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 天然适配隔离；仍受 `manual_only`（不参与自动切换）。独立 `volcengine` Provider 也通过 `EnvIsolatedProvider` 使用同一机制，原生 CLI 为 `claude`，账号与 active 状态不归 Claude。
 - **崩溃残留 env 目录**：v0.3.25 无 flock 后，崩溃时 `Checkout::Drop` 不执行 → `<id>/<seq>/` 可能残留；`is_checked_out` 以数字名子目录存在为近似活跃指标 → 误判活跃直至手动清理（不影响全局 `swap`，但暂停该 Claude 账号 daemon 保活）。清理：删 `<data_dir>/envs/<provider>/<id>/` 下数字名子目录。
 - **对全局 active 做隔离启动**：会告警；手动 `swap`/默认入口/daemon auto-swap 仍可在隔离期间切换。仅恰逢 refresh 轮换才可能互废 token；当前接受以保证全局切换可用。
 - **daemon 避让已接线**：`keep_claude_tokens_alive` 每轮先查 `is_checked_out`，命中跳过。

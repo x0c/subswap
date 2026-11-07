@@ -53,14 +53,12 @@ pub async fn env(ctx: &AppContext, id_input: &str) -> Result<()> {
     ensure_isolation_supported(ctx, &acc).await?;
     warn_if_global_active(&acc);
 
-    // API 账号：直接打印 env vars，无需物化目录与 checkout 锁。
-    if acc.provider == "claude" {
-        if let Some(api_vars) = ctx.claude.api_run_env_vars(&acc.id)? {
-            for (k, v) in &api_vars {
-                println!("export {k}={}", shell_quote(v));
-            }
-            return Ok(());
+    // env-only 隔离账号：直接打印 env vars，无需物化目录与 checkout 锁。
+    if let Some(api_vars) = env_isolation_vars(ctx, &acc).await? {
+        for (k, v) in &api_vars {
+            println!("export {k}={}", shell_quote(v));
         }
+        return Ok(());
     }
 
     let paths = AppPaths::resolve()?;
@@ -99,14 +97,12 @@ async fn launch_program(
     ensure_isolation_supported(ctx, acc).await?;
     warn_if_global_active(acc);
 
-    // API 账号：无 refresh token 轮换，直接注入 env vars，跳过 checkout 锁、物化与 absorb。
-    if acc.provider == "claude" {
-        if let Some(api_vars) = ctx.claude.api_run_env_vars(&acc.id)? {
-            println!("run → {}/{} (api-key isolated)", acc.provider, acc.id);
-            let status = spawn_isolated(program, args, api_vars).await?;
-            propagate_exit(status);
-            return Ok(());
-        }
+    // env-only 隔离账号：无 refresh token 轮换，直接注入 env vars，跳过 checkout 锁、物化与 absorb。
+    if let Some(api_vars) = env_isolation_vars(ctx, acc).await? {
+        println!("run → {}/{} (api-key isolated)", acc.provider, acc.id);
+        let status = spawn_isolated(program, args, api_vars).await?;
+        propagate_exit(status);
+        return Ok(());
     }
 
     let paths = AppPaths::resolve()?;
@@ -216,6 +212,9 @@ fn native_cli(ctx: &AppContext, provider: &str) -> &'static str {
     if let Some(iso) = ctx.isolated.get(provider) {
         return iso.native_cli();
     }
+    if let Some(env_iso) = ctx.env_isolated.get(provider) {
+        return env_iso.native_cli();
+    }
     match provider {
         "claude" => "claude",
         _ => "",
@@ -231,12 +230,28 @@ fn normalize_provider(provider: &str) -> Result<&'static str> {
         "opencode" => Ok("opencode"),
         "commandcode" | "command-code" | "cmd" => Ok("commandcode"),
         "antigravity" | "gemini" | "agy" => Ok("antigravity"),
+        "volcengine" | "ark" => Ok("volcengine"),
         other => {
             bail!(
-                "unknown provider: {other} (expected codex, claude, kimi, antigravity, opencode-api-key or commandcode)"
+                "unknown provider: {other} (expected codex, claude, kimi, antigravity, opencode-api-key, volcengine or commandcode)"
             )
         }
     }
+}
+
+/// env-only 隔离查表：API Key 直接注入子进程，无需物化目录。
+/// 按 provider 查 `env_isolated` 表，不按名分发；`None` 表示走常规物化路径。
+async fn env_isolation_vars(
+    ctx: &AppContext,
+    acc: &Account,
+) -> Result<Option<Vec<(String, String)>>> {
+    if let Some(provider) = ctx.env_isolated.get(acc.provider.as_str()) {
+        return provider
+            .isolation_env(&acc.id)
+            .await
+            .map_err(anyhow::Error::from);
+    }
+    Ok(None)
 }
 
 /// 对「全局 active」账号起隔离会话有 refresh token 轮换冲突风险（见 ACCOUNT_ISOLATION_DESIGN.md §5）。

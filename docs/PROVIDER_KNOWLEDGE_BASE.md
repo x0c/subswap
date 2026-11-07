@@ -610,6 +610,32 @@ Go 订阅 = API key（`{"type":"api","key":"sk-..."}`），无 refresh，不刷�
 
 ---
 
+## 火山方舟 Coding Plan
+
+独立 `Provider`（`crates/providers/volcengine/`，机主裁定 2026-11-07）：与 Claude / Codex / OpenCode
+同层级，账号列表单独分组，**不得**做成 Claude `add-api` 预设或混入 Claude 账号命名空间。
+`subswap login volcengine -- <api-key>`（别名 `ark`）显式导入；不带 Key 时仅从当前 Claude
+`settings.json` 导入官方端点已有的配置。
+
+| 项 | 值 |
+|---|---|
+| Anthropic Base URL | `https://ark.cn-beijing.volces.com/api/coding` |
+| 认证 | `ANTHROPIC_AUTH_TOKEN`（Bearer） |
+| 默认模型 | Opus / Sonnet / Haiku / subagent 全部 `ark-code-latest`，由控制台选择具体模型或 Auto |
+| 账号 id / label | `ark-` + Key SHA-256 前 16 hex / `Ark …末4`，不展示完整 Key |
+| 计费与自动切换 | `billing = "flat"`；所有 Key `manual_only`，不参与自动换号 |
+| 额度 | 官方文档只提供控制台用量查看，未找到公开 quota API；返回空额度，不伪造 5h / 周 / 月余量 |
+
+切换目标是 Claude Code 的 `settings.json.env`，但 active 状态归 `volcengine`。它与 Claude
+OAuth / 自定义 API 共用 `.subswap-api.json` 的恢复信息；哨兵增加 `provider` 字段，旧版缺省
+`claude`。任一方切入时保留首次进入 API 模式前的受管 env，切回 OAuth 或删除当前
+Volcengine 账号时恢复，不能串号或丢失用户原配置。`run` / `shell` / `env` 通过独立的
+env-only 隔离能力启动 `claude`，不写全局 active。
+
+[官方 Claude Code 接入文档](https://www.volcengine.com/docs/ark/coding-plan-personal-ai-claude-code)。
+2026-11-07 使用机主提供的 Key 对上述端点发一次最小 Messages 请求，HTTP 200，
+`ark-code-latest` 由服务端路由到 `auto`。
+
 ## Antigravity / Gemini
 
 独立 `Provider`（`crates/providers/antigravity/`，不接文件型共享引擎；OAuth 活在系统钥匙串，无 env 覆盖机制，不支持 `run`/`shell`/`env` 隔离，同 Cursor/Console 边界）。

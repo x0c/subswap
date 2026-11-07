@@ -280,6 +280,16 @@ async fn sync_local_active(ctx: &AppContext) -> Vec<AutoLine> {
             Err(e) => notices.push(signed_in_but_untracked("antigravity", &id, e)),
         }
     }
+    if let Ok(id) = ctx.volcengine.live_account_id() {
+        match ctx.volcengine.sync_active_metadata() {
+            Ok(account) => {
+                if ctx.registry.set_active("volcengine", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "volcengine", &account.id);
+                }
+            }
+            Err(e) => notices.push(signed_in_but_untracked("volcengine", &id, e)),
+        }
+    }
     notices
 }
 
@@ -425,6 +435,16 @@ async fn sync_local_active_metadata(ctx: &AppContext) -> Vec<AutoLine> {
                 }
             }
             Err(e) => notices.push(signed_in_but_untracked("antigravity", &id, e)),
+        }
+    }
+    if let Ok(id) = ctx.volcengine.live_account_id() {
+        match ctx.volcengine.sync_active_metadata() {
+            Ok(account) => {
+                if ctx.registry.set_active("volcengine", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "volcengine", &account.id);
+                }
+            }
+            Err(e) => notices.push(signed_in_but_untracked("volcengine", &id, e)),
         }
     }
     notices

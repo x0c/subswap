@@ -447,6 +447,86 @@ emailAddress = "oauth@example.com"
     teardown_test_keychain(&tmp);
 }
 
+#[test]
+fn volcengine_login_activates_official_defaults_and_restores_oauth_env() {
+    let tmp = tempfile::tempdir().unwrap();
+    setup_test_keychain(&tmp);
+    write_fast_quota_timeout(&tmp);
+    let claude = tmp.path().join("claude");
+    let registry = app_config_dir(&tmp).join("registry.toml");
+
+    // 先放一个旧受管字段，验证切入/切出 Volcengine 时能够保留与恢复。
+    fs::create_dir_all(&claude).unwrap();
+    fs::write(
+        claude.join("settings.json"),
+        r#"{"env":{"ANTHROPIC_MODEL":"old-model","KEEP":"yes"}}"#,
+    )
+    .unwrap();
+
+    let stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["login", "volcengine", "--", "ark-secret"])
+            .output()
+            .unwrap(),
+    );
+    assert!(stdout.contains("login → volcengine/ark-"), "{stdout}");
+    let saved = fs::read_to_string(&registry).unwrap();
+    assert!(saved.contains("manual_only = true"), "{saved}");
+    assert!(saved.contains("billing = \"flat\""), "{saved}");
+    assert!(saved.contains("provider = \"volcengine\""), "{saved}");
+
+    let active: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(claude.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(
+        active["env"]["ANTHROPIC_BASE_URL"],
+        "https://ark.cn-beijing.volces.com/api/coding"
+    );
+    assert_eq!(active["env"]["ANTHROPIC_AUTH_TOKEN"], "ark-secret");
+    assert!(active["env"].get("ANTHROPIC_API_KEY").is_none());
+    for field in [
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "CLAUDE_CODE_SUBAGENT_MODEL",
+    ] {
+        assert_eq!(active["env"][field], "ark-code-latest", "{field}");
+    }
+
+    // 别名 ark 同样可用；重复导入同一 Key 不应新增账号。
+    let stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["login", "ark", "--", "ark-secret"])
+            .output()
+            .unwrap(),
+    );
+    assert!(stdout.contains("login → volcengine/ark-"), "{stdout}");
+
+    // 删除当前 Volcengine 账号应退出 API 模式并恢复旧受管字段。
+    let volcengine_id = saved
+        .lines()
+        .find_map(|line| {
+            let line = line.trim();
+            line.strip_prefix("id = \"")?
+                .strip_suffix('"')
+                .map(str::to_string)
+        })
+        .expect("volcengine id in registry");
+    assert_success(
+        isolated_subswap(&tmp)
+            .args(["rm", &format!("volcengine/{volcengine_id}")])
+            .output()
+            .unwrap(),
+    );
+    let restored: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(claude.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(restored["env"]["ANTHROPIC_MODEL"], "old-model");
+    assert_eq!(restored["env"]["KEEP"], "yes");
+    assert!(restored["env"].get("ANTHROPIC_BASE_URL").is_none());
+
+    teardown_test_keychain(&tmp);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn swapping_to_active_claude_account_preserves_live_keychain_credentials() {

@@ -44,9 +44,13 @@
 │ - IsolatedProvider：    │                        │
 │   run/shell/env 隔离   │                         │
 │   运行的 blanket impl  │                         │
+│ - EnvIsolatedProvider： │                        │
+│   进程 env 隔离        │                         │
 └──────────┬─────────────┘                         │
            │                                       │
 ┌──────────▼───────────────────────────────────────▼─────────────┐
+│ providers/volcengine（独立 Provider）                           │
+│ - Coding Plan API Key + Claude settings.env                   │
 │ providers/cursor（独立 Provider）                               │
 │ - SQLite state.vscdb + GUI 退出/重启协调                        │
 │ - 事务切换 / 回滚 / Cursor usage-summary                        │
@@ -60,7 +64,7 @@
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Codex / Kimi / OpenCode API Key / Command Code 使用 `providers/common` 的文件型凭证能力；OpenCode API Key 在 V2 上另由官方客户端数据库和切号命令决定当前 Key，V1 才通过 `auth.json` 的 `opencode-go` 项切换。OpenCode Console 官方账号单独实现 `Provider`，只从官方数据库读取凭证、通过官方命令切换；它与 API Key 是两个独立 Provider。Claude（Keychain + 自定义 API）与 Cursor（SQLite + GUI 生命周期）也独立实现。
+Codex / Kimi / OpenCode API Key / Command Code 使用 `providers/common` 的文件型凭证能力；OpenCode API Key 在 V2 上另由官方客户端数据库和切号命令决定当前 Key，V1 才通过 `auth.json` 的 `opencode-go` 项切换。OpenCode Console 官方账号单独实现 `Provider`，只从官方数据库读取凭证、通过官方命令切换；它与 API Key 是两个独立 Provider。Claude（Keychain + 自定义 API）与 Cursor（SQLite + GUI 生命周期）也独立实现。火山方舟 Coding Plan 是独立的 `volcengine` Provider（机主裁定 2026-11-07），不复用 Claude 账号命名空间；它只把 Key 投影到 Claude `settings.json.env`，通过带 `provider` 的共享 API 哨兵与 Claude 互切并恢复配置，不接文件型引擎。
 
 ## 2. 设计模式
 
@@ -278,6 +282,7 @@ Linux keyutils 按**内核 session keyring** 隔离。`subswapd` 经 `fork + set
 | `disconnect_quits_client()` → `false` | Cursor → `true` | 断开原生登录会退出客户端且不再拉起时，附一句说明 |
 | `credential_store_fields()` → 空 | Claude/Codex/Cursor/Kimi/Key/CommandCode 各自字段 | `rm` 清 keyring 时按此删对应字段 |
 | `ensure_isolation_supported()` → `Ok` | `opencode-api-key` → V2 拒绝 | 官方客户端版本不支持隔离投影时直接报错，不静默起错凭证 |
+| `EnvIsolatedProvider`（独立隔离 trait） | Claude API / Volcengine | 账号凭证可直接投影为进程 env 时，异步返回变量与原生 CLI；`run` 查表，不新增按名分支 |
 
 仍保留按名路由的仅三处（均为编排层、逻辑仍在 Provider 内）：`rm` 的断开/验活分发
 （各家方法签名不同：同步/异步、`&AccountId`/`&Account`）、`run.rs` 的 Claude 专用分支
