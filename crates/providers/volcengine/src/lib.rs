@@ -22,6 +22,8 @@ use subswap_provider_claude::{
 };
 use subswap_provider_common::EnvIsolatedProvider;
 
+mod quota;
+
 /// 独立 Provider 标识。
 pub const PROVIDER_ID: &str = "volcengine";
 /// 官方 Coding Plan Anthropic 兼容端点。
@@ -29,6 +31,10 @@ pub const CODING_PLAN_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/co
 /// 控制台托管模型路由的默认 Model Name。
 pub const DEFAULT_MODEL: &str = "ark-code-latest";
 const API_KEY_FIELD: &str = "api_key";
+/// 额度查询用的火山 AK（与推理 Key 分开存放）。
+pub(crate) const QUOTA_AK_FIELD: &str = "access_key_id";
+/// 额度查询用的火山 SK（与推理 Key 分开存放）。
+pub(crate) const QUOTA_SK_FIELD: &str = "secret_access_key";
 
 /// 火山方舟 Coding Plan Provider。
 #[derive(Clone)]
@@ -236,6 +242,46 @@ impl VolcengineProvider {
         Ok(account)
     }
 
+    /// 设置额度查询用的火山 AK/SK（与推理 Key 分开存放）。
+    pub fn set_quota_credentials(
+        &self,
+        id: &AccountId,
+        access_key_id: &str,
+        secret_access_key: &str,
+    ) -> Result<()> {
+        let access_key_id = access_key_id.trim();
+        let secret_access_key = secret_access_key.trim();
+        if access_key_id.is_empty() || secret_access_key.is_empty() {
+            return Err(Error::Config(
+                "Volcengine AccessKey ID and Secret cannot be empty".into(),
+            ));
+        }
+        self.registry
+            .find(PROVIDER_ID, id)?
+            .ok_or_else(|| Error::AccountNotFound {
+                provider: PROVIDER_ID.into(),
+                id: id.to_string(),
+            })?;
+        self.store
+            .set(PROVIDER_ID, &id.0, QUOTA_AK_FIELD, access_key_id)?;
+        self.store.set(
+            PROVIDER_ID,
+            &id.0,
+            QUOTA_SK_FIELD,
+            secret_access_key,
+        )?;
+        Ok(())
+    }
+
+    /// 读取额度查询用的 AK/SK；缺失时返回 `None`，调用方再试 arkcli 兜底。
+    fn quota_credentials(&self, id: &AccountId) -> Result<(Option<String>, Option<String>)> {
+        let ak = self.store.get(PROVIDER_ID, &id.0, QUOTA_AK_FIELD)?;
+        let sk = self.store.get(PROVIDER_ID, &id.0, QUOTA_SK_FIELD)?;
+        let ak = ak.map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+        let sk = sk.map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+        Ok((ak, sk))
+    }
+
     fn account_and_env(
         &self,
         id: &AccountId,
@@ -379,13 +425,20 @@ impl Provider for VolcengineProvider {
         .map_err(|e| Error::Provider(format!("Volcengine activation join failed: {e}")))?
     }
 
-    async fn query_quota(&self, _id: &AccountId) -> Result<Vec<Quota>> {
-        // 官方只提供控制台用量视图，没有可核验的公开 quota API。
-        Ok(Vec::new())
+    async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>> {
+        let provider = self.clone();
+        let id_for_creds = id.clone();
+        let (access_key_id, secret_access_key) = tokio::task::spawn_blocking(move || {
+            provider.quota_credentials(&id_for_creds)
+        })
+        .await
+        .map_err(|e| Error::Provider(format!("read Volcengine quota credentials failed: {e}")))??
+        ;
+        quota::fetch_quota(id.clone(), access_key_id, secret_access_key).await
     }
 
     fn credential_store_fields(&self) -> &'static [&'static str] {
-        &[API_KEY_FIELD]
+        &[API_KEY_FIELD, QUOTA_AK_FIELD, QUOTA_SK_FIELD]
     }
 }
 

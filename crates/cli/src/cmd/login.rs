@@ -285,20 +285,46 @@ pub async fn run(
             if email.is_some() || sso || device_auth {
                 bail!("--email/--sso/--device-auth are not supported for volcengine login");
             }
-            if extra_args.len() > 1 {
-                bail!("expected one Volcengine Coding Plan API key after `--`");
-            }
-            let account = if let Some(key) = extra_args
-                .first()
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-            {
-                let imported = ctx.volcengine.import_key(key, None)?;
+            let (inference_key, access_key_id, secret_access_key) =
+                parse_volcengine_login_args(&extra_args)?;
+            let account = if let Some(key) = inference_key {
+                let imported = ctx.volcengine.import_key(&key, None)?;
+                if let (Some(ak), Some(sk)) = (access_key_id.clone(), secret_access_key.clone()) {
+                    ctx.volcengine
+                        .set_quota_credentials(&imported.id, &ak, &sk)
+                        .context("save Volcengine quota AK/SK")?;
+                }
                 ctx.volcengine
                     .activate(&imported.id)
                     .await
                     .context("activate Volcengine Coding Plan account")?;
                 imported
+            } else if access_key_id.is_some() || secret_access_key.is_some() {
+                // 只更新 AK/SK：优先当前 live 账号，否则取 registry 中 active 的 volcengine 账号。
+                let access_key_id = access_key_id
+                    .context("missing --ak-id (usage: `-- --ak-id <AK> --ak-secret <SK>`)")?;
+                let secret_access_key = secret_access_key.context(
+                    "missing --ak-secret (usage: `-- --ak-id <AK> --ak-secret <SK>`)",
+                )?;
+                let target_id = match ctx.volcengine.live_account_id() {
+                    Ok(id) => id,
+                    Err(_) => ctx
+                        .registry
+                        .list_by_provider("volcengine")
+                        .context("list Volcengine accounts")?
+                        .into_iter()
+                        .find(|account| account.active)
+                        .map(|account| account.id)
+                        .context(
+                            "no active Volcengine account; pass an API key after `--` first",
+                        )?,
+                };
+                ctx.volcengine
+                    .set_quota_credentials(&target_id, &access_key_id, &secret_access_key)
+                    .context("save Volcengine quota AK/SK")?;
+                ctx.registry
+                    .find("volcengine", &target_id)?
+                    .context("Volcengine account did not persist")?
             } else {
                 let imported = ctx.volcengine.import_active().context(
                     "no Volcengine Coding Plan configuration in Claude settings; pass an API key after `--`",
@@ -334,6 +360,89 @@ async fn finish(ctx: &AppContext, json: bool) -> Result<()> {
         print_status_overview(ctx).await?;
     }
     Ok(())
+}
+
+/// 解析 volcengine 登录参数：至多一个位置参数（推理 Key）+ 可选 AK/SK flags。
+///
+/// 用法：
+/// - `subswap login volcengine -- <key>`
+/// - `subswap login volcengine -- <key> --ak-id <AK> --ak-secret <SK>`
+/// - `subswap login volcengine -- --ak-id <AK> --ak-secret <SK>`（只补 AK/SK）
+fn parse_volcengine_login_args(
+    args: &[String],
+) -> Result<(Option<String>, Option<String>, Option<String>)> {
+    let mut inference_key: Option<String> = None;
+    let mut access_key_id: Option<String> = None;
+    let mut secret_access_key: Option<String> = None;
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        let trimmed = arg.trim();
+        if let Some(value) = trimmed
+            .strip_prefix("--ak-id=")
+            .or_else(|| trimmed.strip_prefix("--access-key-id="))
+            .or_else(|| trimmed.strip_prefix("--ak="))
+        {
+            access_key_id = Some(value.trim().to_string());
+            continue;
+        }
+        if let Some(value) = trimmed
+            .strip_prefix("--ak-secret=")
+            .or_else(|| trimmed.strip_prefix("--secret-access-key="))
+            .or_else(|| trimmed.strip_prefix("--sk="))
+            .or_else(|| trimmed.strip_prefix("--secret="))
+        {
+            secret_access_key = Some(value.trim().to_string());
+            continue;
+        }
+        match trimmed {
+            "--ak-id" | "--access-key-id" | "--ak" => {
+                let value = iter.next().context(format!("{trimmed} requires a value"))?;
+                let value = value.trim();
+                if value.is_empty() || value.starts_with("--") {
+                    bail!("{trimmed} requires a value");
+                }
+                access_key_id = Some(value.to_string());
+            }
+            "--ak-secret" | "--secret-access-key" | "--sk" | "--secret" => {
+                let value = iter.next().context(format!("{trimmed} requires a value"))?;
+                let value = value.trim();
+                if value.is_empty() || value.starts_with("--") {
+                    bail!("{trimmed} requires a value");
+                }
+                secret_access_key = Some(value.to_string());
+            }
+            _ => {
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if trimmed.starts_with("--") {
+                    bail!("unknown flag `{trimmed}` (expected --ak-id / --ak-secret or one API key)");
+                }
+                if inference_key.is_some() {
+                    bail!("expected at most one Volcengine Coding Plan API key after `--`");
+                }
+                inference_key = Some(trimmed.to_string());
+            }
+        }
+    }
+    if let Some(key) = inference_key.as_ref() {
+        if key.trim().is_empty() {
+            inference_key = None;
+        }
+    }
+    if access_key_id.as_ref().is_some_and(|value| value.trim().is_empty()) {
+        access_key_id = None;
+    }
+    if secret_access_key
+        .as_ref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        secret_access_key = None;
+    }
+    if access_key_id.is_some() ^ secret_access_key.is_some() {
+        bail!("--ak-id and --ak-secret must be provided together");
+    }
+    Ok((inference_key, access_key_id, secret_access_key))
 }
 
 async fn run_native_login(program: &'static str, args: Vec<String>) -> Result<()> {
@@ -394,5 +503,62 @@ fn shellish_quote(value: &str) -> String {
         value.to_string()
     } else {
         format!("{value:?}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn parses_key_only() {
+        let (key, ak, sk) = parse_volcengine_login_args(&args(&["my-key"])).unwrap();
+        assert_eq!(key.as_deref(), Some("my-key"));
+        assert!(ak.is_none() && sk.is_none());
+    }
+
+    #[test]
+    fn parses_key_with_aksk_flags() {
+        let (key, ak, sk) = parse_volcengine_login_args(&args(&[
+            "my-key",
+            "--ak-id",
+            "AK",
+            "--ak-secret",
+            "SK",
+        ]))
+        .unwrap();
+        assert_eq!(key.as_deref(), Some("my-key"));
+        assert_eq!(ak.as_deref(), Some("AK"));
+        assert_eq!(sk.as_deref(), Some("SK"));
+    }
+
+    #[test]
+    fn parses_aksk_only_and_equals_forms() {
+        let (key, ak, _) = parse_volcengine_login_args(&args(&[
+            "--ak-id",
+            "AK",
+            "--ak-secret",
+            "SK",
+        ]))
+        .unwrap();
+        assert!(key.is_none());
+        assert_eq!(ak.as_deref(), Some("AK"));
+
+        let (_, ak, sk) =
+            parse_volcengine_login_args(&args(&["--ak-id=AK2", "--ak-secret=SK2"])).unwrap();
+        assert_eq!(ak.as_deref(), Some("AK2"));
+        assert_eq!(sk.as_deref(), Some("SK2"));
+    }
+
+    #[test]
+    fn rejects_half_aksk_unknown_flag_and_flag_like_value() {
+        assert!(parse_volcengine_login_args(&args(&["--ak-id", "AK"])).is_err());
+        assert!(parse_volcengine_login_args(&args(&["--unknown"])).is_err());
+        assert!(parse_volcengine_login_args(&args(&["--ak-id", "--ak-secret"])).is_err());
+        assert!(parse_volcengine_login_args(&args(&["k1", "k2"])).is_err());
     }
 }

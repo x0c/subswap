@@ -1816,6 +1816,7 @@ version = "1.16.6"
 dependencies = [
  "async-trait",
  "chrono",
+ "reqwest",
  "serde_json",
  "sha2",
  "subswap-core",

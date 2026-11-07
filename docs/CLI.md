@@ -125,8 +125,9 @@ A successful `subswap --json swap <target>` writes exactly one JSON object to st
 切换写入 Claude Code 的 Anthropic 兼容配置：官方端点
 `https://ark.cn-beijing.volces.com/api/coding`、Bearer Key、三档统一的 `ark-code-latest`。
 与 Claude OAuth / 自定义 API 互切时保存并恢复受管 env；删除当前 Volcengine 账号也会退出
-其 API 模式。Key 按固定订阅 `flat` 展示，全部 `manual_only`；没有公开 quota API，因此不显示
-伪造余量。`subswap run volcengine <id> -- <claude 参数>` 以进程级环境变量隔离启动 Claude
+其 API 模式。Key 按固定订阅 `flat` 展示，全部 `manual_only`；额度优先用 AK/SK 直查
+（`login -- <key> --ak-id <AK> --ak-secret <SK>` 或只补 AK/SK），未订阅时试 `arkcli`
+兜底，否则显示 `custom` 不伪造余量。`subswap run volcengine <id> -- <claude 参数>` 以进程级环境变量隔离启动 Claude
 Code，不改全局 active；`shell` / `env` 同样支持。
 
 ## OpenCode

@@ -624,7 +624,7 @@ Go 订阅 = API key（`{"type":"api","key":"sk-..."}`），无 refresh，不刷�
 | 默认模型 | Opus / Sonnet / Haiku / subagent 全部 `ark-code-latest`，由控制台选择具体模型或 Auto |
 | 账号 id / label | `ark-` + Key SHA-256 前 16 hex / `Ark …末4`，不展示完整 Key |
 | 计费与自动切换 | `billing = "flat"`；所有 Key `manual_only`，不参与自动换号 |
-| 额度 | 官方文档只提供控制台用量查看，未找到公开 quota API；返回空额度，不伪造 5h / 周 / 月余量 |
+| 额度 | AK/SK 经火山 V4 签名直查控制面 `open.volcengineapi.com`（`GetAFPUsage` 绝对值 + `GetCodingPlanUsage` 百分比，`Version=2024-01-01`，scope `cn-beijing/ark/request`，query 仅 `Action`/`Version`）；缺凭据或未订阅时试 `arkcli usage plan --product coding-plan` 兜底，最后返回空额度（默认入口显示 `custom`），不伪造数字 |
 
 切换目标是 Claude Code 的 `settings.json.env`，但 active 状态归 `volcengine`。它与 Claude
 OAuth / 自定义 API 共用 `.subswap-api.json` 的恢复信息；哨兵增加 `provider` 字段，旧版缺省
