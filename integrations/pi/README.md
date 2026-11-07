@@ -16,6 +16,7 @@ Supported in this version:
 - Model, thinking level, original conversation, headers, and user task are preserved. Pi's provider-level retries stay at `0`; this extension is the only retry owner for a pooled request.
 - After output becomes visible, the error is surfaced unchanged. The extension never replays an already-visible turn.
 - The extension has no chat commands, prompts, notifications, widgets, or status rows. Unrecovered errors keep Pi's native presentation.
+- On session start, a model still pointing at a removed alias (`coding-plan`, `coding-plan-2`, `codex-1`, `codex-2`) is silently mapped to the same model in the corresponding pool. If that model is unavailable, the selection is left untouched.
 - Repeated attempts are bounded to once per account per request. Failed accounts cool down using `Retry-After` when present, otherwise a conservative default.
 - Manually selectable Subswap API-key accounts, including `manual_only` accounts such as Volcengine Coding Plan keys, participate in request-scoped failover. This does not change Subswap daemon AutoSwap rules.
 

@@ -40,6 +40,7 @@ Delivered in `integrations/pi/`:
 - One native stream wraps each pool. It buffers `start`, tries accounts in active / most-recently-healthy order, rotates only before visible output on a confirmed account failure, and preserves model, thinking level, transcript, headers, and user task. Pi provider retries are forced to `0` for a pooled attempt.
 - `manual_only` API-key accounts participate in request-scoped failover; Rust daemon AutoSwap policy is unchanged.
 - No commands, prompt/system injections, notifications, widgets, or extension-authored error output. A later unrecoverable failure is surfaced through Pi's normal error path.
+- On `session_start`, a model that still names a removed alias (`coding-plan`, `coding-plan-2`, `codex-1`, `codex-2`) is silently mapped to the same model in the corresponding pool when present. This is a one-time migration, not a failover decision.
 - `subswap auth <provider>/<id>` returns exactly one JSON object: `kind=credential` with an access token and optional expiry, or `kind=environment` with the Volcengine env projection. It never returns a refresh token, never switches active, and never queries quota. Unsupported providers fail explicitly.
 - The Pi client caches an API key for a short TTL and a Codex access token until shortly before expiry; a failed attempt invalidates that account's entry before a later retry. Accounts added while Pi is running require `/reload` or a new session.
 

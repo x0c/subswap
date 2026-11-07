@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { legacyPoolFor } from "./migration.ts";
 import { newPoolState } from "./pool.ts";
 import { buildPools, SUPPORTED_SUBSWAP_PROVIDERS, type SupportedSubswapProvider } from "./providers.ts";
 import { SubswapClient } from "./subswap.ts";
@@ -24,4 +25,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	} catch {
 		// Preserve Pi's native providers and behavior when Subswap is unavailable.
 	}
+
+	// One-time silent migration for sessions that still remember a removed alias.
+	pi.on("session_start", async (_event, ctx) => {
+		const model = ctx.model;
+		if (!model) return;
+		const target = legacyPoolFor(model.provider);
+		if (!target) return;
+		const migrated = ctx.modelRegistry.find(target, model.id);
+		if (migrated) await pi.setModel(migrated);
+	});
 }
