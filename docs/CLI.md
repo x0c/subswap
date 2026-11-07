@@ -16,6 +16,7 @@
 | `subswap env <id>` | 打印 `export` 行供 `eval`。**注意**：eval 模式不持锁、退出后不吸收凭证，仅供临时短用 |
 | `subswap doctor` | 环境自检 |
 | `subswap status [--json] [--no-metrics]` | **只读快照**：导出账号、有效 quota 窗口与原始观测时间、daemon 状态与本机请求指标；不 sync active、不查额度、不自动切换、不拉 daemon、不写任何状态。供 GUI / widget / 脚本反复调用 |
+| `subswap auth <id\|N>` | **受信本机消费者**的请求凭证投影：输出恰好一个 JSON 对象，`kind=credential`（access token + 可选过期时间）或 `kind=environment`（环境变量映射，如 Volcengine）。只含当前请求 secret，**绝不返回 refresh token**；不切 active、不查额度、不刷新、不写状态。stdout 是敏感数据 |
 
 `add-api` / `login` / `swap <目标>` / `rm` 成功后的 status-after-action 见下节。
 
@@ -50,6 +51,25 @@ reset 已过的窗口不会伪装成当前额度；账号本身及其原始 `cac
 GUI/小组件按秒级重绘轮询时应加 `--no-metrics`：计数器会随 60 分钟桶和账号维度增长（实测完整输出已超过 160 KiB），而图形界面只用账号与额度字段。该开关只省略 `request_metrics`，其他字段、只读语义与退出码不变；默认输出仍保留计数器供诊断。私有 Subswap Apple 客户端已改为优先请求精简输出，并在旧版 CLI 不认识该开关时回退到完整输出。
 
 不带 `--json` 时输出同一份数据的紧凑人读视图，仍然只读。
+
+### 请求凭证投影（`auth`）
+
+`subswap auth <id|N>` 面向受信本机消费者（当前为 [Pi 集成](../integrations/pi/README.md)），不是给人读的日常命令。它输出恰好一个 JSON 对象，`schema_version` 当前为 `1`：
+
+| 字段 | 含义 |
+|---|---|
+| `provider` / `id` | 规范化 Provider 与账号 id |
+| `kind` | `credential` 或 `environment` |
+| `secret` | `credential` 形态的当前 access token / API key |
+| `expires_at_ms` | access token 过期时间（Unix 毫秒）；长期 API key 省略 |
+| `env` | `environment` 形态的环境变量映射（如 Volcengine 的 `ANTHROPIC_AUTH_TOKEN` 与模型配置） |
+
+约束：
+
+- **只导出当前请求所需 secret，绝不返回 refresh token。** Codex 读取 blob 的 `tokens.access_token`；Volcengine 复用 `EnvIsolatedProvider::isolation_env`。
+- 不切换 active、不查额度、不刷新 token、不写 registry / cache / audit；需要续期时由调用方走既有协调路径后重读。
+- 不支持的 Provider 明确报错，不静默返回空 secret。
+- stdout 是敏感数据：调用方不得写入日志、会话或通知；应按凭证过期时间缓存，并在账号请求失败后丢弃重读。
 
 ### 额度窗口排序与标签
 

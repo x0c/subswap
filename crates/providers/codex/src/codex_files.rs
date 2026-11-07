@@ -8,6 +8,9 @@
 //! - `chatgpt_account_id` / `chatgpt_user_id`（额度查询时用作 header）
 
 use serde::{Deserialize, Serialize};
+use subswap_core::error::{Error, Result};
+use subswap_core::RequestCredential;
+use subswap_provider_common::extract_access_token;
 
 /// 从 auth.json 解析出的最小元数据。其余字段不动，整段透传。
 ///
@@ -135,6 +138,19 @@ pub fn access_token_exp_epoch(blob: &str) -> Option<i64> {
     decode_jwt_payload(&access)?
         .get("exp")
         .and_then(|v| v.as_i64())
+}
+
+/// 投影 Pi 等受信本机消费者所需的当前 access token；绝不包含 refresh token。
+pub fn request_credential(blob: &str) -> Result<RequestCredential> {
+    let secret = extract_access_token(blob)
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| Error::Credential("Codex credentials contain no access token".into()))?;
+    let expires_at_ms = access_token_exp_epoch(blob).and_then(|exp| exp.checked_mul(1000));
+    Ok(RequestCredential {
+        secret,
+        expires_at_ms,
+    })
 }
 
 /// access 是否已过期或进入预刷新窗口。无法解析 `exp` 时返回 `false`（不主动刷）。

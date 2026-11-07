@@ -16,6 +16,7 @@
 | Antigravity / Gemini | agy 钥匙串 OAuth、quotaSummary 双池、refresh 复用、隔离不支持 |
 | Cursor | SQLite 状态与跨平台路径、登录导入切换事务、额度三池与刷新边界、自动切换约束 |
 | 文件型 OAuth 切换共享引擎 | `FileBlobProvider` 引擎与 `FileBlobRuntime` adapter 差异点 |
+| 本机请求凭证投影 | 受信本机消费者（Pi 等）的单次 access token / API key 导出边界 |
 
 ---
 
@@ -33,6 +34,24 @@
 **既定 UX（勿改回）**：默认只显示 `{N}% left`，不打印 ok/warn/full；严重程度靠数字 + 颜色。改展示时**不要翻转 `Quota.used` 语义**。
 
 ---
+
+## 本机请求凭证投影（`subswap auth`）
+
+受信本机消费者（当前为 [Pi 集成](../integrations/pi/README.md)）通过 `subswap auth <provider>/<id>` 取得单次模型请求所需凭证。这是 secret-bearing 的本机 IPC，不是给人读的状态输出。
+
+| 形态 | 提供方 | 返回 |
+|---|---|---|
+| `credential` | 实现 `Provider::request_credential` 的 Provider（当前 Codex） | `secret` = 当前 access token；`expires_at_ms` = JWT `exp`（可省略） |
+| `environment` | `EnvIsolatedProvider`（当前 Volcengine） | `env` = 官方隔离环境变量，含 `ANTHROPIC_AUTH_TOKEN` 与模型配置 |
+
+不变量：
+
+- **永不返回 refresh token。** Codex 只读 `tokens.access_token`；文件型 Provider 不得把整段 blob 直接投影给消费者。
+- 不切 active、不查额度、不刷新 token、不写 registry / cache / audit。需要续期时，消费者先走 Subswap 既有协调路径，再重读 `auth`。
+- 不支持的 Provider 明确报错，不返回空 secret。
+- 消费者必须把 stdout 当敏感数据：不写日志/会话/通知；按过期时间或短 TTL 缓存，账号请求失败后丢弃并重读。
+
+新增可投影 Provider 时，优先实现 `Provider::request_credential`；纯 API-key/环境变量型 Provider 可复用 `EnvIsolatedProvider`，但必须确认返回的 env 不含长期 refresh secret。
 
 ## Claude / Anthropic
 

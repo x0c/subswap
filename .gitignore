@@ -30,5 +30,10 @@ state.json
 # Python installer regression test cache
 __pycache__/
 
+# Pi integration local dependencies and build artifacts
+integrations/pi/node_modules/
+integrations/pi/dist/
+integrations/pi/*.tgz
+
 # 图标探索稿（体积大，仅本地保留；现行母版见 design/icon/subswap-icon-1024.png）
 design/icon/explorations/

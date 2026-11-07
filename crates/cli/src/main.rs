@@ -140,6 +140,12 @@ enum Cmd {
         args: Vec<String>,
     },
 
+    /// Export one account's current request credential as JSON for a trusted local consumer.
+    Auth {
+        /// Account index (e.g. `3`), id, label, or `<provider>/<id>`.
+        id: String,
+    },
+
     /// Swap to <id|N>. With no argument, prints numbered accounts and exits.
     Swap {
         /// Account index (e.g. `3`), id, label, or `<provider>/<id>`.
@@ -278,6 +284,7 @@ async fn main() -> Result<()> {
             device_auth,
             args,
         }) => cmd::login::run(&ctx, &provider, email, sso, device_auth, args, cli.json).await,
+        Some(Cmd::Auth { id }) => cmd::auth::run(&ctx, &id).await,
         Some(Cmd::Swap { id }) => cmd::swap::run(&ctx, id.as_deref(), cli.json).await,
         Some(Cmd::Run { provider, id, args }) => cmd::run::run(&ctx, &provider, &id, args).await,
         Some(Cmd::Shell { id }) => cmd::run::shell(&ctx, &id).await,

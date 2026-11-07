@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use subswap_core::error::Result;
-use subswap_core::{Account, Quota};
+use subswap_core::{Account, Quota, RequestCredential};
 
 use crate::json::extract_access_token;
 
@@ -79,6 +79,12 @@ pub trait FileBlobRuntime: Send + Sync + 'static {
     async fn refresh(&self, blob: &str) -> Result<RefreshOutcome>;
     /// 查询额度。`access_token` 由引擎保证是新鲜的（parked 已按需刷新）。
     async fn fetch_quota(&self, access_token: &str, account: &Account) -> Result<Vec<Quota>>;
+
+    /// 可选：从完整 blob 投影当前模型请求所需的 access token / API key。
+    /// 默认不支持；实现绝不能返回 refresh token。
+    fn request_credential(&self, _blob: &str) -> Result<Option<RequestCredential>> {
+        Ok(None)
+    }
 
     /// 可选：在 store/live 都拿不到时，从 provider 私有 legacy 布局恢复 blob。默认无。
     fn recover_legacy(&self, _home: &Path, _account: &Account) -> Option<String> {

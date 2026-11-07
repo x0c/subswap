@@ -5,6 +5,16 @@ use crate::error::Result;
 use crate::model::{Account, AccountId, ClientTarget, Quota, QuotaPoolSemantics};
 use async_trait::async_trait;
 
+/// 提供给受信本机消费者的当前请求凭证。只允许 access token / API key，
+/// 不得把 refresh token 或其他长期轮换秘密放进这个结构。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestCredential {
+    /// 直接用于一次模型请求的 secret。
+    pub secret: String,
+    /// JWT 等凭证的过期时间（Unix 毫秒）；长期 API key 为 `None`。
+    pub expires_at_ms: Option<i64>,
+}
+
 /// Provider 接口。
 ///
 /// 设计要点：
@@ -31,6 +41,12 @@ pub trait Provider: Send + Sync {
     /// 查询某账号的额度。可能返回多窗口（例如 Claude 的 5h + 7d）。
     /// 实现允许返回 `Vec` 为空表示"暂无可查"，但应优先返回 status=Unknown 的占位。
     async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>>;
+
+    /// 投影当前请求所需的短期凭证，供受信本机客户端直接发起模型请求。
+    /// 默认不支持；实现不得返回 refresh token，也不得在此方法里切换 active 账号。
+    async fn request_credential(&self, _id: &AccountId) -> Result<Option<RequestCredential>> {
+        Ok(None)
+    }
 
     /// 额度池语义（见 [`QuotaPoolSemantics`]）。默认叠加；并行池的 Provider 覆盖。
     /// 共享自动切换逻辑只读该声明，不按 Provider 名分发。

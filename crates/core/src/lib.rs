@@ -33,7 +33,7 @@ pub use model::{
     Account, AccountId, BillingKind, ClientTarget, OfficialDisconnect, Quota, QuotaPoolSemantics,
     QuotaStatus, QuotaWindow,
 };
-pub use provider::Provider;
+pub use provider::{Provider, RequestCredential};
 pub use quota_cache::{is_authentication_failure, CachedEntry, QuotaCache, ValidEntry};
 pub use quota_collection::{
     collect_quota, collect_quota_at, invalidate_collection_state, CollectionState,

@@ -142,6 +142,10 @@ The background daemon is Unix-only. Linux starts it automatically when `subswap`
 
 </details>
 
+## Pi integration
+
+The optional [`integrations/pi`](integrations/pi/README.md) extension maps each Subswap provider pool to one Pi provider (`subswap-codex`, `subswap-volcengine`). Accounts in the same pool fail over inside a single request while preserving the model, thinking level, conversation and task. It reads request-scoped access tokens or API keys through `subswap auth`; refresh tokens never enter Pi. The extension has no prompts, commands, notifications or extension-authored error output.
+
 ## Credentials
 
 Saved credentials are plaintext files in subswap's per-user application-data directory, separate from account metadata. On macOS and Linux, private credential and snapshot files use `0600` permissions; Windows relies on the current user's application-data permissions. `subswap doctor` shows the resolved paths. Native clients also keep their own active credentials. Custom Claude API mode writes its API key in Claude Code's settings; switching back to OAuth restores the managed settings from before API mode.

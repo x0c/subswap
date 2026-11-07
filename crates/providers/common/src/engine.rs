@@ -20,7 +20,7 @@ use subswap_core::error::{Error, Result};
 use subswap_core::swap::{swap_with_snapshot, SwapTarget};
 use subswap_core::{
     Account, AccountId, AccountRegistry, ClientTarget, CredentialStore, OfficialDisconnect,
-    Provider, Quota,
+    Provider, Quota, RequestCredential,
 };
 
 use crate::json::extract_refresh_token;
@@ -32,6 +32,17 @@ pub struct FileBlobProvider<A: FileBlobRuntime> {
     store: Arc<dyn CredentialStore>,
     registry: Arc<AccountRegistry>,
     home: PathBuf,
+}
+
+impl<A: FileBlobRuntime> Clone for FileBlobProvider<A> {
+    fn clone(&self) -> Self {
+        Self {
+            runtime: self.runtime.clone(),
+            store: self.store.clone(),
+            registry: self.registry.clone(),
+            home: self.home.clone(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -660,6 +671,15 @@ impl<A: FileBlobRuntime> Provider for FileBlobProvider<A> {
             Error::QuotaFetch("no access token in credentials; schema may have changed".into())
         })?;
         self.runtime.fetch_quota(&access, &account).await
+    }
+
+    async fn request_credential(&self, id: &AccountId) -> Result<Option<RequestCredential>> {
+        let account = self.require_account(id)?;
+        let provider = self.clone();
+        let raw = tokio::task::spawn_blocking(move || provider.raw_blob_for_account(&account))
+            .await
+            .map_err(|e| Error::Provider(format!("credential projection join failed: {e}")))??;
+        self.runtime.request_credential(&raw)
     }
 
     fn credential_store_fields(&self) -> &'static [&'static str] {

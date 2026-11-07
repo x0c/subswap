@@ -142,6 +142,10 @@ CLI 已在 macOS、Linux 和 Windows CI 中测试。请安装需要使用的原�
 
 </details>
 
+## Pi 插件
+
+可选 [`integrations/pi`](integrations/pi/README.md) 把每个 Subswap Provider 账号池映射成一个 Pi Provider（`subswap-codex`、`subswap-volcengine`）。同组账号在单次真实请求内补位，保留模型、思考档位、会话与任务；通过 `subswap auth` 取得单次请求的 access token 或 API key，refresh token 不进入 Pi。插件不注入提示词、不注册聊天命令、不发通知，也不输出插件自己的错误。
+
 ## 凭证
 
 已保存凭证以明文文件存放在 subswap 的用户应用数据目录，与账号元数据分开。macOS 和 Linux 上的私有凭证与快照文件使用 `0600` 权限；Windows 依赖当前用户的应用数据权限。`subswap doctor` 可查看实际路径。原生客户端也保留自己的当前凭证。自定义 Claude API 模式会将 API Key 写入 Claude Code 设置；切回 OAuth 时，会恢复进入 API 模式前由 subswap 托管的配置。

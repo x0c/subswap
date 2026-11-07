@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use subswap_core::error::Result;
-use subswap_core::{Account, Quota};
+use subswap_core::{Account, Quota, RequestCredential};
 use subswap_provider_common::{BlobMetadata, FileBlobRuntime, IsolationSpec, RefreshOutcome};
 
 use crate::codex_files::{parse_metadata as parse_auth_metadata, AuthMetadata};
@@ -66,6 +66,10 @@ impl FileBlobRuntime for CodexRuntime {
 
     async fn fetch_quota(&self, access_token: &str, account: &Account) -> Result<Vec<Quota>> {
         crate::quota::fetch_codex_quota(access_token, account).await
+    }
+
+    fn request_credential(&self, blob: &str) -> Result<Option<RequestCredential>> {
+        crate::codex_files::request_credential(blob).map(Some)
     }
 
     fn recover_legacy(&self, home: &Path, account: &Account) -> Option<String> {

@@ -64,6 +64,8 @@
 └──────────────────────────────────────────────────────────────────┘
 ```
 
+Pi 集成（`integrations/pi/`）是外部消费者，不是新的 Provider：它通过 `subswap status --json --no-metrics` 读取账号分组，通过 `subswap auth <provider>/<id>` 取得单次请求所需的 access token / API key，再复用 Pi 的原生 provider 流做同组补位。凭证所有权仍在 Subswap；`auth` 不返回 refresh token，也不切 active。详见 [PI_EXTENSION_DESIGN.md](PI_EXTENSION_DESIGN.md)。
+
 Codex / Kimi / OpenCode API Key / Command Code 使用 `providers/common` 的文件型凭证能力；OpenCode API Key 在 V2 上另由官方客户端数据库和切号命令决定当前 Key，V1 才通过 `auth.json` 的 `opencode-go` 项切换。OpenCode Console 官方账号单独实现 `Provider`，只从官方数据库读取凭证、通过官方命令切换；它与 API Key 是两个独立 Provider。Claude（Keychain + 自定义 API）与 Cursor（SQLite + GUI 生命周期）也独立实现。火山方舟 Coding Plan 是独立的 `volcengine` Provider（机主裁定 2026-11-07），不复用 Claude 账号命名空间；它只把 Key 投影到 Claude `settings.json.env`，通过带 `provider` 的共享 API 哨兵与 Claude 互切并恢复配置，不接文件型引擎。
 
 ## 2. 设计模式
@@ -463,6 +465,7 @@ Cursor 不接 `FileBlobProvider`，也不注册 `IsolatedProvider`。完整安�
 | 默认入口总流程 | `cmd/default.rs::run` |
 | 写操作后余量表（不 sync / 不 AutoSwap / 不拉 daemon） | `cmd/default.rs::print_status_overview` |
 | 自动同步 Claude/Codex/Kimi/Cursor 本地激活账号 | `cmd/default.rs::sync_local_active` |
+| 受信本机消费者请求凭证投影（单 JSON，只含 access token / API key） | `cmd/auth.rs::run`；Provider 能力 `Provider::request_credential` / `EnvIsolatedProvider` |
 | 账号骨架 → 并发拉 quota + mpsc 渐进渲染；单次 attempt 超时见 `quota.fetch_timeout_ms` | `cmd/default.rs::build_loading_snapshots` / `fill_quotas_progressively`；超时包装在 `quota_query::query_quota_with_retry` |
 | 原地刷新渲染 / 全局编号渲染 | `render.rs::InlineRenderer` / `render_to_string` |
 | 底层错误压成一行短语（401/429/timeout/network…） | `render.rs::compact_error` |

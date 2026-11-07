@@ -74,6 +74,11 @@
   文件型 JSON 共享引擎；Cursor 也不支持 `subswap run/shell/env` 隔离运行。细节见
   [docs/PROVIDER_KNOWLEDGE_BASE.md](~/Codes/Subswap/docs/PROVIDER_KNOWLEDGE_BASE.md) 的「Cursor」与
   [docs/design/ARCHITECTURE.md](~/Codes/Subswap/docs/design/ARCHITECTURE.md) 的「扩展新 Provider」。
+- `subswap auth` 是受信本机消费者的 secret IPC：只返回当前 access token / API key，**绝不返回 refresh token**；
+  Provider 通过 `Provider::request_credential` 或 `EnvIsolatedProvider` 声明投影，未声明者明确报错。
+  消费者不得把 stdout 写入日志、会话或通知；按过期/短 TTL 缓存，账号请求失败后丢弃重读。
+- Pi 插件保持全程无感：不注入提示词或系统上下文、不注册聊天命令、不发通知、不打印插件错误；
+  补位只在原生请求流内完成，未恢复错误保持 Pi 原生行为。
 - 共享逻辑禁止绑定具体 Provider：`core` / `cli` / `daemon` 不得出现 `provider == "<某id>"` 这类
   按名分发的决策、提示或分支。Provider 差异必须以 `Provider` trait 能力声明（额度池语义、
   切换后客户端提示、断开提示、凭证字段、隔离支持），调用方只认抽象；新 Provider 只覆盖
@@ -162,6 +167,7 @@ crates/providers/kimi/    Kimi / Moonshot Provider（adapter，跑在 common 引
 crates/providers/opencode/ OpenCode 官方账号与独立 API Key Provider（V2 官方数据库，V1 Go 文件引擎）
 crates/providers/commandcode/ Command Code Provider（adapter，跑在 common 引擎上；切 ~/.commandcode/auth.json）
 crates/providers/cursor/  Cursor Provider（SQLite + GUI 生命周期特化，独立于 common 引擎）
+integrations/pi/          Pi 账号池插件（复用 Subswap 账号与本机 auth 投影）
 docs/                     中文项目文档
 ```
 
@@ -177,6 +183,7 @@ docs/                     中文项目文档
 | [docs/design/PREWARM_DESIGN.md](~/Codes/Subswap/docs/design/PREWARM_DESIGN.md) | 设计、评审或实现窗口预热、预热阈值、预热通知与自动切换协同时**必读**。不读会把预热做成高频打额度或与 AutoSwap 抢触发 |
 | [docs/design/APP_ICON_DESIGN.md](~/Codes/Subswap/docs/design/APP_ICON_DESIGN.md) | 现行图标（变色龙，尾巴卷成 S）的采纳理由、方形母版与 README 圆角展示图路径、原样使用约束、已否定的图标方向、对比度风险与复现提示词 |
 | [docs/design/ACCOUNT_ISOLATION_DESIGN.md](~/Codes/Subswap/docs/design/ACCOUNT_ISOLATION_DESIGN.md) | 改、评审、分析或排查 `subswap run`/`shell`/`env` 账号环境隔离、checkout 锁、daemon 避让、macOS 钥匙串命名空间、Claude resume 会话共享前**必读**。不读会漏 `hasCompletedOnboarding`、污染宿主钥匙串或让 Cursor 误接隔离命令 |
+| [docs/design/PI_EXTENSION_DESIGN.md](~/Codes/Subswap/docs/design/PI_EXTENSION_DESIGN.md) | Pi 插件的账号池投影、凭证所有权、同组故障补位、manual_only 边界与迁移验收要求；开发或调整 Pi 集成前必读 |
 | [docs/CONFIG.md](~/Codes/Subswap/docs/CONFIG.md) | 改、评审或排查 `config.toml` 字段、热加载、默认阈值、轮询间隔、quota 查询节流、应用目录覆盖、便携运行或配置生效问题前**必读**（配置数字权威源）。不读会把阈值/节流改到打爆上游或热加载不生效 |
 | [docs/CLI.md](~/Codes/Subswap/docs/CLI.md) | 改、评审、分析或排查 CLI 命令面、Provider 登录/导入语义、默认入口额度输出、写操作后余量表（status-after-action）、`subswapd` 辅助进程（含 **macOS `SUBSWAP_AUTO_DAEMON`**）、**Codex 切号后须重启**、账号环境隔离命令或 Cursor 不支持隔离运行的边界前**必读**。不读会改丢写操作后状态面、给 Cursor 加上不存在的隔离入口，或把 macOS 未拉 daemon 当成自动切缺失 |
 | [docs/OPERATIONS_GUIDE.md](~/Codes/Subswap/docs/OPERATIONS_GUIDE.md) | 改、评审或排查本地构建、三平台测试隔离、release 构建、本机覆盖安装、daemon 冒烟、Linux 发布依赖安装、CI/Release 发布流程、README CI/Release failing 徽章与 draft 安装 404、Homebrew tap formula 更新机制或 `HOMEBREW_TAP_TOKEN` 配置前**必读**。不读会漏覆盖安装/版本哈希核对，或手动乱改已自动更新的 Homebrew tap |
