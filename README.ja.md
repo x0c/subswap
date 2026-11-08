@@ -142,6 +142,10 @@ CLI は macOS、Linux、Windows の CI でテストされています。利用�
 
 </details>
 
+## Pi 連携
+
+任意の [`integrations/pi`](integrations/pi/README.md) 拡張は、対応済みの Subswap プロバイダープール（現在は `codex` と `volcengine`）を Pi プロバイダー（`subswap-codex`、`subswap-volcengine`）に割り当てます。同一プール内のアカウントは 1 回のリクエスト内でフェイルオーバーし、モデル、思考レベル、会話、タスクを保持します。リクエスト単位の access token / API key は `subswap auth`（期限間近の更新は当該アカウントのみ対象の `subswap auth --renew`）で取得し、refresh token は Pi に入りません。プロンプト注入、チャットコマンド、通知、拡張独自のエラー出力はありません。
+
 ## 認証情報
 
 保存した認証情報は、アカウントのメタデータとは別に、subswap のユーザー別アプリデータディレクトリへ平文ファイルとして保存されます。macOS と Linux の非公開認証情報とスナップショットは `0600` 権限を使用します。Windows は現在のユーザーのアプリデータ権限を使用します。実際のパスは `subswap doctor` で確認できます。ネイティブクライアントも現在の認証情報を保持します。カスタム Claude API モードでは Claude Code の設定に API key を書き込み、OAuth に戻すと API モード以前の管理対象設定を復元します。

@@ -144,7 +144,7 @@ CLI 已在 macOS、Linux 和 Windows CI 中测试。请安装需要使用的原�
 
 ## Pi 插件
 
-可选 [`integrations/pi`](integrations/pi/README.md) 把每个 Subswap Provider 账号池映射成一个 Pi Provider（`subswap-codex`、`subswap-volcengine`）。同组账号在单次真实请求内补位，保留模型、思考档位、会话与任务；通过 `subswap auth` 取得单次请求的 access token 或 API key，refresh token 不进入 Pi。插件不注入提示词、不注册聊天命令、不发通知，也不输出插件自己的错误。
+可选 [`integrations/pi`](integrations/pi/README.md) 把每个受支持的 Subswap Provider 账号池（目前为 `codex` 与 `volcengine`）映射成一个 Pi Provider（`subswap-codex`、`subswap-volcengine`）。同组账号在单次真实请求内补位，保留模型、思考档位、会话与任务；通过 `subswap auth` 取得单次请求的 access token 或 API key（临近过期时经 `subswap auth --renew` 只续期该账号），refresh token 不进入 Pi。插件不注入提示词、不注册聊天命令、不发通知，也不输出插件自己的错误。
 
 ## 凭证
 

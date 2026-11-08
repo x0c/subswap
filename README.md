@@ -144,7 +144,7 @@ The background daemon is Unix-only. Linux starts it automatically when `subswap`
 
 ## Pi integration
 
-The optional [`integrations/pi`](integrations/pi/README.md) extension maps each Subswap provider pool to one Pi provider (`subswap-codex`, `subswap-volcengine`). Accounts in the same pool fail over inside a single request while preserving the model, thinking level, conversation and task. It reads request-scoped access tokens or API keys through `subswap auth`; refresh tokens never enter Pi. The extension has no prompts, commands, notifications or extension-authored error output.
+The optional [`integrations/pi`](integrations/pi/README.md) extension maps each supported Subswap provider pool (currently `codex` and `volcengine`) to one Pi provider (`subswap-codex`, `subswap-volcengine`). Accounts in the same pool fail over inside a single request while preserving the model, thinking level, conversation and task. It reads request-scoped access tokens or API keys through `subswap auth` (near-expiry renewal via `subswap auth --renew`, limited to that one account); refresh tokens never enter Pi. The extension has no prompts, commands, notifications or extension-authored error output.
 
 ## Credentials
 

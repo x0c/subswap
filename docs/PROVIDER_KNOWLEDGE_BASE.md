@@ -47,7 +47,9 @@
 不变量：
 
 - **永不返回 refresh token。** Codex 只读 `tokens.access_token`；文件型 Provider 不得把整段 blob 直接投影给消费者。
-- 不切 active、不查额度、不刷新 token、不写 registry / cache / audit。需要续期时，消费者先走 Subswap 既有协调路径，再重读 `auth`。
+- 普通模式投影期间只读：不切 active、不查额度、不续期、不写 active/quota/registry/cache/audit，不拉起 daemon，不做 live 回灌写回；共享引擎的 live/legacy 读取只用于本次投影，不回填凭证仓库。例外仅为全新 home 的目录创建（`AppPaths::resolve`）与一次性旧布局迁移（keyring 懒回填、旧 OpenCode API Key 迁移，见 `crates/cli/src/app.rs::AppContext::build`），已就绪的 home 上投影本身不触发。CLI 日志走 stderr，stdout 永远恰好一个 JSON 对象。
+- 需要续期时用 `subswap auth <provider>/<id> --renew`：仍新鲜（离过期 60 秒以上）则直接返回同一投影，不做网络工作；临近过期才只续期该账号——parked 走既有直连 OAuth（含 dead-token 守卫），active 只走官方协调（Codex 经 `renew_active` 走官方 app-server，含 control-socket 身份预检与 live-owner 重验；未知/不可用时保守拒绝，不轮换未验证账号）。`--renew` 同样绝不查额度、绝不跑默认入口/AutoSwap、绝不改 registry active、不拉起 subswapd；允许的唯一外部交互是官方 app-server 子进程协调。
+- 续期能力由 `Provider::renew_credential` 声明（默认无实现 → 回退只读投影，长效 key/环境投影直接返回）；core/CLI 不得按 provider 名分发。
 - 不支持的 Provider 明确报错，不返回空 secret。
 - 消费者必须把 stdout 当敏感数据：不写日志/会话/通知；按过期时间或短 TTL 缓存，账号请求失败后丢弃并重读。
 

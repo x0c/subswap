@@ -16,7 +16,7 @@
 | `subswap env <id>` | 打印 `export` 行供 `eval`。**注意**：eval 模式不持锁、退出后不吸收凭证，仅供临时短用 |
 | `subswap doctor` | 环境自检 |
 | `subswap status [--json] [--no-metrics]` | **只读快照**：导出账号、有效 quota 窗口与原始观测时间、daemon 状态与本机请求指标；不 sync active、不查额度、不自动切换、不拉 daemon、不写任何状态。供 GUI / widget / 脚本反复调用 |
-| `subswap auth <id\|N>` | **受信本机消费者**的请求凭证投影：输出恰好一个 JSON 对象，`kind=credential`（access token + 可选过期时间）或 `kind=environment`（环境变量映射，如 Volcengine）。只含当前请求 secret，**绝不返回 refresh token**；不切 active、不查额度、不刷新、不写状态。stdout 是敏感数据 |
+| `subswap auth <id\|N> [--renew]` | **受信本机消费者**的请求凭证投影：输出恰好一个 JSON 对象，`kind=credential`（access token + 可选过期时间）或 `kind=environment`（环境变量映射，如 Volcengine）。只含当前请求 secret，**绝不返回 refresh token**；普通模式投影期间不切 active、不查额度、不续期、不写 active/quota/registry/cache/audit、不拉起 daemon（例外仅为全新 home 的目录创建与一次性旧布局迁移）。`--renew` 仅在临近过期（60 秒窗）时只续期该账号（parked 走既有 OAuth，active 只走官方 app-server 协调），仍不碰额度/默认入口/AutoSwap/active 切换。stdout 是敏感数据 |
 
 `add-api` / `login` / `swap <目标>` / `rm` 成功后的 status-after-action 见下节。
 
@@ -67,7 +67,8 @@ GUI/小组件按秒级重绘轮询时应加 `--no-metrics`：计数器会随 60 
 约束：
 
 - **只导出当前请求所需 secret，绝不返回 refresh token。** Codex 读取 blob 的 `tokens.access_token`；Volcengine 复用 `EnvIsolatedProvider::isolation_env`。
-- 不切换 active、不查额度、不刷新 token、不写 registry / cache / audit；需要续期时由调用方走既有协调路径后重读。
+- 普通模式投影期间只读：不切换 active、不查额度、不续期 token、不写 active/quota/registry/cache/audit，不拉起 daemon；共享引擎的 live/legacy 读取不回填凭证仓库。例外仅为全新 home 的目录创建（`AppPaths::resolve`）与一次性旧布局迁移（keyring 懒回填、旧 OpenCode API Key 迁移），已就绪的 home 上投影本身不触发。CLI 日志走 stderr，stdout 永远恰好一个 JSON 对象。
+- `subswap auth <id|N> --renew`：仍新鲜（离过期 60 秒以上）直接返回同一投影，不做网络工作；临近过期才只续期该账号——parked 走既有直连 OAuth（含 dead-token 守卫），active 只走官方协调（Codex 经官方 app-server，含身份预检与 live-owner 重验；官方协调不可用时保守拒绝）。`--renew` 同样不查额度、不跑默认入口/AutoSwap、不改 registry active、不拉起 subswapd。
 - 不支持的 Provider 明确报错，不静默返回空 secret。
 - stdout 是敏感数据：调用方不得写入日志、会话或通知；应按凭证过期时间缓存，并在账号请求失败后丢弃重读。
 
@@ -144,6 +145,7 @@ A successful `subswap --json swap <target>` writes exactly one JSON object to st
 
 切换写入 Claude Code 的 Anthropic 兼容配置：官方端点
 `https://ark.cn-beijing.volces.com/api/coding`、Bearer Key、三档统一的 `ark-code-latest`。
+这是原生 Claude 端点；Pi 扩展走同一站点的 OpenAI 兼容请求路径 `.../api/coding/v3`（见 Pi 集成文档），两者是不同协议路径，不要互相改写。
 与 Claude OAuth / 自定义 API 互切时保存并恢复受管 env；删除当前 Volcengine 账号也会退出
 其 API 模式。Key 按固定订阅 `flat` 展示，全部 `manual_only`；额度优先用 AK/SK 直查
 （`login -- <key> --ak-id <AK> --ak-secret <SK>` 或只补 AK/SK，先查 `GetCodingPlanUsage`

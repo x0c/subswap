@@ -142,6 +142,10 @@ CLI는 macOS, Linux, Windows CI에서 테스트됩니다. 사용할 네이티브
 
 </details>
 
+## Pi 연동
+
+선택적 [`integrations/pi`](integrations/pi/README.md) 확장은 지원되는 Subswap provider 풀(현재 `codex` 및 `volcengine`)을 Pi provider(`subswap-codex`, `subswap-volcengine`)에 매핑합니다. 같은 풀의 계정은 단일 요청 내에서 장애 조치되며 모델, 추론 수준, 대화, 작업이 유지됩니다. 요청 범위의 access token/API key는 `subswap auth`로 가져오며(만료 임박 시 해당 계정에만 적용되는 `subswap auth --renew`로 갱신), refresh token은 Pi에 들어가지 않습니다. 프롬프트 삽입, 채팅 명령, 알림, 확장 자체 오류 출력이 없습니다.
+
 ## 자격 증명
 
 저장된 자격 증명은 계정 메타데이터와 별도로 subswap의 사용자별 앱 데이터 디렉터리에 평문 파일로 보관됩니다. macOS와 Linux의 비공개 자격 증명 및 스냅샷은 `0600` 권한을 사용합니다. Windows는 현재 사용자의 앱 데이터 권한을 사용합니다. 실제 경로는 `subswap doctor`에서 확인할 수 있습니다. 네이티브 클라이언트도 활성 자격 증명을 보관합니다. 커스텀 Claude API 모드는 Claude Code 설정에 API key를 기록하며, OAuth로 돌아가면 API 모드 이전의 관리 대상 설정을 복원합니다.
