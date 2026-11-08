@@ -715,7 +715,7 @@ impl<A: FileBlobRuntime> Provider for FileBlobProvider<A> {
             Some(credential) => credential,
             None => return Ok(None),
         };
-        if !credential_needs_renewal(&current) {
+        if !credential_needs_renewal(current.expires_at_ms) {
             return Ok(Some(current));
         }
         if !account.active {
@@ -795,9 +795,9 @@ impl<A: FileBlobRuntime> Provider for FileBlobProvider<A> {
 
 /// `auth --renew` 是否需要续期：有过期时间且进入 60 秒续期窗（或已过期）才续期；
 /// 无过期时间（长期 API key）或仍新鲜时直接返回当前投影，不做网络/子进程工作。
-fn credential_needs_renewal(credential: &RequestCredential) -> bool {
+fn credential_needs_renewal(expires_at_ms: Option<i64>) -> bool {
     const RENEW_SKEW_MS: i64 = 60_000;
-    match credential.expires_at_ms {
+    match expires_at_ms {
         Some(expires_at_ms) => {
             let now_ms = chrono::Utc::now().timestamp_millis();
             expires_at_ms <= now_ms.saturating_add(RENEW_SKEW_MS)

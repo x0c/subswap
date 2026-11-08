@@ -171,7 +171,7 @@ test("credential projection is reused until a failure invalidates it", async () 
 });
 
 test("malformed subprocess output throws a generic error without echoing secrets", async () => {
-	const leaked = "sk-live-malformed-secret-abc123";
+	const leaked = "malformed-secret-marker-abc123";
 	const malformedAuth: Exec = async () => ({ stdout: `{"kind":"credential","secret":"${leaked}` });
 	const authClient = new SubswapClient({ exec: malformedAuth });
 	const account = { id: "ark-test", provider: "volcengine", displayLabel: "Ark test", active: true, manualOnly: true };
