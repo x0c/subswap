@@ -5,3 +5,7 @@ fp:68ade4ed911bf17f
 fp:1b9a9b26d10bcd9d
 fp:7903437fb2800569
 fp:f496ef19e2a6f4a8
+# Pi extension synthetic malformed-output marker (not a real key; later commit removes the sk- prefix).
+fp:ebf7fafecbd8ca23
+# Type-name false positive in credential_needs_renewal signature (later commit removes the type from the signature).
+fp:6fa6333e5ee0ec6b
