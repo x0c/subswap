@@ -91,7 +91,7 @@ Live load check (with the extension installed via the route above):
 pi --provider subswap-volcengine --model kimi-k3.1-pro -p "Reply with exactly: OK"
 ```
 
-If every account in the group is genuinely exhausted, Pi reports the upstream quota error. That is not a failover failure; the extension only rotates when another account can be tried.
+If every account in the group is genuinely exhausted, Pi reports the upstream quota error. That is not a failover failure; the extension only rotates when another account can be tried. Pi's own agent-level retry/backoff may delay that final error; the extension intentionally adds no progress UI, so adjust Pi retry settings if a faster failure is preferred.
 
 ## Limitations
 
