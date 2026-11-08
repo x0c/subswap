@@ -46,8 +46,23 @@ function stringField(value: unknown, fallback = ""): string {
 	return typeof value === "string" ? value : fallback;
 }
 
+/** Parse subprocess stdout as a JSON object; never echo the raw text. */
+function parseJsonPayload(stdout: string): Record<string, unknown> {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(stdout);
+	} catch {
+		throw new Error("Subswap returned unreadable output");
+	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error("Subswap returned unreadable output");
+	}
+	return parsed as Record<string, unknown>;
+}
+
 export function parseStatus(payload: StatusPayload): SubswapAccount[] {
-	return (payload.accounts ?? []).flatMap((entry) => {
+	if (!payload || typeof payload !== "object" || !Array.isArray(payload.accounts)) return [];
+	return payload.accounts.flatMap((entry) => {
 		const id = stringField(entry.id);
 		const provider = stringField(entry.provider);
 		if (!id || !provider) return [];
@@ -97,8 +112,8 @@ function defaultExec(binary: string): Exec {
 
 export class SubswapClient {
 	readonly #exec: Exec;
-	#renewal: Promise<void> | undefined;
-	#lastRenewalAttempt = 0;
+	#renewals = new Map<string, Promise<void>>();
+	#lastRenewalAttempt = new Map<string, number>();
 	#cache = new Map<string, { secret: RequestSecret; usableUntil: number }>();
 
 	constructor(options: { binary?: string; exec?: Exec } = {}) {
@@ -111,7 +126,7 @@ export class SubswapClient {
 			timeoutMs: 5_000,
 			maxBuffer: 2 * 1024 * 1024,
 		});
-		return parseStatus(JSON.parse(result.stdout) as StatusPayload);
+		return parseStatus(parseJsonPayload(result.stdout) as StatusPayload);
 	}
 
 	async #projection(account: SubswapAccount, signal?: AbortSignal): Promise<RequestSecret> {
@@ -120,7 +135,7 @@ export class SubswapClient {
 			timeoutMs: 10_000,
 			maxBuffer: 1024 * 1024,
 		});
-		return parseAuth(JSON.parse(result.stdout) as AuthPayload);
+		return parseAuth(parseJsonPayload(result.stdout) as AuthPayload);
 	}
 
 	async requestSecret(account: SubswapAccount, signal?: AbortSignal): Promise<RequestSecret> {
@@ -130,7 +145,7 @@ export class SubswapClient {
 
 		let secret = await this.#projection(account, signal);
 		if (secret.expiresAtMs !== undefined && secret.expiresAtMs <= Date.now() + 60_000) {
-			await this.renew(signal);
+			await this.renew(account, signal);
 			secret = await this.#projection(account, signal);
 			if (secret.expiresAtMs !== undefined && secret.expiresAtMs <= Date.now()) {
 				throw new Error(`Subswap account ${account.displayLabel} needs a fresh login`);
@@ -147,17 +162,20 @@ export class SubswapClient {
 		this.#cache.delete(`${account.provider}/${account.id}`);
 	}
 
-	async renew(signal?: AbortSignal): Promise<void> {
-		if (this.#renewal) return this.#renewal;
-		if (Date.now() - this.#lastRenewalAttempt < 90_000) return;
-		this.#lastRenewalAttempt = Date.now();
-		this.#renewal = this.#exec(["--json"], {
+	async renew(account: SubswapAccount, signal?: AbortSignal): Promise<void> {
+		const key = `${account.provider}/${account.id}`;
+		const inflight = this.#renewals.get(key);
+		if (inflight) return inflight;
+		if (Date.now() - (this.#lastRenewalAttempt.get(key) ?? 0) < 90_000) return;
+		this.#lastRenewalAttempt.set(key, Date.now());
+		const renewal = this.#exec(["auth", key, "--renew"], {
 			signal,
 			timeoutMs: 45_000,
 			maxBuffer: 8 * 1024 * 1024,
 		}).then(() => undefined).finally(() => {
-			this.#renewal = undefined;
+			this.#renewals.delete(key);
 		});
-		return this.#renewal;
+		this.#renewals.set(key, renewal);
+		return renewal;
 	}
 }

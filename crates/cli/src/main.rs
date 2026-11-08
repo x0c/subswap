@@ -144,6 +144,10 @@ enum Cmd {
     Auth {
         /// Account index (e.g. `3`), id, label, or `<provider>/<id>`.
         id: String,
+        /// Renew the account's request credential through existing provider coordination
+        /// when it is near expiry, then project the same single-JSON schema.
+        #[arg(long)]
+        renew: bool,
     },
 
     /// Swap to <id|N>. With no argument, prints numbered accounts and exits.
@@ -216,7 +220,10 @@ async fn main() -> Result<()> {
 
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(cli.log.clone()));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
 
     // `status` 是纯只读快照入口：必须在 settings reload / AppContext 之前分流。
     // `reload_from_file` 会调用 `AppPaths::resolve` 创建目录；AppContext 还会构造 Provider
@@ -284,7 +291,7 @@ async fn main() -> Result<()> {
             device_auth,
             args,
         }) => cmd::login::run(&ctx, &provider, email, sso, device_auth, args, cli.json).await,
-        Some(Cmd::Auth { id }) => cmd::auth::run(&ctx, &id).await,
+        Some(Cmd::Auth { id, renew }) => cmd::auth::run(&ctx, &id, renew).await,
         Some(Cmd::Swap { id }) => cmd::swap::run(&ctx, id.as_deref(), cli.json).await,
         Some(Cmd::Run { provider, id, args }) => cmd::run::run(&ctx, &provider, &id, args).await,
         Some(Cmd::Shell { id }) => cmd::run::shell(&ctx, &id).await,

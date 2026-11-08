@@ -64,6 +64,55 @@ impl FileBlobRuntime for CodexRuntime {
         crate::oauth::refresh_parked_blob(blob).await
     }
 
+    async fn renew_active(&self, account: &Account, live_blob: &str) -> Result<RefreshOutcome> {
+        // active 续期只走官方 app-server 协调：绝不调直连 OAuth、不查额度。
+        let expected = account
+            .extra
+            .get(META_CHATGPT_ACCOUNT_ID)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                crate::codex_files::parse_metadata(live_blob)
+                    .chatgpt_account_id
+                    .clone()
+            })
+            .unwrap_or_default();
+        if expected.trim().is_empty() {
+            return Err(subswap_core::error::Error::Provider(
+                "cannot prove Codex account identity for renewal; refusing active refresh".into(),
+            ));
+        }
+        let home = codex_home();
+        let socket = home
+            .join("app-server-control")
+            .join("app-server-control.sock");
+        if tokio::fs::metadata(&socket).await.is_ok() {
+            crate::control_socket::refresh_active(&socket, &expected)
+                .await
+                .map_err(|e| {
+                    subswap_core::error::Error::Provider(format!("Codex renewal failed: {e}"))
+                })?;
+        } else {
+            if !crate::app_server::no_codex_process_running_async().await {
+                return Err(subswap_core::error::Error::Provider(
+                    "Codex process running without a usable control socket; refusing live-home refresh"
+                        .into(),
+                ));
+            }
+            crate::app_server::refresh_active_standalone(&expected)
+                .await
+                .map_err(|e| {
+                    subswap_core::error::Error::Provider(format!("Codex renewal failed: {e}"))
+                })?;
+        }
+        let fresh = tokio::fs::read_to_string(active_auth_path(&home))
+            .await
+            .map_err(|e| {
+                subswap_core::error::Error::Provider(format!("read renewed Codex live failed: {e}"))
+            })?;
+        Ok(RefreshOutcome::Rotated(fresh))
+    }
+
     async fn fetch_quota(&self, access_token: &str, account: &Account) -> Result<Vec<Quota>> {
         crate::quota::fetch_codex_quota(access_token, account).await
     }

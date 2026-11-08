@@ -48,6 +48,14 @@ pub trait Provider: Send + Sync {
         Ok(None)
     }
 
+    /// 按需续期指定账号的请求凭证并返回投影（`subswap auth <id> --renew` 用）。
+    /// 默认不续期（返回 `None`，调用方回退到 [`Self::request_credential`] 普通投影）。
+    /// 实现必须只处理 `id` 这一个账号：不查额度、不跑 AutoSwap、不改 registry active、
+    /// 不拉起 daemon、不返回 refresh token。
+    async fn renew_credential(&self, _id: &AccountId) -> Result<Option<RequestCredential>> {
+        Ok(None)
+    }
+
     /// 额度池语义（见 [`QuotaPoolSemantics`]）。默认叠加；并行池的 Provider 覆盖。
     /// 共享自动切换逻辑只读该声明，不按 Provider 名分发。
     fn quota_pool_semantics(&self) -> QuotaPoolSemantics {

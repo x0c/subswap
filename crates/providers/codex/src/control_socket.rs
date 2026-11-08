@@ -21,6 +21,70 @@ pub(super) async fn fetch_usage(socket: &Path, expected_account_id: &str) -> Res
         .context("Codex control socket query timed out")?
 }
 
+/// `auth --renew` 的 active socket 续期：复用官方 initialize/account-read 协调，
+/// 预检 `account/read {refreshToken:false}` 的 `workspaceRouting.chatgptAccountId` 必须
+/// 等于预期账号；已知不匹配或缺失不可证身份时拒绝强刷（防 stale 轮换）。
+/// 强刷只发 `account/read {refreshToken:true}`，绝不查 `account/rateLimits/read`。
+/// 成功后官方进程已更新 live 文件；调用方重读 live 并校验归属后再投影。
+pub(super) async fn refresh_active(socket: &Path, expected_account_id: &str) -> Result<()> {
+    timeout(RPC_TIMEOUT, refresh_query(socket, expected_account_id))
+        .await
+        .context("Codex control socket renewal timed out")?
+}
+
+async fn refresh_query(socket: &Path, expected_account_id: &str) -> Result<()> {
+    if expected_account_id.trim().is_empty() {
+        return Err(anyhow!(
+            "cannot prove Codex socket identity for renewal; refusing active refresh"
+        ));
+    }
+    let stream = UnixStream::connect(socket)
+        .await
+        .context("connect Codex control socket")?;
+    let (stream, _) = client_async("ws://localhost/", stream)
+        .await
+        .context("upgrade Codex control socket to WebSocket")?;
+    let mut session = Session {
+        stream,
+        metrics_account: expected_account_id.to_string(),
+    };
+    session
+        .request(
+            1,
+            "initialize",
+            json!({
+                "clientInfo": {"name": "subswap", "version": env!("CARGO_PKG_VERSION")},
+                "capabilities": {"experimentalApi": true}
+            }),
+        )
+        .await?;
+    session.send(json!({"method": "initialized"})).await?;
+
+    match session
+        .request(2, "account/read", json!({"refreshToken": false}))
+        .await
+    {
+        Ok(account) => {
+            match account
+                .pointer("/workspaceRouting/chatgptAccountId")
+                .and_then(Value::as_str)
+            {
+                Some(id) if id == expected_account_id => {}
+                _ => return Err(AccountMismatch.into()),
+            }
+        }
+        Err(_) => {
+            // 预检失败（方法不支持/401/其他）都视为不可证身份：拒绝强刷。
+            return Err(AccountMismatch.into());
+        }
+    }
+    session
+        .request(3, "account/read", json!({"refreshToken": true}))
+        .await
+        .map(|_| ())
+        .map_err(|error| anyhow!(error.to_string()).context("Codex token refresh failed"))
+}
+
 async fn query(socket: &Path, expected_account_id: &str) -> Result<Value> {
     let stream = UnixStream::connect(socket)
         .await
@@ -324,5 +388,102 @@ mod tests {
         assert!(error.to_string().contains("timed out"));
         assert!(crate::app_server::allows_compat_fallback(&error));
         server.abort();
+    }
+
+    async fn exercise_refresh(
+        routing: Option<&str>,
+        unsupported_preflight: bool,
+    ) -> (Result<()>, Vec<String>, Vec<Value>) {
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("control.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let routing = routing.map(str::to_owned);
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            let mut methods = Vec::new();
+            let mut params = Vec::new();
+            let mut forced = false;
+            while let Some(Ok(Message::Text(text))) = ws.next().await {
+                let message: Value = serde_json::from_str(&text).unwrap();
+                let method = message["method"].as_str().unwrap();
+                methods.push(method.to_owned());
+                params.push(message["params"].clone());
+                let id = message["id"].clone();
+                let is_forced_read = method == "account/read"
+                    && message.get("params").and_then(|p| p.get("refreshToken"))
+                        == Some(&Value::Bool(true));
+                let reply = match method {
+                    "initialize" => json!({"id": id, "result": {}}),
+                    "initialized" => continue,
+                    "account/read" => {
+                        if is_forced_read {
+                            forced = true;
+                            json!({"id": id, "result": {"account": {"type": "chatgpt"}}})
+                        } else if unsupported_preflight {
+                            json!({"id": id, "error": {"code": -32601, "message": "method not found"}})
+                        } else {
+                            json!({"id": id, "result": {"workspaceRouting": routing.as_ref().map(|id| json!({"chatgptAccountId": id}))}})
+                        }
+                    }
+                    _ => panic!("renewal must never request {method}"),
+                };
+                ws.send(Message::Text(reply.to_string().into()))
+                    .await
+                    .unwrap();
+                if forced && methods.iter().filter(|m| *m == "account/read").count() == 2 {
+                    break;
+                }
+            }
+            (methods, params)
+        });
+        let result = refresh_active(&socket, "current").await;
+        let (methods, params) = server.await.unwrap();
+        (result, methods, params)
+    }
+
+    #[tokio::test]
+    async fn renewal_forces_refresh_only_with_matching_preflight_identity() {
+        let (result, methods, params) = exercise_refresh(Some("current"), false).await;
+        result.unwrap();
+        assert_eq!(
+            methods,
+            ["initialize", "initialized", "account/read", "account/read"]
+        );
+        assert_eq!(params[2]["refreshToken"], false);
+        assert_eq!(params[3]["refreshToken"], true);
+        assert!(
+            !methods
+                .iter()
+                .any(|m| m.contains("rateLimits") || m.contains("rate_limits")),
+            "续期绝不能查额度"
+        );
+    }
+
+    #[tokio::test]
+    async fn renewal_refuses_mismatched_or_unproven_identity_before_forced_refresh() {
+        for (routing, unsupported) in [
+            (Some("previous"), false),
+            (None, false),
+            (None, true),
+            (Some("current"), true),
+        ] {
+            let (result, methods, params) = exercise_refresh(routing, unsupported).await;
+            let error = result.unwrap_err();
+            assert!(
+                error.is::<AccountMismatch>()
+                    || error.to_string().contains("refusing")
+                    || error.to_string().contains("AccountMismatch")
+                    || error.to_string().contains("does not match"),
+                "不可证身份必须拒绝强刷，got: {error}"
+            );
+            assert_eq!(methods, ["initialize", "initialized", "account/read"]);
+            assert!(
+                !params
+                    .iter()
+                    .any(|p| p.get("refreshToken") == Some(&Value::Bool(true))),
+                "拒绝路径绝不能发起 refreshToken:true"
+            );
+        }
     }
 }

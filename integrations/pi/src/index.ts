@@ -27,12 +27,31 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	}
 
 	// One-time silent migration for sessions that still remember a removed alias.
+	// Never surfaces an extension error: lookup/setModel failures keep the prior selection.
 	pi.on("session_start", async (_event, ctx) => {
-		const model = ctx.model;
-		if (!model) return;
-		const target = legacyPoolFor(model.provider);
-		if (!target) return;
-		const migrated = ctx.modelRegistry.find(target, model.id);
-		if (migrated) await pi.setModel(migrated);
+		try {
+			const model = ctx.model;
+			if (!model) return;
+			const target = legacyPoolFor(model.provider);
+			if (!target) return;
+			let migrated;
+			try {
+				migrated = ctx.modelRegistry.find(target, model.id);
+			} catch {
+				return;
+			}
+			if (!migrated) return;
+			// Mark this automatic switch so model-memory does not persist it as a user default.
+			process.env.PI_MODEL_MEMORY_SUPPRESS_UNTIL = String(Date.now() + 3000);
+			try {
+				const switched = await pi.setModel(migrated);
+				// A false result keeps the prior selection; never throw or notify.
+				void switched;
+			} catch {
+				// Preserve the prior selection on failure.
+			}
+		} catch {
+			// Preserve Pi's native providers and behavior on any unexpected failure.
+		}
 	});
 }

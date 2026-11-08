@@ -77,6 +77,12 @@ pub trait FileBlobRuntime: Send + Sync + 'static {
 
     /// 刷新一个 blob，返回轮换后的完整 blob。仅对 parked 账号调用。
     async fn refresh(&self, blob: &str) -> Result<RefreshOutcome>;
+    /// 续期 active 账号的 live 凭证（官方协调内轮换）。默认不支持。
+    /// Codex 覆盖：经官方 app-server `account/read {refreshToken:true}` 触发轮换，
+    /// 绝不走直连 OAuth、不查额度。返回轮换后的完整 live 内容。
+    async fn renew_active(&self, _account: &Account, _live_blob: &str) -> Result<RefreshOutcome> {
+        Ok(RefreshOutcome::Unsupported)
+    }
     /// 查询额度。`access_token` 由引擎保证是新鲜的（parked 已按需刷新）。
     async fn fetch_quota(&self, access_token: &str, account: &Account) -> Result<Vec<Quota>>;
 

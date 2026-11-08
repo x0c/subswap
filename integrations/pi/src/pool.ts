@@ -1,6 +1,7 @@
 import {
 	lazyStream,
 	type Api,
+	type AssistantMessage,
 	type AssistantMessageEvent,
 	type AssistantMessageEventStream,
 	type Model,
@@ -37,6 +38,11 @@ interface Terminal {
 	event: AssistantMessageEvent & { type: "error" };
 }
 
+// 本轮级联中最近一次的失败：HTTP 拒绝与凭证 setup 失败互相覆盖，耗尽时只呈现最近者。
+type LastFailure =
+	| { kind: "http"; start?: Terminal["start"]; event: Terminal["event"] }
+	| { kind: "setup"; error: Error };
+
 const DEFAULT_COOLDOWN_MS = 5 * 60_000;
 const AUTH_COOLDOWN_MS = 60_000;
 const MAX_COOLDOWN_MS = 6 * 60 * 60_000;
@@ -56,7 +62,7 @@ export function classifyAccountFailure(message: string, status?: number): boolea
 
 export function cooldownFor(message: string, status: number | undefined, headers: Record<string, string> | undefined, now: number): number {
 	const base = status === 401 || status === 403 ? AUTH_COOLDOWN_MS : DEFAULT_COOLDOWN_MS;
-	const value = headers?.["retry-after"];
+	const value = headerValue(headers, "retry-after");
 	if (!value) return now + base;
 	const seconds = Number(value);
 	const retryAt = Number.isFinite(seconds) && seconds >= 0
@@ -94,6 +100,38 @@ function isAbort(event: AssistantMessageEvent & { type: "error" }, signal: Abort
 	return event.reason === "aborted" || signal.aborted;
 }
 
+// ASCII 大小写不敏感的响应头查找：fetch Headers 本来就是小写，但不依赖调用方。
+function headerValue(headers: Record<string, string> | undefined, name: string): string | undefined {
+	if (!headers) return undefined;
+	for (const key of Object.keys(headers)) {
+		if (key.toLowerCase() === name) return headers[key];
+	}
+	return undefined;
+}
+
+// 只保留 message：setup 错误来自外部 resolveSecret，避免把非 message 字段带入 Pi 错误面。
+function sanitizedSetupError(error: unknown): Error {
+	return error instanceof Error ? new Error(error.message) : new Error(String(error));
+}
+
+// 合成原生形态的取消事件：调用方在 start 之前取消时，原生适配器同样直接以 error/aborted 结束。
+function abortedEvent(model: Model<Api>): AssistantMessageEvent & { type: "error" } {
+	const aborted: AssistantMessage = {
+		role: "assistant",
+		content: [],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "aborted",
+		timestamp: Date.now(),
+	};
+	return { type: "error", reason: "aborted", error: aborted };
+}
+
 function pooledStream(
 	provider: Provider<Api>,
 	accounts: SubswapAccount[],
@@ -109,28 +147,53 @@ function pooledStream(
 		const attempted = new Set<string>();
 		const requestOptions = { ...(options ?? {}) } as RequestOptions;
 		const signal = requestOptions.signal ?? new AbortController().signal;
-		let lastRejected: Terminal | undefined;
-		let lastSetupError: unknown;
+		let lastFailure: LastFailure | undefined;
+		// 本轮写入的冷却（id 与写入值）：取消时回滚，取消不留痕；被并发请求覆盖的值不动。
+		const cooledThisRequest = new Map<string, number>();
+		const setCooldown = (id: string, until: number): void => {
+			state.cooldowns.set(id, until);
+			cooledThisRequest.set(id, until);
+		};
+		const rollbackCooldowns = (): void => {
+			for (const [id, until] of cooledThisRequest) {
+				if (state.cooldowns.get(id) === until) state.cooldowns.delete(id);
+			}
+			cooledThisRequest.clear();
+		};
 
 		return (async function* (): AsyncGenerator<AssistantMessageEvent> {
 			while (true) {
+				// 调用方已取消：立即停，不再试其它账号，不调失败/切换 hook。
+				if (signal.aborted) {
+					rollbackCooldowns();
+					yield abortedEvent(model);
+					return;
+				}
 				const candidates = orderedAccounts(accounts, state, attempted, Date.now());
 				const account = candidates[0];
 				if (!account) {
-					if (lastRejected) {
-						if (lastRejected.start) yield lastRejected.start;
-						yield lastRejected.event;
+					if (lastFailure?.kind === "http") {
+						if (lastFailure.start) yield lastFailure.start;
+						yield lastFailure.event;
 						return;
 					}
-					throw lastSetupError ?? new Error(`Subswap provider ${provider.id} has no usable accounts`);
+					throw lastFailure?.kind === "setup"
+						? lastFailure.error
+						: new Error(`Subswap provider ${provider.id} has no usable accounts`);
 				}
 				attempted.add(account.id);
 				let secret: RequestSecret;
 				try {
 					secret = await resolveSecret(account, signal);
 				} catch (error) {
-					lastSetupError = error;
-					state.cooldowns.set(account.id, Date.now() + AUTH_COOLDOWN_MS);
+					// 解析凭证时被取消：按取消处理，不记冷却、不调 hook。
+					if (signal.aborted) {
+						rollbackCooldowns();
+						yield abortedEvent(model);
+						return;
+					}
+					lastFailure = { kind: "setup", error: sanitizedSetupError(error) };
+					setCooldown(account.id, Date.now() + AUTH_COOLDOWN_MS);
 					continue;
 				}
 
@@ -160,10 +223,10 @@ function pooledStream(
 						terminalSeen = true;
 						const errorText = event.error.errorMessage ?? "Provider request failed";
 						if (!isAbort(event, signal) && !outputStarted && classifyAccountFailure(errorText, response?.status)) {
-							state.cooldowns.set(account.id, cooldownFor(errorText, response?.status, response?.headers, Date.now()));
+							setCooldown(account.id, cooldownFor(errorText, response?.status, response?.headers, Date.now()));
 							hooks.onAccountFailure?.(account);
 							if (orderedAccounts(accounts, state, attempted, Date.now()).length > 0) {
-								lastRejected = { ...(start ? { start } : {}), event };
+								lastFailure = { ...(start ? { start } : {}), event, kind: "http" };
 								const next = orderedAccounts(accounts, state, attempted, Date.now())[0];
 								if (next) {
 									hooks.onFailover?.({

@@ -5,6 +5,7 @@ import {
 	createModels,
 	createProvider,
 	type AssistantMessage,
+	type AssistantMessageEvent,
 	type AssistantMessageEventStream,
 	type Model,
 	normalizeContext,
@@ -278,4 +279,135 @@ test("error classification and retry-after cooldown are conservative", () => {
 	assert.equal(cooldownFor("quota", 429, { "retry-after": "120" }, 1000), 301_000);
 	assert.equal(cooldownFor("quota", 429, { "retry-after": "600" }, 1000), 601_000);
 	assert.equal(cooldownFor("auth", 401, undefined, 1000), 61_000);
+});
+
+test("retry-after lookup is ASCII case-insensitive", () => {
+	// 600 秒超过 5 分钟基准，可区分“找到并采用”与“回退基准”。
+	assert.equal(cooldownFor("quota", 429, { "Retry-After": "600" }, 1000), 601_000);
+	const now = 1_700_000_000_000;
+	const date = new Date(now + 600_000).toUTCString();
+	assert.equal(cooldownFor("quota", 429, { "RETRY-AFTER": date }, now), now + 600_000);
+	assert.equal(cooldownFor("quota", 429, { "Retry-After": "not-a-date" }, 1000), 301_000);
+});
+
+// 直接驱动 pooled stream：需要自定义 signal 与 setup 失败，不走 Models 层。
+async function runDirect(
+	handler: Handler,
+	poolAccounts: SubswapAccount[],
+	resolveSecret: (account: SubswapAccount, signal: AbortSignal) => Promise<{ apiKey: string }>,
+	options?: SimpleStreamOptions,
+	hooks?: { onAccountFailure?: (account: SubswapAccount) => void; onFailover?: () => void },
+) {
+	const base = createProvider({
+		id: "test-provider",
+		auth: {
+			apiKey: {
+				name: "outer",
+				async resolve() { return { auth: { apiKey: "outer-placeholder" }, source: "test" }; },
+			},
+		},
+		models: [model],
+		api: { stream: handler, streamSimple: handler },
+	});
+	const state = newPoolState();
+	const pooled = poolProvider(
+		base,
+		"subswap-test",
+		"Subswap test",
+		poolAccounts,
+		state,
+		resolveSecret,
+		hooks ?? {},
+	);
+	const context = normalizeContext({
+		messages: [{ role: "user", content: "Direct task", timestamp: 1 }],
+	});
+	const stream = pooled.stream(model, context, { ...(options ?? {}) } as SimpleStreamOptions & Record<string, unknown>);
+	const events: AssistantMessageEvent[] = [];
+	for await (const event of stream) events.push(event);
+	return { state, events, result: await stream.result() };
+}
+
+test("pre-aborted signal ends aborted without touching any account", async () => {
+	let secretCalls = 0;
+	const controller = new AbortController();
+	controller.abort();
+	const run = await runDirect(
+		() => {
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => error(stream, "unreachable"));
+			return stream;
+		},
+		accounts,
+		async () => {
+			secretCalls++;
+			return { apiKey: "unused" };
+		},
+		{ signal: controller.signal },
+	);
+	assert.equal(run.result.stopReason, "aborted");
+	assert.ok(run.events.some((event) => event.type === "error" && event.reason === "aborted"));
+	assert.equal(secretCalls, 0);
+	assert.equal(run.state.cooldowns.size, 0);
+});
+
+test("abort during credential resolution surfaces aborted and rolls back cooldowns", async () => {
+	const controller = new AbortController();
+	let accountFailures = 0;
+	const run = await runDirect(
+		(_requestModel, _context, options) => {
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => startAndError(stream, "usage_limit_reached", 429, model, options));
+			return stream;
+		},
+		accounts.slice(0, 2),
+		async (account, signal) => {
+			if (account.id === "b") {
+				controller.abort();
+				if (signal.aborted) throw new DOMException("This operation was aborted", "AbortError");
+			}
+			return { apiKey: `secret-${account.id}` };
+		},
+		{ signal: controller.signal },
+		{ onAccountFailure: () => { accountFailures++; } },
+	);
+	assert.equal(run.result.stopReason, "aborted");
+	assert.ok(run.events.some((event) => event.type === "error" && event.reason === "aborted"));
+	assert.equal(run.state.cooldowns.size, 0);
+	assert.equal(accountFailures, 1);
+});
+
+test("setup failure after an HTTP rejection surfaces the setup error", async () => {
+	const run = await runDirect(
+		(_requestModel, _context, options) => {
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => startAndError(stream, "usage_limit_reached", 429, model, options));
+			return stream;
+		},
+		accounts.slice(0, 2),
+		async (account) => {
+			if (account.id === "b") throw new Error("Subswap auth failed");
+			return { apiKey: `secret-${account.id}` };
+		},
+	);
+	assert.equal(run.result.stopReason, "error");
+	assert.equal(run.result.errorMessage, "Subswap auth failed");
+});
+
+test("HTTP rejection after a setup failure surfaces the provider event", async () => {
+	const run = await runDirect(
+		(_requestModel, _context, options) => {
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => startAndError(stream, "usage_limit_reached", 429, model, options));
+			return stream;
+		},
+		accounts.slice(0, 2),
+		async (account) => {
+			if (account.id === "a") throw new Error("Subswap auth failed");
+			return { apiKey: `secret-${account.id}` };
+		},
+	);
+	assert.equal(run.result.stopReason, "error");
+	assert.equal(run.result.errorMessage, "usage_limit_reached");
+	assert.equal(run.events.filter((event) => event.type === "start").length, 1);
 });

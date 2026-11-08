@@ -183,10 +183,60 @@ async fn query_command(
 }
 
 /// 只有明确确认没有普通 Codex 进程时才允许额外请求官方服务强制刷新；检测失败按有并发处理。
-async fn no_codex_process_running_async() -> bool {
+pub(crate) async fn no_codex_process_running_async() -> bool {
     tokio::task::spawn_blocking(no_codex_process_running)
         .await
         .unwrap_or(false)
+}
+
+/// `auth --renew` 的 active 独立续期：无 socket 且无普通 Codex 进程时，
+/// 在 live `CODEX_HOME` 上短暂启动官方 `codex app-server --stdio`，
+/// 只发 `initialize` + `account/read {refreshToken:true}`，绝不查 `account/rateLimits/read`。
+/// 成功后官方进程已重写 live `auth.json`；调用方重读 live 并校验归属后再投影。
+pub(crate) async fn refresh_active_standalone(expected_account_id: &str) -> Result<()> {
+    let home = codex_home();
+    let socket = home
+        .join("app-server-control")
+        .join("app-server-control.sock");
+    if tokio::fs::metadata(&socket).await.is_ok() {
+        return Err(anyhow!(
+            "Codex control socket exists; use the socket renewal path"
+        ));
+    }
+    if !no_codex_process_running_async().await {
+        return Err(anyhow!(
+            "Codex process running without a usable control socket; refusing live-home refresh"
+        ));
+    }
+    query_command_refresh(&codex_binary(), &home, expected_account_id).await
+}
+
+async fn query_command_refresh(
+    binary: &Path,
+    home: &Path,
+    expected_account_id: &str,
+) -> Result<()> {
+    let mut command = Command::new(binary);
+    command
+        .args(["app-server", "--stdio"])
+        .env("CODEX_HOME", home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+
+    let mut session = AppServerSession::spawn(command, expected_account_id)?;
+    let result = match timeout(
+        SESSION_TIMEOUT,
+        session.refresh_account(expected_account_id),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!("Codex app-server renewal timed out")),
+    };
+    session.close().await;
+    result
 }
 
 #[cfg(unix)]
@@ -288,6 +338,28 @@ impl AppServerSession {
             }
             Err(error) => Err(error.into()),
         }
+    }
+
+    /// 独立续期：只做 `initialize` + `account/read {refreshToken:true}`，
+    /// 绝不发 `account/rateLimits/read`。`_expected` 仅保留签名对称，身份以后续 live 文件校验为准。
+    async fn refresh_account(&mut self, _expected_account_id: &str) -> Result<()> {
+        self.request(
+            1,
+            "initialize",
+            json!({
+                "clientInfo": {
+                    "name": "subswap",
+                    "version": env!("CARGO_PKG_VERSION")
+                },
+                "capabilities": {}
+            }),
+        )
+        .await?;
+        self.notify("initialized").await?;
+        self.request(2, "account/read", json!({ "refreshToken": true }))
+            .await
+            .context("Codex token refresh failed")?;
+        Ok(())
     }
 
     async fn request(&mut self, id: u64, method: &str, params: Value) -> RpcResult<Value> {
@@ -724,6 +796,54 @@ done
         assert_eq!(
             unchanged["tokens"]["refresh_token"],
             Value::String("live-secret".into())
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn standalone_renewal_forces_account_read_without_rate_limits() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("codex");
+        let rate_marker = temp.path().join("rate-limits-requested");
+        fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+initialized=0
+while IFS= read -r line; do
+  case "$line" in
+    *'rateLimits'*|*'rate_limits'*) : > '{}' ; printf '%s\n' '{{"id":9,"error":{{"code":-32600,"message":"unexpected rateLimits"}}}}' ;;
+    *'"id":1'*) printf '%s\n' '{{"id":1,"result":{{"codexHome":"/tmp","platformFamily":"unix","platformOs":"linux","userAgent":"fake"}}}}' ;;
+    *'"method":"initialized"'*) initialized=1 ;;
+    *'"id":2'*)
+      if [ "$initialized" = 1 ]; then
+        case "$line" in
+          *'refreshToken:true'*|*'refreshToken":true'*|*'"refreshToken": true'*) printf '%s\n' '{{"id":2,"result":{{"account":{{"type":"chatgpt"}}}}}}' ;;
+          *) printf '%s\n' '{{"id":2,"error":{{"code":-32600,"message":"expected refreshToken:true"}}}}' ;;
+        esac
+      else
+        printf '%s\n' '{{"id":2,"error":{{"code":-32001,"message":"initialized notification missing"}}}}'
+      fi
+      ;;
+  esac
+done
+"#,
+                rate_marker.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script, permissions).unwrap();
+
+        query_command_refresh(&script, temp.path(), "account")
+            .await
+            .unwrap();
+        assert!(
+            !rate_marker.exists(),
+            "独立续期绝不能请求 account/rateLimits/read"
         );
     }
 }

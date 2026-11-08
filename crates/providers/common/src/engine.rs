@@ -446,13 +446,28 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
     /// 继续尝试 `recover_legacy`；只有 legacy 也拿不到时才把原始 store 错误抛出去。这样即使
     /// keyring 后端本身故障，仍有机会从 legacy 布局恢复凭证。
     pub fn raw_blob_for_account(&self, account: &Account) -> Result<String> {
+        self.raw_blob_for_account_with_repair(account, true)
+    }
+
+    /// 只读取账号 blob：与 [`Self::raw_blob_for_account`] 同样的读取顺序，但不写 store。
+    /// `request_credential` 投影用，避免只读 IPC 产生副作用。
+    fn raw_blob_for_account_readonly(&self, account: &Account) -> Result<String> {
+        self.raw_blob_for_account_with_repair(account, false)
+    }
+
+    /// `raw_blob_for_account` 的内部实现：`repair=true` 时命中 live/legacy 顺手修复 store 副本
+    ///（`activate`/`query_quota`/`export_blob` 用）；`repair=false` 时只读不写
+    ///（`request_credential` 投影用）。
+    fn raw_blob_for_account_with_repair(&self, account: &Account, repair: bool) -> Result<String> {
         if let Some(raw) = self.read_live_if_matches(account) {
-            let _ = self.store.set(
-                self.runtime.id(),
-                account.id.0.as_str(),
-                self.runtime.store_field(),
-                &raw,
-            );
+            if repair {
+                let _ = self.store.set(
+                    self.runtime.id(),
+                    account.id.0.as_str(),
+                    self.runtime.store_field(),
+                    &raw,
+                );
+            }
             return Ok(raw);
         }
         let store_error = match self.store.get(
@@ -465,12 +480,14 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
             Err(e) => Some(e),
         };
         if let Some(raw) = self.runtime.recover_legacy(&self.home, account) {
-            let _ = self.store.set(
-                self.runtime.id(),
-                account.id.0.as_str(),
-                self.runtime.store_field(),
-                &raw,
-            );
+            if repair {
+                let _ = self.store.set(
+                    self.runtime.id(),
+                    account.id.0.as_str(),
+                    self.runtime.store_field(),
+                    &raw,
+                );
+            }
             return Ok(raw);
         }
         if let Some(e) = store_error {
@@ -676,10 +693,95 @@ impl<A: FileBlobRuntime> Provider for FileBlobProvider<A> {
     async fn request_credential(&self, id: &AccountId) -> Result<Option<RequestCredential>> {
         let account = self.require_account(id)?;
         let provider = self.clone();
-        let raw = tokio::task::spawn_blocking(move || provider.raw_blob_for_account(&account))
-            .await
-            .map_err(|e| Error::Provider(format!("credential projection join failed: {e}")))??;
+        let raw =
+            tokio::task::spawn_blocking(move || provider.raw_blob_for_account_readonly(&account))
+                .await
+                .map_err(|e| {
+                    Error::Provider(format!("credential projection join failed: {e}"))
+                })??;
         self.runtime.request_credential(&raw)
+    }
+
+    async fn renew_credential(&self, id: &AccountId) -> Result<Option<RequestCredential>> {
+        let account = self.require_account(id)?;
+        let raw = {
+            let provider = self.clone();
+            let account = account.clone();
+            tokio::task::spawn_blocking(move || provider.raw_blob_for_account_readonly(&account))
+                .await
+                .map_err(|e| Error::Provider(format!("credential projection join failed: {e}")))??
+        };
+        let current = match self.runtime.request_credential(&raw)? {
+            Some(credential) => credential,
+            None => return Ok(None),
+        };
+        if !credential_needs_renewal(&current) {
+            return Ok(Some(current));
+        }
+        if !account.active {
+            // parked：复用既有直连 OAuth 路径；死 token/不支持时返回当前投影，不新增守卫。
+            if let Some(fresh) = self.refresh_parked_if_needed(&account, &raw).await? {
+                if let Some(credential) = self.runtime.request_credential(&fresh)? {
+                    return Ok(Some(credential));
+                }
+            }
+            return Ok(Some(current));
+        }
+        // active：先确认 live 仍属于该账号，再委托 runtime 官方续期；绝不改 registry active。
+        let live_owner_ok = {
+            let provider = self.clone();
+            let account = account.clone();
+            tokio::task::spawn_blocking(move || provider.read_live_if_matches(&account).is_some())
+                .await
+                .map_err(|e| Error::Provider(format!("credential renewal join failed: {e}")))?
+        };
+        if !live_owner_ok {
+            return Err(Error::Provider(format!(
+                "refusing active renewal: live credentials do not match {}:{}",
+                self.runtime.id(),
+                account.id,
+            )));
+        }
+        match self.runtime.renew_active(&account, &raw).await? {
+            RefreshOutcome::Rotated(fresh) => {
+                let meta = self.runtime.parse_metadata(&fresh);
+                if !Self::metadata_matches(&meta, &account, self.runtime.dedup_extra_key()) {
+                    return Err(Error::Provider(format!(
+                        "active renewal changed account for {}:{}; refusing to project a different account",
+                        self.runtime.id(),
+                        account.id,
+                    )));
+                }
+                let access = self.runtime.access_token(&fresh);
+                if matches!(access.as_deref(), None | Some("")) {
+                    return Err(Error::Provider(format!(
+                        "active renewal returned no access token for {}:{}",
+                        self.runtime.id(),
+                        account.id,
+                    )));
+                }
+                // live 已由官方更新；store 仅在完整 blob 时跟进，避免缺 refresh 回灌写死账号。
+                let fresh_has_refresh = extract_refresh_token(&fresh).is_some();
+                let old_has_refresh = extract_refresh_token(&raw).is_some();
+                if fresh_has_refresh || !old_has_refresh {
+                    let _ = self.persist_renewed_blob(&account, fresh.clone()).await;
+                } else {
+                    tracing::warn!(
+                        account = %account.id,
+                        "active renewal missing refresh_token; skipped store overwrite"
+                    );
+                }
+                match self.runtime.request_credential(&fresh)? {
+                    Some(credential) => Ok(Some(credential)),
+                    None => Err(Error::Provider(format!(
+                        "renewed credentials unprojectable for {}:{}",
+                        self.runtime.id(),
+                        account.id,
+                    ))),
+                }
+            }
+            RefreshOutcome::DeadToken | RefreshOutcome::Unsupported => Ok(Some(current)),
+        }
     }
 
     fn credential_store_fields(&self) -> &'static [&'static str] {
@@ -691,7 +793,33 @@ impl<A: FileBlobRuntime> Provider for FileBlobProvider<A> {
     }
 }
 
+/// `auth --renew` 是否需要续期：有过期时间且进入 60 秒续期窗（或已过期）才续期；
+/// 无过期时间（长期 API key）或仍新鲜时直接返回当前投影，不做网络/子进程工作。
+fn credential_needs_renewal(credential: &RequestCredential) -> bool {
+    const RENEW_SKEW_MS: i64 = 60_000;
+    match credential.expires_at_ms {
+        Some(expires_at_ms) => {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            expires_at_ms <= now_ms.saturating_add(RENEW_SKEW_MS)
+        }
+        None => false,
+    }
+}
+
 impl<A: FileBlobRuntime> FileBlobProvider<A> {
+    /// 续期写回 store：阻塞钥匙串/文件 IO 进 `spawn_blocking`（async 内禁直接阻塞）。
+    async fn persist_renewed_blob(&self, account: &Account, blob: String) -> Result<()> {
+        let store = self.store.clone();
+        let provider_id = self.runtime.id();
+        let field = self.runtime.store_field();
+        let account_id = account.id.0.clone();
+        tokio::task::spawn_blocking(move || {
+            store.set(provider_id, account_id.as_str(), field, blob.as_str())
+        })
+        .await
+        .map_err(|e| Error::Provider(format!("credential persist join failed: {e}")))?
+    }
+
     /// parked 账号刷新一次并写回 store。返回 `Some(新 blob)` 表示已轮换。
     async fn refresh_parked_if_needed(
         &self,
@@ -700,12 +828,7 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
     ) -> Result<Option<String>> {
         match self.runtime.refresh(raw).await? {
             RefreshOutcome::Rotated(new_blob) => {
-                self.store.set(
-                    self.runtime.id(),
-                    account.id.0.as_str(),
-                    self.runtime.store_field(),
-                    &new_blob,
-                )?;
+                self.persist_renewed_blob(account, new_blob.clone()).await?;
                 Ok(Some(new_blob))
             }
             RefreshOutcome::DeadToken => {
@@ -762,6 +885,8 @@ mod tests {
         home: PathBuf,
         refresh_behavior: RefreshBehavior,
         refresh_calls: AtomicUsize,
+        renew_active_calls: AtomicUsize,
+        renew_active_blob: Mutex<Option<String>>,
         last_access_token: Mutex<Option<String>>,
         legacy_blob: Option<String>,
         /// 默认 "dedup_key"；部分测试覆盖成非默认名，模拟 Codex 把去重键落在
@@ -779,10 +904,18 @@ mod tests {
                 home,
                 refresh_behavior,
                 refresh_calls: AtomicUsize::new(0),
+                renew_active_calls: AtomicUsize::new(0),
+                renew_active_blob: Mutex::new(None),
                 last_access_token: Mutex::new(None),
                 legacy_blob: None,
                 dedup_extra_key: "dedup_key",
             }
+        }
+
+        fn with_renew_active(home: PathBuf, fresh_blob: &str) -> Self {
+            let runtime = Self::new(home);
+            *runtime.renew_active_blob.lock().unwrap() = Some(fresh_blob.to_string());
+            runtime
         }
 
         fn with_legacy(home: PathBuf, legacy_blob: &str) -> Self {
@@ -846,11 +979,42 @@ mod tests {
                 RefreshBehavior::Rotate => {
                     let v: serde_json::Value = serde_json::from_str(blob).unwrap_or_default();
                     let uid = v.get("uid").and_then(|x| x.as_str()).unwrap_or_default();
+                    // 保留 `exp`：续期后仍可投影过期时间，不断链。
+                    let exp = v
+                        .get("exp")
+                        .cloned()
+                        .unwrap_or(serde_json::json!(9_999_999_999_i64));
                     RefreshOutcome::Rotated(format!(
-                        r#"{{"uid":"{uid}","access_token":"ROTATED"}}"#
+                        r#"{{"uid":"{uid}","access_token":"ROTATED","exp":{exp}}}"#
                     ))
                 }
             })
+        }
+        async fn renew_active(
+            &self,
+            _account: &Account,
+            _live_blob: &str,
+        ) -> Result<RefreshOutcome> {
+            self.renew_active_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(match self.renew_active_blob.lock().unwrap().clone() {
+                Some(blob) => RefreshOutcome::Rotated(blob),
+                None => RefreshOutcome::Unsupported,
+            })
+        }
+        fn request_credential(&self, blob: &str) -> Result<Option<RequestCredential>> {
+            let v: serde_json::Value = serde_json::from_str(blob).ok().unwrap_or_default();
+            let access = match v.get("access_token").and_then(|x| x.as_str()) {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => return Ok(None),
+            };
+            let expires_at_ms = v
+                .get("exp")
+                .and_then(|x| x.as_i64())
+                .and_then(|exp| exp.checked_mul(1000));
+            Ok(Some(RequestCredential {
+                secret: access,
+                expires_at_ms,
+            }))
         }
         async fn fetch_quota(&self, access_token: &str, _account: &Account) -> Result<Vec<Quota>> {
             *self.last_access_token.lock().unwrap() = Some(access_token.to_string());
@@ -1399,5 +1563,120 @@ mod tests {
         let out = p.disconnect_live_file_if_matches(&other).unwrap();
         assert_eq!(out, OfficialDisconnect::AlreadyGone);
         assert!(p.test_live_path().exists());
+    }
+
+    // --- renew_credential：`auth --renew` 契约 ---
+
+    const FRESH_EXP: i64 = 9_999_999_999;
+    const STALE_EXP: i64 = 1_000_000_000;
+
+    fn blob_with_exp(uid: &str, access: &str, exp: i64) -> String {
+        format!(r#"{{"uid":"{uid}","access_token":"{access}","exp":{exp}}}"#)
+    }
+
+    #[tokio::test]
+    async fn renew_fresh_parked_noops_without_refresh() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = FakeRuntime::with_behavior(tmp.path().join("home"), RefreshBehavior::Rotate);
+        let p = provider_with(tmp.path(), runtime);
+        let account = p
+            .import_raw(blob_with_exp("u1", "FRESH", FRESH_EXP), None, Some(false))
+            .unwrap();
+
+        let renewed = p.renew_credential(&account.id).await.unwrap().unwrap();
+        assert_eq!(renewed.secret, "FRESH");
+        assert_eq!(
+            p.test_runtime().refresh_calls.load(Ordering::SeqCst),
+            0,
+            "新鲜凭证不得触达刷新路径"
+        );
+        assert_eq!(
+            p.test_runtime().renew_active_calls.load(Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn renew_parked_stale_rotates_and_persists_complete_blob() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = FakeRuntime::with_behavior(tmp.path().join("home"), RefreshBehavior::Rotate);
+        let p = provider_with(tmp.path(), runtime);
+        let account = p
+            .import_raw(blob_with_exp("u1", "OLD", STALE_EXP), None, Some(false))
+            .unwrap();
+
+        let renewed = p.renew_credential(&account.id).await.unwrap().unwrap();
+        assert_eq!(renewed.secret, "ROTATED");
+        assert!(!renewed.secret.contains("refresh"));
+        assert_eq!(p.test_runtime().refresh_calls.load(Ordering::SeqCst), 1);
+        let stored = p.test_store_get("u1").unwrap();
+        assert!(stored.contains("ROTATED"), "轮换后必须写回完整 blob");
+        let after: Account = p
+            .test_registry_upsert(account.clone())
+            .map(|_| p.require_account(&account.id).unwrap())
+            .unwrap();
+        assert!(!after.active, "续期不得翻转 active 标记");
+    }
+
+    #[tokio::test]
+    async fn renew_active_unsupported_returns_current_without_network() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = provider(tmp.path());
+        fs::create_dir_all(p.home()).unwrap();
+        let account = p
+            .import_raw(blob_with_exp("u1", "STALE", STALE_EXP), None, Some(true))
+            .unwrap();
+        fs::write(p.test_live_path(), blob_with_exp("u1", "STALE", STALE_EXP)).unwrap();
+
+        let renewed = p.renew_credential(&account.id).await.unwrap().unwrap();
+        assert_eq!(renewed.secret, "STALE");
+        assert_eq!(
+            p.test_runtime().renew_active_calls.load(Ordering::SeqCst),
+            1,
+            "active 应委托一次 hook（默认 Unsupported）"
+        );
+        assert!(p.require_account(&account.id).unwrap().active);
+    }
+
+    #[tokio::test]
+    async fn renew_active_rotated_validates_owner_and_projects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fresh = blob_with_exp("u1", "NEW", FRESH_EXP);
+        let runtime = FakeRuntime::with_renew_active(tmp.path().join("home"), &fresh);
+        let p = provider_with(tmp.path(), runtime);
+        fs::create_dir_all(p.home()).unwrap();
+        let account = p
+            .import_raw(blob_with_exp("u1", "OLD", STALE_EXP), None, Some(true))
+            .unwrap();
+        fs::write(p.test_live_path(), blob_with_exp("u1", "OLD", STALE_EXP)).unwrap();
+
+        let renewed = p.renew_credential(&account.id).await.unwrap().unwrap();
+        assert_eq!(renewed.secret, "NEW");
+        assert!(!renewed.secret.contains("refresh"));
+        let stored = p.test_store_get("u1").unwrap();
+        assert!(stored.contains("NEW"));
+        assert!(p.require_account(&account.id).unwrap().active);
+    }
+
+    #[tokio::test]
+    async fn renew_active_rotated_mismatch_refuses_different_account() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fresh = blob_with_exp("intruder", "NEW", FRESH_EXP);
+        let runtime = FakeRuntime::with_renew_active(tmp.path().join("home"), &fresh);
+        let p = provider_with(tmp.path(), runtime);
+        fs::create_dir_all(p.home()).unwrap();
+        let account = p
+            .import_raw(blob_with_exp("u1", "OLD", STALE_EXP), None, Some(true))
+            .unwrap();
+        fs::write(p.test_live_path(), blob_with_exp("u1", "OLD", STALE_EXP)).unwrap();
+        let before_store = p.test_store_get("u1").unwrap();
+
+        let err = p.renew_credential(&account.id).await.unwrap_err();
+        assert!(
+            err.to_string().contains("different account"),
+            "必须拒绝投影另一个账号：{err}"
+        );
+        assert_eq!(p.test_store_get("u1").unwrap(), before_store);
+        assert!(p.require_account(&account.id).unwrap().active);
     }
 }
