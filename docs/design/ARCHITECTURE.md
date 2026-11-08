@@ -326,6 +326,8 @@ provider / cli / daemon 禁止硬编码阈值、时间窗口、百分比。
 
 CLI 与 daemon 共用持久 `quota_cache.json`。新鲜度 < `settings.quota.min_refresh_interval_ms`（默认 90 秒）复用；之外拉实时，失败可带时间戳显示 stale。限制请求频率，不把旧结果伪装成实时。
 
+显式 `status --refresh` 是客户端打开 / 回前台时的按需采集入口：复用 `build_loading_snapshots` 与 `fill_quotas_progressively`（`auto_swap=None`），完成后交给普通 `status` 输出同一 `StatusSnapshot`。它不 `sync_local_active`、不 AutoSwap、不拉 daemon；普通 `status` 仍在 settings/AppContext 之前走纯只读分流。Widget、周期快照与 relay publication 不得携带 `--refresh`。
+
 ### Shared quota collection (adopted 2026-10-24)
 
 The owner authorized implementation of the background-request review. One Rust collection coordinator must serve foreground CLI and daemon requests, including operation without a daemon. Apple apps and widgets remain read-only snapshot consumers; repainting, opening a view or reading `status --json` must not trigger upstream collection.

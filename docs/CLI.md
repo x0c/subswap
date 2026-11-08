@@ -15,7 +15,7 @@
 | `subswap shell <id>` | 起一个导出好隔离环境变量的子 shell，交互里连跑多条命令；provider 从账号推断；退出时吸收凭证 |
 | `subswap env <id>` | 打印 `export` 行供 `eval`。**注意**：eval 模式不持锁、退出后不吸收凭证，仅供临时短用 |
 | `subswap doctor` | 环境自检 |
-| `subswap status [--json] [--no-metrics]` | **只读快照**：导出账号、有效 quota 窗口与原始观测时间、daemon 状态与本机请求指标；不 sync active、不查额度、不自动切换、不拉 daemon、不写任何状态。供 GUI / widget / 脚本反复调用 |
+| `subswap status [--json] [--no-metrics] [--refresh]` | 默认是**只读快照**：导出账号、有效 quota 窗口与原始观测时间、daemon 状态与本机请求指标；不 sync active、不查额度、不自动切换、不拉 daemon、不写任何状态。供 GUI / widget / 脚本反复调用。显式 `--refresh` 时先经共享采集器检查一次 quota，再输出同构快照；不同步 active、不 AutoSwap、不拉 daemon |
 | `subswap auth <id\|N> [--renew]` | **受信本机消费者**的请求凭证投影：输出恰好一个 JSON 对象，`kind=credential`（access token + 可选过期时间）或 `kind=environment`（环境变量映射，如 Volcengine）。只含当前请求 secret，**绝不返回 refresh token**；普通模式投影期间不切 active、不查额度、不续期、不写 active/quota/registry/cache/audit、不拉起 daemon（例外仅为全新 home 的目录创建与一次性旧布局迁移）。`--renew` 仅在临近过期（60 秒窗）时只续期该账号（parked 走既有 OAuth，active 只走官方 app-server 协调），仍不碰额度/默认入口/AutoSwap/active 切换。stdout 是敏感数据 |
 
 `add-api` / `login` / `swap <目标>` / `rm` 成功后的 status-after-action 见下节。
@@ -81,7 +81,9 @@ GUI/小组件按秒级重绘轮询时应加 `--no-metrics`：计数器会随 60 
 - 非时间池（`first_party_models` / `api` / `credits` / `reset_credits`）排在所有时间窗口之后，按各自固定顺序展示；无法识别时长的窗口保留源顺序，排在最后。
 - Provider 只要知道上游窗口长度，就必须走 `QuotaWindow::from_seconds` 映射（5h/7d/28–31 天自动归入标准 token，其余落到时长 token），**不要**再落到 `QuotaWindow::Custom`（`custom` 无时长，客户端只能把它排在最后且显示 `--`）。
 
-后台采集节奏由默认入口与 `subswapd` 执行，`status` 不参与：激活账号约每 3 分钟、停放/已确认耗尽账号约每 15 分钟；同账号真实请求仍受 90 秒最小间隔与 Provider 更严下限约束。调度只增加最多 10% 的正向抖动，不会提前；已知 reset 后延迟约 2 秒再显式采集。数据超过 5 分钟（`decision_max_age_ms`）只用于展示，不能作为自动切换依据。具体默认值以 [CONFIG.md](CONFIG.md) 为准。
+后台采集节奏由默认入口与 `subswapd` 执行，普通 `status` 不参与：激活账号约每 3 分钟、停放/已确认耗尽账号约每 15 分钟；同账号真实请求仍受 90 秒最小间隔与 Provider 更严下限约束。调度只增加最多 10% 的正向抖动，不会提前；已知 reset 后延迟约 2 秒再显式采集。数据超过 5 分钟（`decision_max_age_ms`）只用于展示，不能作为自动切换依据。具体默认值以 [CONFIG.md](CONFIG.md) 为准。
+
+`status --refresh` 是给客户端冷启动 / 回前台等**显式用户动作**使用的按需检查，不是给轮询或 Widget 使用的新后台节奏。它复用默认入口的渐进采集与共享协调器：新鲜缓存直接命中，过期或缺失项并发检查，同 Provider 串行；真实请求仍服从最小间隔、Provider 下限、跨进程 coalescing、失败退避与服务端 `Retry-After`。完成后输出的 `StatusSnapshot` schema 与普通 `status` 完全一致，且仍保留每个账号原始 `cached_at`。该 flag 不同步本地 active、不运行 AutoSwap、不启动 daemon；因此只有读取权限的 Apple 设备也能安全请求刷新，而不会因查看数据改变当前账号。旧 CLI 不支持此 flag，客户端应回退到普通 `status`。
 
 ### Automatic swap safety
 

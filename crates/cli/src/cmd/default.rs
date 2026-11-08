@@ -81,11 +81,40 @@ pub async fn print_status_overview(ctx: &AppContext) -> Result<()> {
     println!();
     let interactive = io::stdout().is_terminal();
     let mut snapshots = build_loading_snapshots(&ctx.providers).await;
-    let mut auto_lines = Vec::new();
     let mut renderer = InlineRenderer::new(interactive);
     if interactive {
-        renderer.render(&snapshots, &auto_lines)?;
+        renderer.render(&snapshots, &[])?;
     }
+    collect_current_quotas(
+        ctx,
+        &mut snapshots,
+        if interactive {
+            Some(&mut renderer)
+        } else {
+            None
+        },
+    )
+    .await?;
+    renderer.render(&snapshots, &[])?;
+    Ok(())
+}
+
+/// 客户端打开 / 回前台时显式请求一次当前账号池的 quota 检查。
+///
+/// 不同步本地 active、不 AutoSwap、不拉 daemon；真实请求仍由共享协调器执行缓存节流、
+/// 跨进程合并、Provider 下限与失败退避。调用方随后经普通 `status` 导出同一快照结构。
+pub async fn refresh(ctx: &AppContext) -> Result<()> {
+    let mut snapshots = build_loading_snapshots(&ctx.providers).await;
+    collect_current_quotas(ctx, &mut snapshots, None).await
+}
+
+/// 对当前 registry 做不触发切换的渐进采集；交互调用方可复用同一渲染器。
+async fn collect_current_quotas(
+    ctx: &AppContext,
+    snapshots: &mut [ProviderSnapshot],
+    renderer: Option<&mut InlineRenderer>,
+) -> Result<()> {
+    let mut auto_lines = Vec::new();
     let cache_path = quota_cache_path();
     fill_quotas_progressively(
         &QuotaFillContext {
@@ -94,18 +123,12 @@ pub async fn print_status_overview(ctx: &AppContext) -> Result<()> {
             cache_path: &cache_path,
             observer: None,
         },
-        &mut snapshots,
+        snapshots,
         None,
         &mut auto_lines,
-        if interactive {
-            Some(&mut renderer)
-        } else {
-            None
-        },
+        renderer,
     )
-    .await?;
-    renderer.render(&snapshots, &auto_lines)?;
-    Ok(())
+    .await
 }
 
 /// 读取配额缓存；文件 IO 放到阻塞线程，避免在 async 路径里直接读盘。

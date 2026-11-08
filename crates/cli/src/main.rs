@@ -194,11 +194,14 @@ enum Cmd {
     /// Environment self-check.
     Doctor,
 
-    /// Read-only account and quota snapshot for GUI consumers; never swaps or fetches quota.
+    /// Account and quota snapshot for GUI consumers. Read-only unless --refresh is explicit.
     Status {
         /// Omit diagnostic request counters for small, frequently polled payloads.
         #[arg(long)]
         no_metrics: bool,
+        /// Check quotas through the shared collector before printing; never swaps accounts.
+        #[arg(long)]
+        refresh: bool,
     },
 
     /// Import local data from legacy account stores.
@@ -225,11 +228,16 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    // `status` 是纯只读快照入口：必须在 settings reload / AppContext 之前分流。
+    // 普通 `status` 是纯只读快照入口：必须在 settings reload / AppContext 之前分流。
     // `reload_from_file` 会调用 `AppPaths::resolve` 创建目录；AppContext 还会构造 Provider
     // （Cursor 可能读取原生钥匙串）并 best-effort 迁移旧 OpenCode API Key。GUI/widget
-    // 高频重绘不能触发这些副作用，status 自己用只读路径加载配置。
-    if let Some(Cmd::Status { no_metrics }) = cli.cmd {
+    // 高频重绘不能触发这些副作用，status 自己用只读路径加载配置。只有显式
+    // `--refresh` 才继续构造上下文，经共享采集器检查后输出同构快照。
+    if let Some(Cmd::Status {
+        no_metrics,
+        refresh: false,
+    }) = cli.cmd
+    {
         return cmd::status::run(cli.json, !no_metrics).await;
     }
 
@@ -299,7 +307,16 @@ async fn main() -> Result<()> {
         Some(Cmd::Rm { id }) => cmd::rm::run(&ctx, &id, cli.json).await,
         Some(Cmd::Autoswap { toggle }) => cmd::autoswap::run(toggle.as_deref()),
         Some(Cmd::Doctor) => cmd::doctor::run(&ctx).await,
-        Some(Cmd::Status { .. }) => unreachable!("handled before CLI context initialization"),
+        Some(Cmd::Status {
+            no_metrics,
+            refresh: true,
+        }) => {
+            cmd::default::refresh(&ctx).await?;
+            cmd::status::run(cli.json, !no_metrics).await
+        }
+        Some(Cmd::Status { .. }) => {
+            unreachable!("read-only status handled before CLI context initialization")
+        }
         Some(Cmd::MigrateLocal) => cmd::migrate::run(&ctx).await,
         Some(Cmd::InternalDaemon) => unreachable!("handled before CLI context initialization"),
     }

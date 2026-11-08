@@ -72,7 +72,7 @@ Windows: %APPDATA%\subswap\subswap\config\config.toml
 
 - **节奏**：当前激活账号约 3 分钟，停放与已确认耗尽账号约 15 分钟；在基础间隔上叠加 `0~refresh_jitter_pct` 的**正向**抖动，避免多账号同一秒打向端点。抖动只会延后，不会提前，也不会绕开 `min_refresh_interval_ms`、Provider 专属下限（如 Claude 三分钟）或协调器记录的 `next_attempt_at` / 服务端 `Retry-After`。
 - **空成功读数**：Provider 成功返回空额度列表时（例如自定义 API 账号），协调器记录的 `observed_at` 仍参与调度。即使缓存里没有窗口可存，也不会被当成「从未观测」按请求地板反复重采；账号按自身的活跃/停放节奏等待，之后返回的真实余额会立即替换空状态。
-- **前台不降级**：无参 `subswap`、写操作后的状态面仍可主动检查；它们只是复用同一个共享协调器，真实请求仍服从最小间隔、并发槽位与服务端截止时间。GUI/`status --json` 保持只读，不触发采集。
+- **前台不降级**：无参 `subswap`、写操作后的状态面仍可主动检查；它们只是复用同一个共享协调器，真实请求仍服从最小间隔、并发槽位与服务端截止时间。GUI 的普通 `status --json` 与 Widget 保持只读；客户端冷启动 / 回前台可显式调用 `status --refresh` 做一次同协调器检查，不同步 active、不 AutoSwap、不拉 daemon，不能把该 flag 加到秒级轮询或 Widget 上。
 - **新鲜度**：只有不晚于 `decision_max_age_ms` 的真实观测才能作为自动切换依据。超过年龄的旧数据仍可展示，但状态是 `stale`，不会因为「本轮调度没查」变成 `ready`。
 - **近阈值候选**：激活账号进入「`auto_swap.threshold` - `candidate_refresh_margin_pct`」区间（或已确认耗尽）时，最多提前确认 `candidate_refresh_limit` 个非 `manual_only`、且缺少新鲜数据的候选；不会整池刷新。已有新鲜数据的候选不重复请求。
 - **已知 reset**：任何**已展示的 gating 窗口倒计时**到期（`ResetCredits` 除外）都应按 `reset + reset_refresh_delay_ms` 显式刷新受影响账号，健康账号（例如 5h 只用了 40%）同样如此，不能等 3/15 分钟普通节奏。同一账号多个窗口共享同一 reset 时间只查询一次；不同窗口的后续 reset 继续依次调度。叠加/并行池的有效恢复时间语义只用于自动切换的恢复排序，不再决定是否安排 reset 刷新。调度会先读取协调器记录，并在升级前缓存尚未生成协调记录时用其原始观测作为种子；唤醒仍服从 `min_refresh_interval_ms`、Provider 下限与服务端 `Retry-After`。已处理过的同一 reset 不会因服务端仍返回旧时间而重复查询；计时器到期本身不证明额度恢复，只有采集返回的真实读数才会更新状态。

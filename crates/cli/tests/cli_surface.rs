@@ -1882,6 +1882,68 @@ fn default_entry_auto_swaps_exhausted_commandcode() {
 }
 
 #[test]
+fn status_refresh_collects_without_auto_swap() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut bodies = HashMap::new();
+    bodies.insert(
+        COMMANDCODE_EXHAUSTED_KEY.to_string(),
+        (200_u16, commandcode_exhausted_credits()),
+    );
+    bodies.insert(
+        COMMANDCODE_HEALTHY_KEY.to_string(),
+        (200, commandcode_healthy_credits()),
+    );
+    let server = KeyedUsageServer::start(bodies);
+    write_local_mock_quota_config(&tmp);
+    let exhausted_id = login_commandcode_key_at(&tmp, COMMANDCODE_EXHAUSTED_KEY, server.base_url());
+    let healthy_id = login_commandcode_key_at(&tmp, COMMANDCODE_HEALTHY_KEY, server.base_url());
+    assert_success(
+        isolated_subswap(&tmp)
+            .args(["swap", &format!("commandcode/{exhausted_id}")])
+            .env("SUBSWAP_COMMANDCODE_BASE", server.base_url())
+            .output()
+            .unwrap(),
+    );
+    clear_quota_measurements(&tmp);
+    write(
+        &app_config_dir(&tmp).join("config.toml"),
+        "[quota]\nmin_refresh_interval_ms = 0\nfetch_retries = 0\n[auto_swap]\nmanual_hold_ms = 0\n",
+    );
+
+    // 缓存已清空：只有 --refresh 真经共享采集器拿到新观测，输出才可能是 ready。
+    // 即使 active 已明确耗尽且候选健康，这个显式读取入口也绝不能像默认入口一样切号。
+    let stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["status", "--json", "--no-metrics", "--refresh"])
+            .env("SUBSWAP_COMMANDCODE_BASE", server.base_url())
+            .output()
+            .unwrap(),
+    );
+    let snapshot: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(snapshot["schema_version"], 1);
+    assert!(snapshot.get("request_metrics").is_none());
+    let accounts = snapshot["accounts"].as_array().unwrap();
+    let active = accounts
+        .iter()
+        .find(|account| account["id"] == exhausted_id)
+        .unwrap();
+    let candidate = accounts
+        .iter()
+        .find(|account| account["id"] == healthy_id)
+        .unwrap();
+    assert_eq!(active["active"], true);
+    assert_eq!(candidate["active"], false);
+    assert_eq!(active["fetch_state"], "ready");
+    assert_eq!(candidate["fetch_state"], "ready");
+    assert!(active["cached_at"].is_string());
+
+    let auth = tmp.path().join("commandcode").join("auth.json");
+    let live: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&auth).unwrap()).unwrap();
+    assert_eq!(live["apiKey"], COMMANDCODE_EXHAUSTED_KEY);
+}
+
+#[test]
 fn default_entry_does_not_auto_swap_commandcode_to_401_key() {
     let tmp = tempfile::tempdir().unwrap();
     let mut bodies = HashMap::new();
