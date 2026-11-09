@@ -37,3 +37,6 @@ integrations/pi/*.tgz
 
 # 图标探索稿（体积大，仅本地保留；现行母版见 design/icon/subswap-icon-1024.png）
 design/icon/explorations/
+
+# Swift build artifacts
+.build/
