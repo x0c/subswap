@@ -2,6 +2,14 @@
 
 本地构建、测试、release 构建、本机覆盖安装、daemon 冒烟和 CI/Release 验证口径。不覆盖 Provider 业务规则、自动切换决策、账号隔离机制或历史故障。
 
+## 客户端打开时的显式额度刷新（2026-11-09）
+
+`status --refresh` 只供客户端打开 / 回前台等显式动作使用；普通 `status` 仍是纯只读入口。该路径复用默认入口的共享采集协调器，但不 `sync_local_active`、不 AutoSwap、不拉 daemon。完整契约见 [CLI.md](CLI.md) 与 [ARCHITECTURE.md](design/ARCHITECTURE.md)。
+
+本机交付提交为 `8d0697c`。`cargo check --workspace`、`cargo test --workspace` 与 `cargo build --locked --release -p subswap-cli -p subswap-daemon` 全部通过。新增隔离回归同时证明：空缓存会真实采集，active 已耗尽且候选健康时也不会发生自动切换；普通 `status_readonly` 的九项回归全部保持通过。
+
+覆盖安装后，target 与 `~/.local/bin` 的 SHA-256 一致：CLI `2280d92cf03fd5b7ac1ca7d1ab58fbb28461ebf2822ff4af36ee529af48bb639`，daemon `a843787ebe9a3c7949c239621076c2d45f44199c79496266e44b9b549150ec63`。真实 `subswap status --json --no-metrics --refresh` 返回 schema 1、7 个账号、`daemon_running=true`，且没有 `request_metrics` 字段；active 账号保持不变。该次热缓存调用约 0.03 秒，只作为本机当次测量，不是上游延迟承诺。
+
 ## 进程启动矩阵
 
 | 启动对象 | 命令 | 入口 | 端口 | 外部依赖 | 本地可关闭项 | 置信度 |
