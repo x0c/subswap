@@ -30,7 +30,7 @@ cargo test --workspace --all-targets
 cargo build --workspace
 ```
 
-For a CLI-facing change, also run `subswap --help` or the affected command in the project's isolated test environment. Tests must never touch a real login keychain or local credential file.
+For a CLI-facing change, also run `subswap --help` or the affected command in the project's isolated test environment. Tests must never touch a real login keychain or local credential file. Use neutral synthetic markers for fake secrets; never use `sk-…`-shaped test literals, because the public leak gate treats them as real keys and blocks the push.
 
 ## Pull request expectations
 

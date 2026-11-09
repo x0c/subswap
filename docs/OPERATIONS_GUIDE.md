@@ -218,6 +218,7 @@ Windows release 只有 CLI，文档和安装脚本都不得暗示包含后台 da
 ## 通用改动验证套路
 
 - 改 CLI 命令面：先跑 `cargo test --workspace`，再看 `subswap --help` 输出；删除或新增命令时同步 `docs/CLI.md`。
+- 改 `subswap auth` 或 JSON IPC：跑 `cargo test -p subswap-cli --test auth_projection`，并在破损 `config.toml` 下确认 stdout 仍只有一行可解析 JSON、诊断只在 stderr；新增续期路径时同时验证不查额度、不切 active、不拉起 daemon。
 - 改自动切换策略：跑 `cargo test --workspace`，重点关注 `crates/core/tests/auto_policy_integration.rs`；同步 `docs/design/AUTO_SWAP_DESIGN.md`。
 - 改 Provider 凭证、额度或激活逻辑：跑全 workspace 测试；涉及 Claude/Codex live capture、refresh token、quota 429 时同步 `docs/PROVIDER_KNOWLEDGE_BASE.md` 和对应故障索引。
 - 改隔离运行：跑 CLI 集成测试；macOS 钥匙串相关验证必须使用一次性 keychain；同步 `docs/design/ACCOUNT_ISOLATION_DESIGN.md`。
@@ -225,6 +226,7 @@ Windows release 只有 CLI，文档和安装脚本都不得暗示包含后台 da
 - 改配置字段或默认值：同步 `docs/CONFIG.md`；确认默认值只从 `crates/core/src/defaults.rs` 或 settings 入口读取。
 - 改 release 产物或版本：跑 locked release build，安装到本机，验证版本与哈希，再走 tag 和 GitHub Release；发布前确认每个 README 承诺平台都有资产与校验和、Windows draft 安装验收通过、Release notes 可供用户阅读。
 - **工具链一致性**：本机可能同时存在 Homebrew Rust 与 rustup。`cargo fmt` / `clippy` 默认走 PATH 里的那一个，而 CI 用 rustup stable；rustfmt 小版本会改变换行，导致本地通过、CI 失败。发版前用 `PATH="$HOME/.cargo/bin:$PATH" cargo --version` 对齐 CI，再跑 `cargo fmt --all --check` 与 `cargo clippy --workspace --all-targets -- -D warnings`。
+- **MSRV 1.80**：strict clippy 会以 `clippy::incompatible_msrv` 拦截 1.80 之后才稳定的 std API（例如 `Option::is_none_or` 是 1.82）；用 `match` / `matches!` 等 1.80 可用写法，不要加 lint 抑制。
 - **失败的 tag 不移动**：tag 已推送而 release CI 失败时，不要 `git tag -f` 或强推；修复后提升 patch 版本重新发版，旧 tag 与 draft 保留为失败历史。发布 CI 通过后仍要下载实际资产核验。
 
 ### 额度窗口时长契约（2026-10-25）

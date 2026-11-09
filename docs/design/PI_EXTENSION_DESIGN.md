@@ -32,12 +32,13 @@ The CLI credential projection is an intentional local IPC boundary: it returns o
 4. Real inference succeeds through the installed extension for both the Codex and Volcengine pool shapes, without printing credentials. (Status: both real pools were quota-exhausted at acceptance, so this item remains pending quota reset; the isolated mock failover and the real upstream quota-error surfacing below are the current evidence, not a live-success claim.)
 5. Only after those checks does machine configuration remove `pi-multi-account` and retire duplicate provider/credential projections. Post-install commands and a fresh user-visible Pi surface verify the final loaded state.
 
-## Implementation status (2026-11-07)
+## Implementation status (2026-11-08)
 
 Delivered in `integrations/pi/`:
 
 - `subswap-codex` reuses Pi's native Codex provider catalog and stream (8 models on Pi 1.5.0; the count follows Pi releases); `subswap-volcengine` registers the official Coding Plan OpenAI-compatible endpoint (`.../api/coding/v3`, distinct from the native Claude path `.../api/coding`) with `kimi-k3.1-pro`.
 - One native stream wraps each pool. It buffers `start`, tries accounts in active / most-recently-healthy order, rotates only before visible output on a confirmed account failure, and preserves model, thinking level, transcript, headers, and user task. Pi provider retries are forced to `0` for a pooled attempt.
+- Cancellation is native-shaped: an already-aborted signal or an abort during credential resolution stops immediately with `stopReason: aborted`, does not try more accounts or call failure hooks, and rolls back only cooldowns written by that same cascade. When every account is exhausted, the most recent failure is surfaced (a later credential-setup error is not hidden by an earlier 429). `Retry-After` lookup is ASCII case-insensitive for seconds and HTTP-date forms, while the conservative five-minute floor and six-hour cap remain.
 - `manual_only` API-key accounts participate in request-scoped failover; Rust daemon AutoSwap policy is unchanged.
 - No commands, prompt/system injections, notifications, widgets, or extension-authored error output. A later unrecoverable failure is surfaced through Pi's normal error path.
 - On `session_start`, a model that still names a removed alias (`coding-plan`, `coding-plan-2`, `codex-1`, `codex-2`) is silently mapped to the same model in the corresponding pool when present. This is a one-time migration, not a failover decision. The automatic switch sets `PI_MODEL_MEMORY_SUPPRESS_UNTIL` so model-memory does not persist it as a user default; lookup or switch failures keep the prior selection without any extension error output.
