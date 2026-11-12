@@ -1584,6 +1584,7 @@ dependencies = [
  "chrono",
  "clap",
  "dialoguer",
+ "directories",
  "fs2",
  "futures",
  "indicatif",
@@ -1601,6 +1602,7 @@ dependencies = [
  "subswap-provider-cursor",
  "subswap-provider-kimi",
  "subswap-provider-opencode",
+ "subswap-provider-pi",
  "subswap-provider-volcengine",
  "tempfile",
  "tokio",
@@ -1646,6 +1648,7 @@ dependencies = [
  "subswap-provider-cursor",
  "subswap-provider-kimi",
  "subswap-provider-opencode",
+ "subswap-provider-pi",
  "subswap-provider-volcengine",
  "tokio",
  "tracing",
@@ -1802,6 +1805,23 @@ dependencies = [
  "fs2",
  "reqwest",
  "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subswap-core",
+ "subswap-provider-common",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "subswap-provider-pi"
+version = "1.16.6"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "fs2",
  "serde",
  "serde_json",
  "sha2",

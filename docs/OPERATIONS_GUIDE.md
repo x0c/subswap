@@ -222,6 +222,7 @@ Windows release 只有 CLI，文档和安装脚本都不得暗示包含后台 da
 - 改自动切换策略：跑 `cargo test --workspace`，重点关注 `crates/core/tests/auto_policy_integration.rs`；同步 `docs/design/AUTO_SWAP_DESIGN.md`。
 - 改 Provider 凭证、额度或激活逻辑：跑全 workspace 测试；涉及 Claude/Codex live capture、refresh token、quota 429 时同步 `docs/PROVIDER_KNOWLEDGE_BASE.md` 和对应故障索引。
 - 改隔离运行：跑 CLI 集成测试；macOS 钥匙串相关验证必须使用一次性 keychain；同步 `docs/design/ACCOUNT_ISOLATION_DESIGN.md`。
+- 改 Pi 扩展安装链（`pi_extension.rs` / `login pi` / `doctor [pi]` / `Makefile install-pi` / CI pi 作业）：跑 `cargo test -p subswap-cli pi_extension`、相关 CLI 集成测试与 `cargo clippy --workspace --all-targets -- -D warnings`；checkout 内跑 `make install-pi`（或 `subswap login pi`）再 `subswap doctor` 确认 `[pi]` 三项、`npm run check` 与 `npm test`；改完在 Pi 里 `/reload`（或重启）后再验证加载。同步 `docs/CLI.md`「Pi 扩展」。
 - 改应用目录解析或原生客户端路径探测：跑三平台 CLI 集成测试，确认 `SUBSWAP_HOME` 与各客户端专属覆盖仍完整隔离真实用户状态；同步 `docs/CONFIG.md` 和本 Guide。
 - 改配置字段或默认值：同步 `docs/CONFIG.md`；确认默认值只从 `crates/core/src/defaults.rs` 或 settings 入口读取。
 - 改 release 产物或版本：跑 locked release build，安装到本机，验证版本与哈希，再走 tag 和 GitHub Release；发布前确认每个 README 承诺平台都有资产与校验和、Windows draft 安装验收通过、Release notes 可供用户阅读。

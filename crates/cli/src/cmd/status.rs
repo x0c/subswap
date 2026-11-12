@@ -61,6 +61,15 @@ struct StatusAccount {
     active: bool,
     billing: String,
     manual_only: bool,
+    /// Pi / API 池的渠道标识（`extra.channel`），无则省略（追加式字段）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    channel: Option<String>,
+    /// Pi / API 端点（`pi_api.base_url` 或 `api_config.base_url`），无则省略。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    endpoint: Option<String>,
+    /// Pi / API 模型（`pi_api.model` 或 `api_config.model`），无则省略。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
     /// `ready` / `stale` / `failed` / `missing`。
     ///
     /// `failed` 与 `missing` 都表示当前没有可信额度；区别是前者有最近一次查询错误。
@@ -202,6 +211,9 @@ fn status_account(
         active: account.active,
         billing: account.billing().to_string(),
         manual_only: account.manual_only(),
+        channel: account_channel(&account),
+        endpoint: account_endpoint(&account),
+        model: account_model(&account),
         fetch_state,
         error,
         cached_at,
@@ -242,9 +254,69 @@ fn provider_display_name(provider: &str) -> String {
         "opencode" => "OpenCode",
         "opencode-api-key" => "OpenCode API Key",
         "commandcode" => "Command Code",
+        "antigravity" => "Antigravity",
+        "volcengine" => "Volcengine Ark Coding Plan",
+        "pi" => "Pi",
         other => other,
     }
     .to_string()
+}
+
+/// `extra.channel` 直透（Pi 池与部分 API 账号有；无则省略）。
+fn account_channel(account: &Account) -> Option<String> {
+    account
+        .extra
+        .get("channel")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+/// 端点：优先 Pi `pi_api.base_url`，回退通用 `api_config.base_url`（Claude/Volcengine 只读兼容）。
+fn account_endpoint(account: &Account) -> Option<String> {
+    if let Some(url) = account
+        .extra
+        .get("pi_api")
+        .and_then(|v| v.get("base_url"))
+        .and_then(|v| v.as_str())
+    {
+        let url = url.trim();
+        if !url.is_empty() {
+            return Some(url.to_string());
+        }
+    }
+    account
+        .extra
+        .get("api_config")
+        .and_then(|v| v.get("base_url"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+/// 模型：优先 Pi `pi_api.model`，回退通用 `api_config.model`。
+fn account_model(account: &Account) -> Option<String> {
+    if let Some(model) = account
+        .extra
+        .get("pi_api")
+        .and_then(|v| v.get("model"))
+        .and_then(|v| v.as_str())
+    {
+        let model = model.trim();
+        if !model.is_empty() {
+            return Some(model.to_string());
+        }
+    }
+    account
+        .extra
+        .get("api_config")
+        .and_then(|v| v.get("model"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
 }
 
 /// 输出到 UI / 日志前把疑似密钥的 label 换成安全标签。
@@ -296,11 +368,19 @@ fn looks_like_secret(text: &str) -> bool {
 }
 
 fn api_host(account: &Account) -> Option<String> {
+    // Pi 抽屉的端点在 `pi_api.base_url`；其他 API 账号在 `api_config.base_url`。
     let base_url = account
         .extra
-        .get("api_config")?
-        .get("base_url")?
-        .as_str()?
+        .get("pi_api")
+        .and_then(|v| v.get("base_url"))
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            account
+                .extra
+                .get("api_config")?
+                .get("base_url")?
+                .as_str()
+        })?
         .trim();
     let after_scheme = base_url
         .split_once("://")

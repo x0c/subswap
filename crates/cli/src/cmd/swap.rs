@@ -26,7 +26,12 @@ struct SwapReceipt<'a> {
     notice: Option<&'a str>,
 }
 
-pub async fn run(ctx: &AppContext, id_input: Option<&str>, json: bool) -> Result<()> {
+pub async fn run(
+    ctx: &AppContext,
+    id_input: Option<&str>,
+    json: bool,
+    update_default: bool,
+) -> Result<()> {
     let Some(input) = id_input else {
         print_listing(ctx)?;
         return Ok(());
@@ -34,7 +39,7 @@ pub async fn run(ctx: &AppContext, id_input: Option<&str>, json: bool) -> Result
 
     let acc = resolve_account(ctx, input)?;
     let p = ctx.providers.get(&acc.provider)?;
-    let res = p.activate(&acc.id).await;
+    let res = p.activate_with_default(&acc.id, update_default).await;
     match res {
         Ok(()) => {
             ctx.audit.append(AuditEvent::ok(

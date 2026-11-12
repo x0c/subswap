@@ -25,6 +25,7 @@ subswap-provider-opencode.workspace = true
 subswap-provider-commandcode.workspace = true
 subswap-provider-antigravity.workspace = true
 subswap-provider-volcengine.workspace = true
+subswap-provider-pi.workspace = true
 subswap-daemon.workspace = true
 
 anyhow.workspace = true
@@ -41,6 +42,7 @@ indicatif = "0.18"
 base64 = "0.22"
 fs2.workspace = true
 unicode-width = "0.2"
+directories.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

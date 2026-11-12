@@ -13,6 +13,7 @@ members = [
     "crates/providers/commandcode",
     "crates/providers/antigravity",
     "crates/providers/volcengine",
+    "crates/providers/pi",
 ]
 
 [workspace.package]
@@ -70,6 +71,7 @@ subswap-provider-opencode = { path = "crates/providers/opencode" }
 subswap-provider-commandcode = { path = "crates/providers/commandcode" }
 subswap-provider-antigravity = { path = "crates/providers/antigravity" }
 subswap-provider-volcengine = { path = "crates/providers/volcengine" }
+subswap-provider-pi = { path = "crates/providers/pi" }
 subswap-daemon = { path = "crates/daemon" }
 
 [profile.release]

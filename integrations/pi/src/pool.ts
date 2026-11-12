@@ -12,6 +12,7 @@ import {
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import type { RequestSecret, SubswapAccount } from "./subswap.ts";
+import { channelOf } from "./subswap.ts";
 
 type RequestOptions = SimpleStreamOptions & Record<string, unknown>;
 type StreamKind = "stream" | "streamSimple";
@@ -31,6 +32,12 @@ export interface FailoverNotice {
 export interface PoolHooks {
 	onFailover?: (notice: FailoverNotice) => void;
 	onAccountFailure?: (account: SubswapAccount) => void;
+	/**
+	 * Non-native pools only: derive the per-attempt request model from the
+	 * account and its live secret (custom channels may carry per-account
+	 * endpoint/model). Native pools leave the request model untouched.
+	 */
+	resolveModel?: (account: SubswapAccount, secret: RequestSecret, model: Model<Api>) => Model<Api>;
 }
 
 interface Terminal {
@@ -72,8 +79,11 @@ export function cooldownFor(message: string, status: number | undefined, headers
 	return Number.isFinite(retryAt) ? Math.max(now + base, Math.min(retryAt, now + MAX_COOLDOWN_MS)) : now + base;
 }
 
-export function orderedAccounts(accounts: SubswapAccount[], state: PoolState, attempted: ReadonlySet<string>, now: number): SubswapAccount[] {
-	const remaining = accounts.filter((account) => !attempted.has(account.id));
+export function orderedAccounts(accounts: SubswapAccount[], state: PoolState, attempted: ReadonlySet<string>, now: number, channel?: string): SubswapAccount[] {
+	const inChannel = channel === undefined
+		? accounts
+		: accounts.filter((account) => channelOf(account) === channel);
+	const remaining = inChannel.filter((account) => !attempted.has(account.id));
 	const available = remaining.filter((account) => (state.cooldowns.get(account.id) ?? 0) <= now);
 	const candidates = available.length > 0 ? available : remaining;
 	return candidates.sort((a, b) => {
@@ -146,6 +156,15 @@ function pooledStream(
 ): AssistantMessageEventStream {
 	return lazyStream(model, async () => {
 		const attempted = new Set<string>();
+		// One pool serves exactly one channel; mixed channels are a wiring bug,
+		// never a failover path. Fail closed before any credential is resolved.
+		const poolChannel = accounts.length > 0
+			? channelOf(accounts[0] as SubswapAccount)
+			: undefined;
+		if (poolChannel !== undefined) {
+			const mixed = accounts.some((account) => channelOf(account) !== poolChannel);
+			if (mixed) throw new Error(`Subswap provider ${provider.id} mixes channels; refusing to stream`);
+		}
 		const requestOptions = { ...(options ?? {}) } as RequestOptions;
 		const signal = requestOptions.signal ?? new AbortController().signal;
 		let lastFailure: LastFailure | undefined;
@@ -170,7 +189,7 @@ function pooledStream(
 					yield abortedEvent(model);
 					return;
 				}
-				const candidates = orderedAccounts(accounts, state, attempted, Date.now());
+				const candidates = orderedAccounts(accounts, state, attempted, Date.now(), poolChannel);
 				const account = candidates[0];
 				if (!account) {
 					if (lastFailure?.kind === "http") {
@@ -203,6 +222,9 @@ function pooledStream(
 					apiKey: secret.apiKey,
 					maxRetries: 0,
 				} as RequestOptions;
+				// Custom channels may resolve a per-account endpoint/model; the
+				// native branch keeps the request model untouched.
+				const attemptModel = hooks.resolveModel?.(account, secret, model) ?? model;
 				const onResponse = attemptOptions.onResponse;
 				let response: Pick<ProviderResponse, "status" | "headers"> | undefined;
 				attemptOptions.onResponse = async (nextResponse, responseModel) => {
@@ -214,7 +236,7 @@ function pooledStream(
 				let outputStarted = false;
 				let rotate = false;
 				let terminalSeen = false;
-				const inner = callProvider(provider, kind, model, context, attemptOptions);
+				const inner = callProvider(provider, kind, attemptModel, context, attemptOptions);
 				for await (const event of inner) {
 					if (event.type === "start") {
 						start = event;
@@ -226,9 +248,9 @@ function pooledStream(
 						if (!isAbort(event, signal) && !outputStarted && classifyAccountFailure(errorText, response?.status)) {
 							setCooldown(account.id, cooldownFor(errorText, response?.status, response?.headers, Date.now()));
 							hooks.onAccountFailure?.(account);
-							if (orderedAccounts(accounts, state, attempted, Date.now()).length > 0) {
+							if (orderedAccounts(accounts, state, attempted, Date.now(), poolChannel).length > 0) {
 								lastFailure = { ...(start ? { start } : {}), event, kind: "http" };
-								const next = orderedAccounts(accounts, state, attempted, Date.now())[0];
+								const next = orderedAccounts(accounts, state, attempted, Date.now(), poolChannel)[0];
 								if (next) {
 									hooks.onFailover?.({
 										provider: provider.id,

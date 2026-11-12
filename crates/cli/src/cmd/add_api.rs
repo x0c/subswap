@@ -53,6 +53,7 @@ pub async fn run(
     match select_client(provider, interactive)?.as_str() {
         "claude" => run_claude(ctx, options, interactive, json).await,
         "codex" => run_codex(ctx, options, interactive, json).await,
+        "pi" => run_pi(ctx, options, interactive, json).await,
         _ => unreachable!(),
     }
 }
@@ -62,21 +63,29 @@ fn select_client(provider: Option<String>, interactive: bool) -> Result<String> 
         return match provider.trim().to_ascii_lowercase().as_str() {
             "claude" | "anthropic" => Ok("claude".into()),
             "codex" | "openai" | "chatgpt" => Ok("codex".into()),
-            other => bail!("unknown client: {other} (expected claude or codex)"),
+            "pi" => Ok("pi".into()),
+            other => bail!("unknown client: {other} (expected claude, codex or pi)"),
         };
     }
     if !interactive {
         bail!(
-            "provider is required without an interactive terminal; use `subswap add-api claude` or `subswap add-api codex`"
+            "provider is required without an interactive terminal; use `subswap add-api claude`, `subswap add-api codex` or `subswap add-api pi`"
         );
     }
-    let clients = ["Claude Code", "Codex"];
+    let clients = ["Claude Code", "Codex", "Pi"];
     let selected = Select::new()
         .with_prompt("Client")
         .items(&clients)
         .default(0)
         .interact()?;
-    Ok(if selected == 0 { "claude" } else { "codex" }.into())
+    Ok(if selected == 0 {
+        "claude"
+    } else if selected == 1 {
+        "codex"
+    } else {
+        "pi"
+    }
+    .into())
 }
 
 async fn run_claude(
@@ -189,6 +198,115 @@ fn validate_endpoint(endpoint: &str) -> Result<()> {
         bail!("endpoint must start with http:// or https://");
     }
     Ok(())
+}
+
+/// `subswap add-api pi [--preset deepseek|volcengine|custom] [--endpoint] [--api-key] [--model]`
+/// 只写凭证仓库与 registry，不改 live、不激活（用 `subswap swap pi/<id>` 生效）。
+async fn run_pi(
+    ctx: &AppContext,
+    options: AddApiOptions,
+    interactive: bool,
+    json: bool,
+) -> Result<()> {
+    if options.auth.is_some()
+        || options.opus_model.is_some()
+        || options.sonnet_model.is_some()
+        || options.haiku_model.is_some()
+        || options.subagent_model.is_some()
+        || options.effort.is_some()
+    {
+        bail!("Pi uses --preset, --endpoint, --api-key and --model; Claude-only options do not apply");
+    }
+    let preset_name = match options.preset {
+        Some(value) => value.trim().to_ascii_lowercase(),
+        None if interactive => {
+            let choices = ["DeepSeek", "Volcengine", "Custom"];
+            let selected = Select::new()
+                .with_prompt("Pi preset")
+                .items(&choices)
+                .default(0)
+                .interact()?;
+            choices[selected].to_ascii_lowercase()
+        }
+        None => bail!("--preset is required without an interactive terminal (expected deepseek, volcengine or custom)"),
+    };
+    let preset = subswap_provider_pi::preset(&preset_name)
+        .ok_or_else(|| anyhow::anyhow!("unknown Pi preset: {preset_name} (expected deepseek, volcengine or custom)"))?;
+
+    // custom 无固定 slot：用 --id 作为 slot 名（回退交互输入）。
+    let slot = if preset.slot.is_empty() {
+        value_or_prompt(options.id, interactive, "Slot", "")?
+    } else {
+        preset.slot.to_string()
+    };
+    if slot.trim().is_empty() {
+        bail!("slot is required for custom Pi preset (use --id)");
+    }
+    let endpoint = if preset.endpoint.is_empty() {
+        value_or_prompt(options.endpoint, interactive, "Endpoint", "")?
+    } else {
+        options
+            .endpoint
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| preset.endpoint.to_string())
+    };
+    validate_endpoint(&endpoint)?;
+    let api_key = match options.api_key {
+        Some(value) if !value.trim().is_empty() => value,
+        Some(_) => bail!("API key cannot be empty"),
+        None if interactive => Password::new()
+            .with_prompt("API key")
+            .validate_with(|value: &String| -> Result<(), &str> {
+                if value.trim().is_empty() {
+                    Err("API key cannot be empty")
+                } else {
+                    Ok(())
+                }
+            })
+            .interact()?,
+        None => bail!("--api-key is required without an interactive terminal"),
+    };
+    let model = if preset.model.is_empty() {
+        value_or_prompt(options.model, interactive, "Model", "")?
+    } else {
+        options
+            .model
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| preset.model.to_string())
+    };
+    if model.trim().is_empty() {
+        bail!("--model is required without an interactive terminal");
+    }
+    let billing = match options.billing {
+        Some(value) => normalize_billing(&value)?,
+        None => preset.billing,
+    };
+    if !confirm_add(interactive, options.yes, &slot)? {
+        println!("Cancelled.");
+        return Ok(());
+    }
+    let channel = if slot == "volcengine" {
+        subswap_provider_pi::auth::volcengine_channel()
+    } else {
+        slot.clone()
+    };
+    let account = ctx
+        .pi
+        .import_key(
+            subswap_provider_pi::NewPiAccount {
+                slot: slot.clone(),
+                native_provider: preset.native_provider.to_string(),
+                base_url: endpoint.trim_end_matches('/').to_string(),
+                model: model.trim().to_string(),
+                channel,
+                billing,
+            },
+            &api_key,
+            Some(false),
+        )
+        .context("add Pi API key")?;
+    // 不激活：只入库，切换语义交给 `subswap swap pi/<id>`（会同时写 slot 与默认选择）。
+    finish_add(ctx, "pi", &account, json).await
 }
 
 fn confirm_add(interactive: bool, skip: bool, name: &str) -> Result<bool> {

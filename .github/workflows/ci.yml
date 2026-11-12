@@ -59,6 +59,28 @@ jobs:
           # 避免测试残留后台进程。
           SUBSWAP_NO_DAEMON: "1"
         run: cargo test --workspace --all-targets
+
+  pi:
+    name: pi extension check / test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: integrations/pi/package-lock.json
+      - name: install pi deps
+        working-directory: integrations/pi
+        run: npm install --ignore-scripts
+      - name: pi check
+        working-directory: integrations/pi
+        run: npm run check
+      - name: pi test
+        working-directory: integrations/pi
+        run: npm test
       - name: regression test windows installer
         if: runner.os == 'Windows'
         run: python -m unittest discover -s tests -p test_windows_installer.py -v

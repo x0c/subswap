@@ -70,6 +70,11 @@ pub async fn run(ctx: &AppContext, json: bool) -> Result<()> {
     if let Err(e) = ensure_daemon_running() {
         tracing::debug!(err = %e, "ensure_daemon_running failed; continuing");
     }
+    // 5. Pi 扩展默认安装链 best-effort:link 缺失才建、指向别处永不覆盖、
+    //    缺 pi / 缺源码只 hint。失败仅 debug 日志,不影响默认入口退出码。
+    if let Err(e) = crate::pi_extension::ensure_pi_extension().await {
+        tracing::debug!(err = %e, "ensure_pi_extension failed; continuing");
+    }
     Ok(())
 }
 
@@ -303,14 +308,14 @@ async fn sync_local_active(ctx: &AppContext) -> Vec<AutoLine> {
             Err(e) => notices.push(signed_in_but_untracked("antigravity", &id, e)),
         }
     }
-    if let Ok(id) = ctx.volcengine.live_account_id() {
-        match ctx.volcengine.sync_active_metadata() {
+    if let Ok(id) = ctx.pi.live_account_id() {
+        match ctx.pi.sync_active_metadata() {
             Ok(account) => {
-                if ctx.registry.set_active("volcengine", &account.id).is_ok() {
-                    clear_settled_marker(ctx, "volcengine", &account.id);
+                if ctx.registry.set_active("pi", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "pi", &account.id);
                 }
             }
-            Err(e) => notices.push(signed_in_but_untracked("volcengine", &id, e)),
+            Err(e) => notices.push(signed_in_but_untracked("pi", &id, e)),
         }
     }
     notices
@@ -460,14 +465,14 @@ async fn sync_local_active_metadata(ctx: &AppContext) -> Vec<AutoLine> {
             Err(e) => notices.push(signed_in_but_untracked("antigravity", &id, e)),
         }
     }
-    if let Ok(id) = ctx.volcengine.live_account_id() {
-        match ctx.volcengine.sync_active_metadata() {
+    if let Ok(id) = ctx.pi.live_account_id() {
+        match ctx.pi.sync_active_metadata() {
             Ok(account) => {
-                if ctx.registry.set_active("volcengine", &account.id).is_ok() {
-                    clear_settled_marker(ctx, "volcengine", &account.id);
+                if ctx.registry.set_active("pi", &account.id).is_ok() {
+                    clear_settled_marker(ctx, "pi", &account.id);
                 }
             }
-            Err(e) => notices.push(signed_in_but_untracked("volcengine", &id, e)),
+            Err(e) => notices.push(signed_in_but_untracked("pi", &id, e)),
         }
     }
     notices

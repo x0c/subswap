@@ -16,6 +16,7 @@ use subswap_provider_common::{EnvIsolatedProvider, IsolatedProvider};
 use subswap_provider_cursor::CursorProvider;
 use subswap_provider_kimi::KimiProvider;
 use subswap_provider_opencode::{OpencodeApiKeyProvider, OpencodeProvider};
+use subswap_provider_pi::PiProvider;
 use subswap_provider_volcengine::VolcengineProvider;
 
 pub struct AppContext {
@@ -30,6 +31,7 @@ pub struct AppContext {
     pub commandcode: Arc<CommandcodeProvider>,
     pub antigravity: Arc<AntigravityProvider>,
     pub volcengine: Arc<VolcengineProvider>,
+    pub pi: Arc<PiProvider>,
     pub providers: ProviderRegistry,
     /// 隔离运行（`run`/`shell`/`env`）查表：provider id → 通用隔离抽象。
     /// Claude 不在此表中，走 `run.rs` 里的专用分支（macOS 钥匙串 / API 账号逻辑不适配此通用形状）。
@@ -51,6 +53,12 @@ impl AppContext {
         ));
         let registry = Arc::new(AccountRegistry::from_default_paths()?);
         subswap_provider_opencode::migrate_legacy_api_keys(store.as_ref(), &registry)?;
+        // 顶层 volcengine 一次性搬进 Pi 抽屉（幂等；无 volcengine 账号时 no-op）。
+        if let Err(e) =
+            subswap_provider_pi::migrate_legacy_volcengine_to_pi(store.as_ref(), &registry)
+        {
+            tracing::warn!(err = %e, "migrate volcengine to pi failed; continuing");
+        }
 
         let claude = Arc::new(ClaudeProvider::new(store.clone(), registry.clone()));
         let codex = Arc::new(subswap_provider_codex::new(store.clone(), registry.clone()));
@@ -76,6 +84,7 @@ impl AppContext {
             store.clone(),
             registry.clone(),
         ));
+        let pi = Arc::new(subswap_provider_pi::new(store.clone(), registry.clone()));
 
         let mut providers = ProviderRegistry::new();
         providers.register(claude.clone());
@@ -87,6 +96,7 @@ impl AppContext {
         providers.register(commandcode.clone());
         providers.register(antigravity.clone());
         providers.register(volcengine.clone());
+        providers.register(pi.clone());
 
         let mut isolated: HashMap<&'static str, Arc<dyn IsolatedProvider>> = HashMap::new();
         isolated.insert("codex", codex.clone());
@@ -97,6 +107,7 @@ impl AppContext {
         let mut env_isolated: HashMap<&'static str, Arc<dyn EnvIsolatedProvider>> = HashMap::new();
         env_isolated.insert("claude", claude.clone());
         env_isolated.insert("volcengine", volcengine.clone());
+        env_isolated.insert("pi", pi.clone());
 
         let audit = AuditLog::from_default_paths()?;
 
@@ -112,6 +123,7 @@ impl AppContext {
             commandcode,
             antigravity,
             volcengine,
+            pi,
             providers,
             isolated,
             env_isolated,

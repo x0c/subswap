@@ -1,13 +1,17 @@
 # Subswap Pi integration
 
-Pi providers backed by Subswap's account pools. Each supported Subswap provider (currently `codex` and `volcengine`) becomes one Pi provider, so all accounts in that group share the same models and fail over inside a single request.
+Pi providers backed by Subswap's account pools. Each account channel becomes one Pi provider, so all accounts in that channel share the same models and fail over inside a single request.
 
 Supported in this version:
 
-| Subswap provider | Pi provider | Models |
+| Subswap channel | Pi provider | Models |
 |---|---|---|
-| `codex` | `subswap-codex` | Pi's native Codex catalog |
-| `volcengine` | `subswap-volcengine` | `kimi-k3.1-pro` |
+| `codex` (Codex OAuth) | `subswap-codex` | Pi's native Codex catalog |
+| default Volcengine key (`volcengine:<base>#<model>`) | `subswap-volcengine` | `kimi-k3.1-pro` (or status model) |
+| Codex custom API channel (`codex:<id>`) | `subswap-codex-<id>` slug | custom endpoint model via `openai-responses` |
+| Volcengine custom endpoint/model (`volcengine:<base>#<model>`) | `subswap-volcengine-…` slug | status model id via `openai-completions` |
+
+Channel identity comes from the Subswap status `channel` field when present, otherwise from local metadata (Codex custom per account, Volcengine by endpoint plus model). Other providers (Claude, OpenCode, Cursor, Kimi, Command Code) are discovered but have no Pi adapter in this version and are skipped.
 
 ## Behavior
 
@@ -62,7 +66,7 @@ Set a pooled provider as the model source, for example:
 }
 ```
 
-Do not run another account-failover extension for the same providers. This extension registers `subswap-codex` and `subswap-volcengine`; aliases such as `codex-1` / `codex-2` or `coding-plan` / `coding-plan-2` are not required.
+Do not run another account-failover extension for the same providers. This extension registers one `subswap-*` provider per servable channel (`subswap-codex`, `subswap-volcengine`, plus per-channel slugs); aliases such as `codex-1` / `codex-2` or `coding-plan` / `coding-plan-2` are not required.
 
 ## Credentials
 
@@ -96,9 +100,11 @@ If every account in the group is genuinely exhausted, Pi reports the upstream qu
 
 ## Limitations
 
-- Cross-provider fallback is not implemented. A Codex pool stays on Codex; a Volcengine pool stays on Volcengine.
+- Cross-channel fallback is not implemented. A Codex OAuth pool stays on `codex`; a Codex custom channel stays on its own `codex:<id>`; a Volcengine pool stays on its own endpoint/model channel. A mixed-channel pool is a wiring bug and refuses to stream before resolving any credential.
 - Cursor, OpenCode, Claude OAuth, Kimi, and Command Code are not exposed by this version. They either use a different credential shape, a SQLite/GUI lifecycle, or a protocol that needs a separate adapter.
+- Codex custom channels from old status JSON without endpoint/model metadata stay discovered but unlisted: Pi cannot route HTTP without an endpoint, so no provider is registered until Subswap emits endpoint metadata. Volcengine old JSON falls back to `https://ark.cn-beijing.volces.com/api/coding/v3` and `kimi-k3.1-pro`.
+- Volcengine per-attempt endpoint may refresh from the live secret (normalized to the OpenAI-compatible `/v3` path); the Pi model id follows status metadata only, never the Anthropic-namespace `ANTHROPIC_MODEL`, so an old status JSON keeps serving the verified `kimi-k3.1-pro` id. Codex custom per-attempt endpoint/model follow account metadata, then the live secret.
 - Accounts added or removed while Pi is running are picked up after `/reload` or a new session. A removed account fails its next setup gracefully through the per-account cooldown path; it never crashes the request stream.
 - The Codex pool exposes Pi's native Codex catalog (8 models on Pi 1.5.0); the count follows Pi releases.
-- The Volcengine model base URL and model ID are fixed in this version. The extension uses the OpenAI-compatible path `https://ark.cn-beijing.volces.com/api/coding/v3`; the native Claude endpoint (`.../api/coding`, without `/v3`) is a different protocol path. Update `src/providers.ts` when the official endpoint or catalog changes.
+- The default Volcengine channel uses the OpenAI-compatible path `https://ark.cn-beijing.volces.com/api/coding/v3`; the native Claude endpoint (`.../api/coding`, without `/v3`) is a different protocol path and is normalized to `/v3` for this pool. Custom Volcengine endpoint/model channels serve their status endpoint (same normalization) and status model id. Update `src/providers.ts` when the official endpoint or catalog changes.
 - Volcengine rotation relies on the OpenAI-compatible adapter's normalized error text because that adapter does not hand the pool a failed HTTP status. A response that omits status/quota/rate-limit/auth tokens may surface without rotation; real 429 bodies observed so far include the status token.

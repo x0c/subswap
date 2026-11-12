@@ -123,6 +123,12 @@ pub async fn run() -> Result<()> {
     ));
     let registry = Arc::new(AccountRegistry::from_default_paths()?);
     subswap_provider_opencode::migrate_legacy_api_keys(store.as_ref(), &registry)?;
+    // 顶层 volcengine 一次性搬进 Pi 抽屉（幂等；与 CLI 同语义）。
+    if let Err(e) =
+        subswap_provider_pi::migrate_legacy_volcengine_to_pi(store.as_ref(), &registry)
+    {
+        tracing::warn!(err = %e, "migrate volcengine to pi failed; continuing");
+    }
     let audit = AuditLog::from_default_paths()?;
 
     let claude = Arc::new(ClaudeProvider::new(store.clone(), registry.clone()));
@@ -146,6 +152,8 @@ pub async fn run() -> Result<()> {
         store.clone(),
         registry.clone(),
     ));
+    let pi = Arc::new(subswap_provider_pi::new(store.clone(), registry.clone()));
+    // daemon 不直接持有 pi 句柄：Pi 无额度、无保活，注册进表仅为统一快照/决策面。
     let mut providers = ProviderRegistry::new();
     providers.register(claude.clone());
     providers.register(codex.clone());
@@ -156,6 +164,7 @@ pub async fn run() -> Result<()> {
     providers.register(commandcode.clone());
     providers.register(antigravity.clone());
     providers.register(volcengine.clone());
+    providers.register(pi.clone());
 
     let mut state = DaemonState::new();
     let mut adaptive = AdaptiveState::new();

@@ -35,6 +35,7 @@ fn isolated_subswap(tmp: &tempfile::TempDir) -> Command {
             "SUBSWAP_ANTIGRAVITY_KEYCHAIN_PATH",
             tmp.path().join("test.keychain-db"),
         )
+        .env("SUBSWAP_PI_HOME", tmp.path().join("pi"))
         .env("SUBSWAP_NO_DAEMON", "1");
     command
 }
@@ -116,29 +117,35 @@ fn codex_auth_projects_only_access_token_and_expiry() {
 
 #[test]
 fn volcengine_auth_reuses_environment_projection() {
+    // 顶层 volcengine 已搬进 Pi 抽屉：Pi 侧用长效 Credential 投影（非 Environment）。
     let tmp = tempfile::tempdir().unwrap();
     let (store, registry) = stores(&tmp);
     store
-        .set("volcengine", "ark-test", "api_key", "test-volcengine-key")
+        .set("pi", "ark-test", "api_key", "test-volcengine-key")
         .unwrap();
-    let mut account = account("volcengine", "ark-test", true);
-    account.extra.insert(
-        "api_config".into(),
+    let mut extra = serde_json::Map::new();
+    extra.insert("kind".into(), "api".into());
+    extra.insert(
+        "channel".into(),
+        "volcengine:https://ark.cn-beijing.volces.com/api/coding/v3#kimi-k3.1-pro".into(),
+    );
+    extra.insert(
+        "pi_api".into(),
         serde_json::json!({
-            "base_url": "https://ark.cn-beijing.volces.com/api/coding",
-            "auth_field": "ANTHROPIC_AUTH_TOKEN",
-            "model": "ark-code-latest",
-            "opus_model": "ark-code-latest",
-            "sonnet_model": "ark-code-latest",
-            "haiku_model": "ark-code-latest",
-            "subagent_model": "ark-code-latest",
-            "effort_level": ""
+            "native_provider": "volcengine",
+            "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+            "model": "kimi-k3.1-pro",
+            "auth_slot": "volcengine"
         }),
     );
+    extra.insert("manual_only".into(), true.into());
+    extra.insert("billing".into(), "flat".into());
+    let mut account = account("pi", "ark-test", true);
+    account.extra = extra;
     registry.upsert(account).unwrap();
 
     let output = isolated_subswap(&tmp)
-        .args(["auth", "volcengine/ark-test"])
+        .args(["auth", "pi/ark-test"])
         .output()
         .unwrap();
     assert!(
@@ -148,10 +155,10 @@ fn volcengine_auth_reuses_environment_projection() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["kind"], "environment");
-    assert_eq!(value["provider"], "volcengine");
-    assert_eq!(value["env"]["ANTHROPIC_AUTH_TOKEN"], "test-volcengine-key");
-    assert_eq!(value["env"]["ANTHROPIC_MODEL"], "ark-code-latest");
+    assert_eq!(value["kind"], "credential");
+    assert_eq!(value["provider"], "pi");
+    assert_eq!(value["secret"], "test-volcengine-key");
+    assert!(value.get("expires_at_ms").is_none() || value["expires_at_ms"].is_null());
 }
 
 /// 破损 `config.toml` 不得污染 stdout 单 JSON 契约：warn 走 stderr。
@@ -376,32 +383,37 @@ fn auth_renew_fresh_projects_without_side_effects() {
     );
 }
 
-/// `--renew` 环境投影回退：Volcengine 长效 key 直接返回 env，不报错。
+/// `--renew` 环境投影回退：Pi 长效 key 直接返回 credential，不报错。
 #[test]
 fn auth_renew_environment_falls_back_without_network() {
     let tmp = tempfile::tempdir().unwrap();
     let (store, registry) = stores(&tmp);
     store
-        .set("volcengine", "ark-test", "api_key", "test-volcengine-key")
+        .set("pi", "ark-test", "api_key", "test-volcengine-key")
         .unwrap();
-    let mut acct = account("volcengine", "ark-test", true);
-    acct.extra.insert(
-        "api_config".into(),
+    let mut extra = serde_json::Map::new();
+    extra.insert("kind".into(), "api".into());
+    extra.insert(
+        "channel".into(),
+        "volcengine:https://ark.cn-beijing.volces.com/api/coding/v3#kimi-k3.1-pro".into(),
+    );
+    extra.insert(
+        "pi_api".into(),
         serde_json::json!({
-            "base_url": "https://ark.cn-beijing.volces.com/api/coding",
-            "auth_field": "ANTHROPIC_AUTH_TOKEN",
-            "model": "ark-code-latest",
-            "opus_model": "ark-code-latest",
-            "sonnet_model": "ark-code-latest",
-            "haiku_model": "ark-code-latest",
-            "subagent_model": "ark-code-latest",
-            "effort_level": ""
+            "native_provider": "volcengine",
+            "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+            "model": "kimi-k3.1-pro",
+            "auth_slot": "volcengine"
         }),
     );
+    extra.insert("manual_only".into(), true.into());
+    extra.insert("billing".into(), "flat".into());
+    let mut acct = account("pi", "ark-test", true);
+    acct.extra = extra;
     registry.upsert(acct).unwrap();
 
     let output = isolated_subswap(&tmp)
-        .args(["auth", "volcengine/ark-test", "--renew"])
+        .args(["auth", "pi/ark-test", "--renew"])
         .output()
         .unwrap();
     assert!(
@@ -411,8 +423,8 @@ fn auth_renew_environment_falls_back_without_network() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["kind"], "environment");
-    assert_eq!(value["env"]["ANTHROPIC_AUTH_TOKEN"], "test-volcengine-key");
+    assert_eq!(value["kind"], "credential");
+    assert_eq!(value["secret"], "test-volcengine-key");
 }
 
 /// `--renew` 临近过期 parked 走既有 OAuth（不可达即降级当前投影），绝不泄漏 refresh。

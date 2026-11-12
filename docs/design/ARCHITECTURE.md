@@ -26,8 +26,9 @@
 │ providers/kimi        │             │ - keyring + 备份替换    │
 │ providers/opencode    │             │ - Anthropic usage 端点  │
 │ providers/commandcode │             │ - 同步 ~/.claude        │
-│ - Codex/Kimi/OpenCode │             │ - 自定义 API 账号       │
-│   /Command Code       │             │ - 独立实现，不接 common │
+│ providers/pi          │             │ - 自定义 API 账号       │
+│ - Codex/Kimi/OpenCode │             │ - 独立实现，不接 common │
+│   /Command Code       │             │                         │
 │   Runtime             │             │                         │
 │ - 只写差异点：本地路径│             │                         │
 │   解析/元数据/刷新/   │             │                         │
@@ -49,8 +50,9 @@
 └──────────┬─────────────┘                         │
            │                                       │
 ┌──────────▼───────────────────────────────────────▼─────────────┐
-│ providers/volcengine（独立 Provider）                           │
-│ - Coding Plan API Key + Claude settings.env                   │
+│ providers/pi（独立 Provider，多 slot API Key）                   │
+│ - Pi auth.json slot + settings.json 默认选择                   │
+│ - 顶层 volcengine 只读保留，历史账号已迁移进 pi 抽屉            │
 │ providers/cursor（独立 Provider）                               │
 │ - SQLite state.vscdb + GUI 退出/重启协调                        │
 │ - 事务切换 / 回滚 / Cursor usage-summary                        │
@@ -66,14 +68,14 @@
 
 Pi 集成（`integrations/pi/`）是外部消费者，不是新的 Provider：它通过 `subswap status --json --no-metrics` 读取账号分组，通过 `subswap auth <provider>/<id>` 取得单次请求所需的 access token / API key，再复用 Pi 的原生 provider 流做同组补位。凭证所有权仍在 Subswap；`auth` 不返回 refresh token，也不切 active。详见 [PI_EXTENSION_DESIGN.md](PI_EXTENSION_DESIGN.md)。
 
-Codex / Kimi / OpenCode API Key / Command Code 使用 `providers/common` 的文件型凭证能力；OpenCode API Key 在 V2 上另由官方客户端数据库和切号命令决定当前 Key，V1 才通过 `auth.json` 的 `opencode-go` 项切换。OpenCode Console 官方账号单独实现 `Provider`，只从官方数据库读取凭证、通过官方命令切换；它与 API Key 是两个独立 Provider。Claude（Keychain + 自定义 API）与 Cursor（SQLite + GUI 生命周期）也独立实现。火山方舟 Coding Plan 是独立的 `volcengine` Provider（机主裁定 2026-11-07），不复用 Claude 账号命名空间；它只把 Key 投影到 Claude `settings.json.env`，通过带 `provider` 的共享 API 哨兵与 Claude 互切并恢复配置，不接文件型引擎。
+Codex / Kimi / OpenCode API Key / Command Code 使用 `providers/common` 的文件型凭证能力；OpenCode API Key 在 V2 上另由官方客户端数据库和切号命令决定当前 Key，V1 才通过 `auth.json` 的 `opencode-go` 项切换。OpenCode Console 官方账号单独实现 `Provider`，只从官方数据库读取凭证、通过官方命令切换；它与 API Key 是两个独立 Provider。Claude（Keychain + 自定义 API）、Cursor（SQLite + GUI 生命周期）、Pi（`~/.pi/agent/` 多 slot API Key + `settings.json` 默认选择）也独立实现，不接文件型引擎。火山方舟 Coding Plan 历史上是独立的顶层 `volcengine` Provider（机主裁定 2026-11-07）；Pi Runtime 落地后顶层 `volcengine` 只读保留，账号已迁移进 `pi` 抽屉（同 id，`auth_slot=volcengine`），新 Key 走 `subswap add-api pi --preset volcengine` 或 `subswap login volcengine -- <key>`。Pi 账号全部 `manual_only`，`query_quota` 恒为空，`request_credential` 投影长效 key 永不刷新；`swap pi[/<id>]` 默认同步 `settings.json`（`--no-default` 跳过）；`models.json` 与 `sessions/` 永不触碰。
 
 ## 2. 设计模式
 
 | 模式 | 落地位置 | 作用 |
 |---|---|---|
 | Strategy + Factory | `Provider` trait + `ProviderRegistry` | 多 Provider 多策略，新增 = 加一行注册 |
-| Adapter | `providers/codex`、`providers/kimi`、`providers/opencode`、`providers/commandcode` | 各自实现 `FileBlobRuntime`，把本地路径/元数据/刷新/usage 查询的差异适配进 `providers/common` 共享引擎；Claude/Cursor 直接实现 `Provider` trait，不属于这个 Adapter 关系 |
+| Adapter | `providers/codex`、`providers/kimi`、`providers/opencode`、`providers/commandcode` | 各自实现 `FileBlobRuntime`，把本地路径/元数据/刷新/usage 查询的差异适配进 `providers/common` 共享引擎；Claude/Cursor/Pi 直接实现 `Provider` trait，不属于这个 Adapter 关系 |
 | Repository | `CredentialStore` trait + `FileStore` / `KeyringStore` | 默认私有文件仓库；旧 keyring 只作懒迁移源 |
 | Observer | M4 的 `UsageMonitor` → `AutoSwapPolicy` | 周期采样触发自动切换 |
 | Chain of Responsibility | M4 的 `AutoSwapPolicy` 内部 | 阈值 → 限流 → 候选筛选 → 选优 |
@@ -84,7 +86,7 @@ Codex / Kimi / OpenCode API Key / Command Code 使用 `providers/common` 的文�
 
 ```
 ① sync_local_active
-   └─ claude/codex/kimi/cursor/opencode/opencode-api-key/commandcode 同步当前本地账号
+   └─ claude/codex/kimi/cursor/opencode/opencode-api-key/commandcode/pi 同步当前本地账号
       （读各原生客户端登录状态，upsert registry；失败静默跳过）
 
 ② build_loading_snapshots

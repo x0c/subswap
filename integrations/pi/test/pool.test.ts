@@ -31,9 +31,9 @@ const model: Model<"test-api"> = {
 };
 
 const accounts: SubswapAccount[] = [
-	{ id: "a", provider: "codex", displayLabel: "Account A", active: true, manualOnly: false },
-	{ id: "b", provider: "codex", displayLabel: "Account B", active: false, manualOnly: false },
-	{ id: "c", provider: "codex", displayLabel: "Account C", active: false, manualOnly: true },
+	{ id: "a", provider: "codex", displayLabel: "Account A", active: true, manualOnly: false, channel: "codex" },
+	{ id: "b", provider: "codex", displayLabel: "Account B", active: false, manualOnly: false, channel: "codex" },
+	{ id: "c", provider: "codex", displayLabel: "Account C", active: false, manualOnly: true, channel: "codex" },
 ];
 
 function message(stopReason: StopReason, text = ""): AssistantMessage {

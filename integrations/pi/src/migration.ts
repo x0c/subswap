@@ -6,7 +6,10 @@ const LEGACY_POOL_BY_PROVIDER: Readonly<Record<string, string>> = {
 	"codex-2": "subswap-codex",
 };
 
-/** Resolve a removed provider id to its same-model Subswap pool. */
+/** Resolve a removed alias to its same-model Subswap pool; current pool ids pass through. */
 export function legacyPoolFor(provider: string): string | undefined {
-	return LEGACY_POOL_BY_PROVIDER[provider];
+	const mapped = LEGACY_POOL_BY_PROVIDER[provider];
+	if (mapped) return mapped;
+	if (provider.startsWith("subswap-")) return provider;
+	return undefined;
 }

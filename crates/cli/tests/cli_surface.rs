@@ -60,6 +60,8 @@ fn isolated_subswap(tmp: &tempfile::TempDir) -> Command {
         .env("SUBSWAP_CLAUDE_KEYCHAIN_PATH", test_keychain_path(tmp))
         .env("SUBSWAP_CURSOR_KEYCHAIN_PATH", test_keychain_path(tmp))
         .env("SUBSWAP_ANTIGRAVITY_KEYCHAIN_PATH", test_keychain_path(tmp))
+        // Pi 抽屉隔离：绝不碰真实 `~/.pi/agent`。
+        .env("SUBSWAP_PI_HOME", tmp.path().join("pi"))
         // 每个测试独占 metrics 文件，避免外部 `SUBSWAP_REQUEST_METRICS_PATH`
         // 把 provider 单测遥测混进当前任务或真实用户统计。
         .env(
@@ -606,13 +608,16 @@ emailAddress = "oauth@example.com"
 
 #[test]
 fn volcengine_login_activates_official_defaults_and_restores_oauth_env() {
+    // 顶层 volcengine 已搬进 Pi 抽屉：login 写入 Pi `auth.json` slot + `settings.json` 默认选择，
+    // 不再碰 Claude `settings.json`；registry 侧为 `pi` provider。
     let tmp = tempfile::tempdir().unwrap();
     setup_test_keychain(&tmp);
     write_fast_quota_timeout(&tmp);
     let claude = tmp.path().join("claude");
+    let pi_home = tmp.path().join("pi");
     let registry = app_config_dir(&tmp).join("registry.toml");
 
-    // 先放一个旧受管字段，验证切入/切出 Volcengine 时能够保留与恢复。
+    // Claude 侧旧字段应原样保留（Pi 切换不碰它）。
     fs::create_dir_all(&claude).unwrap();
     fs::write(
         claude.join("settings.json"),
@@ -626,29 +631,26 @@ fn volcengine_login_activates_official_defaults_and_restores_oauth_env() {
             .output()
             .unwrap(),
     );
-    assert!(stdout.contains("login → volcengine/ark-"), "{stdout}");
+    assert!(stdout.contains("login → pi/"), "{stdout}");
     let saved = fs::read_to_string(&registry).unwrap();
     assert!(saved.contains("manual_only = true"), "{saved}");
     assert!(saved.contains("billing = \"flat\""), "{saved}");
-    assert!(saved.contains("provider = \"volcengine\""), "{saved}");
+    assert!(saved.contains("provider = \"pi\""), "{saved}");
+    assert!(!saved.contains("\nprovider = \"volcengine\""), "{saved}");
 
-    let active: serde_json::Value =
+    let auth_raw = fs::read_to_string(pi_home.join("auth.json")).unwrap();
+    let auth: serde_json::Value = serde_json::from_str(&auth_raw).unwrap();
+    assert_eq!(auth["volcengine"]["key"], "ark-secret");
+    let settings_raw = fs::read_to_string(pi_home.join("settings.json")).unwrap();
+    let settings: serde_json::Value = serde_json::from_str(&settings_raw).unwrap();
+    assert_eq!(settings["defaultProvider"], "volcengine");
+    assert_eq!(settings["defaultModel"], "kimi-k3.1-pro");
+
+    // Claude 侧不受影响。
+    let untouched: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(claude.join("settings.json")).unwrap()).unwrap();
-    assert_eq!(
-        active["env"]["ANTHROPIC_BASE_URL"],
-        "https://ark.cn-beijing.volces.com/api/coding"
-    );
-    assert_eq!(active["env"]["ANTHROPIC_AUTH_TOKEN"], "ark-secret");
-    assert!(active["env"].get("ANTHROPIC_API_KEY").is_none());
-    for field in [
-        "ANTHROPIC_MODEL",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-        "CLAUDE_CODE_SUBAGENT_MODEL",
-    ] {
-        assert_eq!(active["env"][field], "ark-code-latest", "{field}");
-    }
+    assert_eq!(untouched["env"]["ANTHROPIC_MODEL"], "old-model");
+    assert!(untouched["env"].get("ANTHROPIC_BASE_URL").is_none());
 
     // 别名 ark 同样可用；重复导入同一 Key 不应新增账号。
     let stdout = assert_success(
@@ -657,9 +659,9 @@ fn volcengine_login_activates_official_defaults_and_restores_oauth_env() {
             .output()
             .unwrap(),
     );
-    assert!(stdout.contains("login → volcengine/ark-"), "{stdout}");
+    assert!(stdout.contains("login → pi/"), "{stdout}");
 
-    // 删除当前 Volcengine 账号应退出 API 模式并恢复旧受管字段。
+    // 删除 Pi volcengine slot 账号应清除 live slot。
     let volcengine_id = saved
         .lines()
         .find_map(|line| {
@@ -668,18 +670,16 @@ fn volcengine_login_activates_official_defaults_and_restores_oauth_env() {
                 .strip_suffix('"')
                 .map(str::to_string)
         })
-        .expect("volcengine id in registry");
+        .expect("pi volcengine id in registry");
     assert_success(
         isolated_subswap(&tmp)
-            .args(["rm", &format!("volcengine/{volcengine_id}")])
+            .args(["rm", &format!("pi/{volcengine_id}")])
             .output()
             .unwrap(),
     );
-    let restored: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(claude.join("settings.json")).unwrap()).unwrap();
-    assert_eq!(restored["env"]["ANTHROPIC_MODEL"], "old-model");
-    assert_eq!(restored["env"]["KEEP"], "yes");
-    assert!(restored["env"].get("ANTHROPIC_BASE_URL").is_none());
+    let auth_after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(pi_home.join("auth.json")).unwrap()).unwrap();
+    assert!(auth_after.get("volcengine").is_none());
 
     teardown_test_keychain(&tmp);
 }

@@ -38,6 +38,14 @@ pub trait Provider: Send + Sync {
     /// 把指定账号切为激活态，并同步所有 `client_targets` 的本地文件。
     async fn activate(&self, id: &AccountId) -> Result<()>;
 
+    /// 带显式默认选择开关的激活（`swap --no-default` 用）。
+    /// 默认与 `activate` 同义；Pi 覆盖它以跳过 `settings.json` 默认选择更新。
+    /// 共享切换逻辑只认该能力声明，不按 provider 名分发。
+    async fn activate_with_default(&self, id: &AccountId, update_default: bool) -> Result<()> {
+        let _ = update_default;
+        self.activate(id).await
+    }
+
     /// 查询某账号的额度。可能返回多窗口（例如 Claude 的 5h + 7d）。
     /// 实现允许返回 `Vec` 为空表示"暂无可查"，但应优先返回 status=Unknown 的占位。
     async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>>;

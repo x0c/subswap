@@ -6,8 +6,8 @@ import { buildPool } from "../src/providers.ts";
 import type { SubswapAccount } from "../src/subswap.ts";
 
 const accounts: SubswapAccount[] = [
-	{ id: "a", provider: "codex", displayLabel: "Account A", active: true, manualOnly: false },
-	{ id: "b", provider: "codex", displayLabel: "Account B", active: false, manualOnly: false },
+	{ id: "a", provider: "codex", displayLabel: "Account A", active: true, manualOnly: false, channel: "codex" },
+	{ id: "b", provider: "codex", displayLabel: "Account B", active: false, manualOnly: false, channel: "codex" },
 ];
 
 // 只供本地假 fetch 解析身份；不含有效签名，不可向真实服务认证。
@@ -22,7 +22,7 @@ for (const errorType of ["error", "response.failed"]) {
 	test(`native Codex ${errorType} over HTTP 200 fails over after normalizing the quota code`, async () => {
 		const state = newPoolState();
 		const provider = buildPool({
-			subswapProvider: "codex",
+			channel: "codex",
 			accounts,
 			state,
 			resolveSecret: async (account) => ({ apiKey: fixtureToken(account.id) }),

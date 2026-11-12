@@ -5,7 +5,7 @@
 use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
-use subswap_core::{AuditEvent, Provider};
+use subswap_core::{AuditEvent, BillingKind, Provider};
 
 use crate::app::AppContext;
 use crate::cmd::default::print_status_overview;
@@ -288,69 +288,76 @@ pub async fn run(
             }
             let (inference_key, access_key_id, secret_access_key) =
                 parse_volcengine_login_args(&extra_args)?;
-            let account = if let Some(key) = inference_key {
-                let imported = ctx.volcengine.import_key(&key, None)?;
-                if let (Some(ak), Some(sk)) = (access_key_id.clone(), secret_access_key.clone()) {
-                    ctx.volcengine
-                        .set_quota_credentials(&imported.id, &ak, &sk)
-                        .context("save Volcengine quota AK/SK")?;
-                }
-                ctx.volcengine
-                    .activate(&imported.id)
-                    .await
-                    .context("activate Volcengine Coding Plan account")?;
-                imported
-            } else if access_key_id.is_some() || secret_access_key.is_some() {
-                // 只更新 AK/SK：优先当前 live 账号，否则取 registry 中 active 的 volcengine 账号。
-                let access_key_id = access_key_id
-                    .context("missing --ak-id (usage: `-- --ak-id <AK> --ak-secret <SK>`)")?;
-                let secret_access_key = secret_access_key
-                    .context("missing --ak-secret (usage: `-- --ak-id <AK> --ak-secret <SK>`)")?;
-                let target_id = match ctx.volcengine.live_account_id() {
-                    Ok(id) => id,
-                    Err(_) => ctx
-                        .registry
-                        .list_by_provider("volcengine")
-                        .context("list Volcengine accounts")?
-                        .into_iter()
-                        .find(|account| account.active)
-                        .map(|account| account.id)
-                        .context(
-                            "no active Volcengine account; pass an API key after `--` first",
-                        )?,
-                };
-                ctx.volcengine
-                    .set_quota_credentials(&target_id, &access_key_id, &secret_access_key)
-                    .context("save Volcengine quota AK/SK")?;
-                ctx.registry
-                    .find("volcengine", &target_id)?
-                    .context("Volcengine account did not persist")?
-            } else {
-                let imported = ctx.volcengine.import_active().context(
-                    "no Volcengine Coding Plan configuration in Claude settings; pass an API key after `--`",
-                )?;
-                ctx.volcengine
-                    .activate(&imported.id)
-                    .await
-                    .context("activate Volcengine Coding Plan account")?;
-                imported
-            };
-            ctx.registry
-                .find("volcengine", &account.id)?
-                .context("Volcengine login did not persist")?;
+            if access_key_id.is_some() || secret_access_key.is_some() {
+                bail!(
+                    "Volcengine quota AK/SK is retired with the top-level provider; Pi never queries quota. Pass only an inference key: `subswap login volcengine -- <key>`"
+                );
+            }
+            let key = inference_key.context(
+                "top-level `volcengine` login is retired; use `subswap login volcengine -- <key>` to import into Pi (`pi/volcengine` slot) or `subswap add-api pi --preset volcengine`",
+            )?;
+            let account = ctx
+                .pi
+                .import_key(
+                    subswap_provider_pi::NewPiAccount {
+                        slot: "volcengine".into(),
+                        native_provider: "volcengine".into(),
+                        base_url: subswap_provider_pi::auth::PI_VOLCENGINE_BASE_URL.into(),
+                        model: subswap_provider_pi::auth::PI_VOLCENGINE_MODEL.into(),
+                        channel: subswap_provider_pi::auth::volcengine_channel(),
+                        billing: BillingKind::Flat,
+                    },
+                    &key,
+                    None,
+                )
+                .context("import Volcengine key into Pi")?;
+            ctx.pi
+                .activate(&account.id)
+                .await
+                .context("activate Pi volcengine slot")?;
             ctx.audit.append(AuditEvent::ok(
                 "login",
-                "volcengine",
+                "pi",
                 Some(account.id.0.as_str()),
             ));
-            println!("login → volcengine/{}", account_ref(&account.id.0));
-            if let Err(e) = subswap_core::record_manual_swap("volcengine") {
-                tracing::warn!(err = %e, provider = "volcengine", "record manual hold failed");
+            println!("login → pi/{} (volcengine slot)", account_ref(&account.id.0));
+            println!("note: top-level `volcengine` is read-only; new keys live in the Pi drawer");
+            if let Err(e) = subswap_core::record_manual_swap("pi") {
+                tracing::warn!(err = %e, provider = "pi", "record manual hold failed");
             }
             return finish(ctx, json).await;
         }
+        "pi" => {
+            if email.is_some() || sso || device_auth || !extra_args.is_empty() {
+                bail!("login options are not supported for pi; run `subswap login pi`");
+            }
+            // Pi 扩展显式安装入口：幂等 link + 依赖 + check（缺 pi / 指向别处只 hint/警告，返回 Ok）。
+            crate::pi_extension::ensure_pi_extension().await?;
+            // 同步 live 全部 slot 进账号池；active 对齐 `settings.json` 默认选择。
+            let accounts = ctx.pi.sync_slots().context("import Pi live slots")?;
+            if let Some(active) = accounts.iter().find(|a| a.active) {
+                ctx.audit.append(AuditEvent::ok(
+                    "login",
+                    "pi",
+                    Some(active.id.0.as_str()),
+                ));
+                println!("login → pi/{} (live slot sync)", account_ref(&active.id.0));
+                if let Err(e) = subswap_core::record_manual_swap("pi") {
+                    tracing::warn!(err = %e, provider = "pi", "record manual hold failed");
+                }
+            } else if accounts.is_empty() {
+                ctx.audit.append(AuditEvent::ok("login", "pi", None));
+                println!("login → pi/subswap-pi (extension ensured)");
+                println!("no Pi auth slots found; add one with `subswap add-api pi --preset deepseek`");
+            } else {
+                ctx.audit.append(AuditEvent::ok("login", "pi", None));
+                println!("imported Pi live slots (none active)");
+            }
+            println!("run `subswap doctor` to verify [pi], then /reload in Pi (or restart Pi)");
+            return finish(ctx, json).await;
+        }
         other => {
-            bail!("unknown provider: {other} (expected claude, codex, kimi, cursor, opencode, opencode-api-key, commandcode, volcengine or antigravity)")
+            bail!("unknown provider: {other} (expected claude, codex, kimi, cursor, opencode, opencode-api-key, commandcode, volcengine, antigravity or pi)")
         }
     }
 }

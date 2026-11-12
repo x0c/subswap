@@ -8,6 +8,10 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+# Pi extension (subswap-pi) is installed from a source checkout on macOS/Linux via
+# `make install-pi` / `subswap login pi` (link + `npm install --ignore-scripts` + check).
+# This Windows installer only ships the CLI and does not manage Pi extension links.
+
 function Write-Step {
     param([string]$Message)
     Write-Host "subswap: $Message"

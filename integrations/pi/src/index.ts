@@ -1,18 +1,19 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { legacyPoolFor } from "./migration.ts";
-import { newPoolState } from "./pool.ts";
-import { buildPools, SUPPORTED_SUBSWAP_PROVIDERS, type SupportedSubswapProvider } from "./providers.ts";
-import { SubswapClient } from "./subswap.ts";
+import { newPoolState, type PoolState } from "./pool.ts";
+import { buildPools } from "./providers.ts";
+import { channelOf, SubswapClient } from "./subswap.ts";
 
 /** Register native request-scoped pools without adding any user-facing behavior. */
 export default async function (pi: ExtensionAPI): Promise<void> {
 	const client = new SubswapClient();
-	const states = new Map<SupportedSubswapProvider, ReturnType<typeof newPoolState>>(
-		SUPPORTED_SUBSWAP_PROVIDERS.map((provider) => [provider, newPoolState()]),
-	);
-
 	try {
 		const accounts = await client.accounts();
+		const states = new Map<string, PoolState>();
+		for (const account of accounts) {
+			const channel = channelOf(account);
+			if (!states.has(channel)) states.set(channel, newPoolState());
+		}
 		for (const { provider } of buildPools(
 			accounts,
 			states,
@@ -33,7 +34,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			const model = ctx.model;
 			if (!model) return;
 			const target = legacyPoolFor(model.provider);
-			if (!target) return;
+			if (!target || target === model.provider) return;
 			let migrated;
 			try {
 				migrated = ctx.modelRegistry.find(target, model.id);

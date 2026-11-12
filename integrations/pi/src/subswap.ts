@@ -6,11 +6,23 @@ export interface SubswapAccount {
 	displayLabel: string;
 	active: boolean;
 	manualOnly: boolean;
+	/** Account channel: accounts in one channel share one Pi provider and fail over together. */
+	channel?: string;
+	/** Upstream endpoint for custom channels (new status JSON; absent on old JSON). */
+	endpoint?: string;
+	/** Upstream model for custom channels (new status JSON; absent on old JSON). */
+	model?: string;
+	/** Custom-channel wire protocol, e.g. Codex `responses` (new status JSON). */
+	wireApi?: string;
 }
 
 export interface RequestSecret {
 	apiKey: string;
 	expiresAtMs?: number;
+	/** Upstream endpoint carried by the projection (environment BASE_URL or credential endpoint). */
+	endpoint?: string;
+	/** Upstream model carried by the projection (environment MODEL or credential model). */
+	model?: string;
 }
 
 export interface ExecResult {
@@ -32,6 +44,12 @@ interface StatusPayload {
 		display_label?: unknown;
 		active?: unknown;
 		manual_only?: unknown;
+		channel?: unknown;
+		endpoint?: unknown;
+		base_url?: unknown;
+		model?: unknown;
+		wire_api?: unknown;
+		wireApi?: unknown;
 	}>;
 }
 
@@ -40,6 +58,9 @@ interface AuthPayload {
 	secret?: unknown;
 	expires_at_ms?: unknown;
 	env?: unknown;
+	endpoint?: unknown;
+	base_url?: unknown;
+	model?: unknown;
 }
 
 function stringField(value: unknown, fallback = ""): string {
@@ -60,34 +81,98 @@ function parseJsonPayload(stdout: string): Record<string, unknown> {
 	return parsed as Record<string, unknown>;
 }
 
+/** Default channel for Codex OAuth accounts; keeps the `subswap-codex` Pi provider id. */
+export const DEFAULT_CODEX_CHANNEL = "codex";
+
+/** Volcengine OpenAI-compatible base URL used by the Pi provider (old-JSON fallback). */
+export const VOLCENGINE_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
+
+/** Volcengine Pi model id (old-JSON fallback). */
+export const VOLCENGINE_MODEL = "kimi-k3.1-pro";
+
+/** Default channel for standard Volcengine keys; keeps the `subswap-volcengine` Pi provider id. */
+export const DEFAULT_VOLCENGINE_CHANNEL = `volcengine:${VOLCENGINE_BASE_URL}#${VOLCENGINE_MODEL}`;
+
+/**
+ * Local channel fallback when the status JSON carries no server `channel`.
+ * Codex custom API channels are per account (`codex:<id>`); a Codex account is
+ * custom when it carries endpoint metadata or is manual-only (only `add-api`
+ * custom channels set manual-only; OAuth imports never do). Volcengine keys
+ * group by endpoint and model. Anything else keeps a provider-derived channel
+ * so unknown providers are preserved, never dropped.
+ */
+export function fallbackChannel(account: Pick<SubswapAccount, "provider" | "id" | "endpoint" | "model" | "wireApi"> & { manualOnly?: boolean }): string {
+	const endpoint = account.endpoint?.replace(/\/+$/, "") || undefined;
+	const model = account.model?.trim() || undefined;
+	if (account.provider === "codex") {
+		if (endpoint || model || account.wireApi || account.manualOnly) return `codex:${account.id}`;
+		return DEFAULT_CODEX_CHANNEL;
+	}
+	if (account.provider === "volcengine") {
+		return `volcengine:${endpoint ?? VOLCENGINE_BASE_URL}#${model ?? VOLCENGINE_MODEL}`;
+	}
+	if (endpoint || model) return `${account.provider}:${endpoint ?? ""}#${model ?? ""}`;
+	return account.provider;
+}
+
+/** Effective channel: server value when present, local fallback otherwise. */
+export function channelOf(account: SubswapAccount): string {
+	const raw = account.channel?.trim();
+	return raw ? raw : fallbackChannel(account);
+}
+
 export function parseStatus(payload: StatusPayload): SubswapAccount[] {
 	if (!payload || typeof payload !== "object" || !Array.isArray(payload.accounts)) return [];
 	return payload.accounts.flatMap((entry) => {
 		const id = stringField(entry.id);
 		const provider = stringField(entry.provider);
 		if (!id || !provider) return [];
-		return [{
+		const manualOnly = entry.manual_only === true;
+		const endpoint = stringField(entry.endpoint) || stringField(entry.base_url) || undefined;
+		const model = stringField(entry.model) || undefined;
+		const wireApi = stringField(entry.wireApi) || stringField(entry.wire_api) || undefined;
+		const serverChannel = stringField(entry.channel) || undefined;
+		const account: SubswapAccount = {
 			id,
 			provider,
 			displayLabel: stringField(entry.display_label, id),
 			active: entry.active === true,
-			manualOnly: entry.manual_only === true,
-		}];
+			manualOnly,
+			...(endpoint ? { endpoint } : {}),
+			...(model ? { model } : {}),
+			...(wireApi ? { wireApi } : {}),
+		};
+		account.channel = serverChannel ?? fallbackChannel({ ...account, manualOnly });
+		return [account];
 	});
 }
 
 export function parseAuth(payload: AuthPayload): RequestSecret {
+	const credentialEndpoint = stringField(payload.endpoint) || stringField(payload.base_url) || undefined;
+	const credentialModel = stringField(payload.model) || undefined;
 	if (payload.kind === "credential" && typeof payload.secret === "string" && payload.secret) {
 		return {
 			apiKey: payload.secret,
 			...(typeof payload.expires_at_ms === "number" ? { expiresAtMs: payload.expires_at_ms } : {}),
+			...(credentialEndpoint ? { endpoint: credentialEndpoint } : {}),
+			...(credentialModel ? { model: credentialModel } : {}),
 		};
 	}
 	if (payload.kind === "environment" && payload.env && typeof payload.env === "object") {
 		const env = payload.env as Record<string, unknown>;
 		const apiKey = [env.ANTHROPIC_AUTH_TOKEN, env.ANTHROPIC_API_KEY]
 			.find((value): value is string => typeof value === "string" && value.length > 0);
-		if (apiKey) return { apiKey };
+		if (apiKey) {
+			const endpoint = stringField(env.ANTHROPIC_BASE_URL) || credentialEndpoint;
+			const model = stringField(env.ANTHROPIC_MODEL)
+				|| stringField(env.ANTHROPIC_DEFAULT_SONNET_MODEL)
+				|| credentialModel;
+			return {
+				apiKey,
+				...(endpoint ? { endpoint } : {}),
+				...(model ? { model } : {}),
+			};
+		}
 	}
 	throw new Error("Subswap returned no usable request credential");
 }

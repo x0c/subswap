@@ -14,9 +14,10 @@ test("removed Codex aliases map to the Codex pool", () => {
 	assert.equal(legacyPoolFor("codex-2"), "subswap-codex");
 });
 
-test("current providers and unknown providers are left alone", () => {
-	assert.equal(legacyPoolFor("subswap-codex"), undefined);
-	assert.equal(legacyPoolFor("subswap-volcengine"), undefined);
+test("current pool ids pass through, native providers are left alone", () => {
+	assert.equal(legacyPoolFor("subswap-codex"), "subswap-codex");
+	assert.equal(legacyPoolFor("subswap-volcengine"), "subswap-volcengine");
+	assert.equal(legacyPoolFor("subswap-codex-deepseek"), "subswap-codex-deepseek");
 	assert.equal(legacyPoolFor("deepseek"), undefined);
 	assert.equal(legacyPoolFor("anthropic"), undefined);
 });
@@ -135,6 +136,23 @@ test("an unmigrated lookup result leaves the current model alone", async () => {
 	const ctx = {
 		model: { provider: "coding-plan", id: "model-id" },
 		modelRegistry: { find: () => undefined },
+	};
+	delete process.env.PI_MODEL_MEMORY_SUPPRESS_UNTIL;
+	try {
+		await handler({}, ctx);
+	} finally {
+		delete process.env.PI_MODEL_MEMORY_SUPPRESS_UNTIL;
+	}
+	assert.equal(setModelCalls.length, 0);
+});
+
+test("a session already on its pool id never triggers a no-op setModel", async () => {
+	const { handler, setModelCalls } = await captureSessionStart(async () => {
+		throw new Error("setModel must not be called for a current pool id");
+	});
+	const ctx = {
+		model: { provider: "subswap-volcengine", id: "kimi-k3.1-pro" },
+		modelRegistry: { find: () => { throw new Error("find must not be called"); } },
 	};
 	delete process.env.PI_MODEL_MEMORY_SUPPRESS_UNTIL;
 	try {

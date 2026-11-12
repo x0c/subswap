@@ -18,6 +18,7 @@
 mod app;
 mod cmd;
 mod daemon_spawn;
+mod pi_extension;
 mod render;
 
 use anyhow::Result;
@@ -124,7 +125,7 @@ enum Cmd {
 
     /// Log in through the native provider CLI, then import and activate that account.
     Login {
-        /// Provider to log in: claude, codex, kimi, cursor, opencode, opencode-api-key, commandcode, volcengine or antigravity.
+        /// Provider to log in: claude, codex, kimi, cursor, opencode, opencode-api-key, commandcode, volcengine, antigravity or pi.
         provider: String,
 
         /// Pre-populate Claude login email.
@@ -161,11 +162,14 @@ enum Cmd {
     Swap {
         /// Account index (e.g. `3`), id, label, or `<provider>/<id>`.
         id: Option<String>,
+        /// Only rewrite the Pi slot, do not update `settings.json` default selection (Pi only; other providers ignore it).
+        #[arg(long)]
+        no_default: bool,
     },
 
     /// Launch a provider CLI in an account-isolated environment without changing the global active account.
     Run {
-        /// Provider to launch: codex, claude, kimi, opencode-api-key, volcengine, or commandcode (antigravity/cursor/opencode unsupported).
+        /// Provider to launch: codex, claude, kimi, opencode-api-key, volcengine, pi, or commandcode (antigravity/cursor/opencode unsupported).
         provider: String,
 
         /// Account index (e.g. `3`), id, label, or `<provider>/<id>`.
@@ -258,7 +262,7 @@ async fn main() -> Result<()> {
     match cli.cmd {
         None => match cli.target.as_deref() {
             // 快捷 `subswap <id|N>`：与 `subswap swap <id|N>` 完全同语义（含 --json 回执）。
-            Some(target) => cmd::swap::run(&ctx, Some(target), cli.json).await,
+            Some(target) => cmd::swap::run(&ctx, Some(target), cli.json, true).await,
             None => cmd::default::run(&ctx, cli.json).await,
         },
         Some(Cmd::AddApi {
@@ -309,7 +313,9 @@ async fn main() -> Result<()> {
             args,
         }) => cmd::login::run(&ctx, &provider, email, sso, device_auth, args, cli.json).await,
         Some(Cmd::Auth { id, renew, raw }) => cmd::auth::run(&ctx, &id, renew, raw).await,
-        Some(Cmd::Swap { id }) => cmd::swap::run(&ctx, id.as_deref(), cli.json).await,
+        Some(Cmd::Swap { id, no_default }) => {
+            cmd::swap::run(&ctx, id.as_deref(), cli.json, !no_default).await
+        }
         Some(Cmd::Run { provider, id, args }) => cmd::run::run(&ctx, &provider, &id, args).await,
         Some(Cmd::Shell { id }) => cmd::run::shell(&ctx, &id).await,
         Some(Cmd::Env { id }) => cmd::run::env(&ctx, &id).await,

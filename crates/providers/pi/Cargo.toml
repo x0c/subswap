@@ -1,0 +1,27 @@
+[package]
+name = "subswap-provider-pi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "subswap Pi coding agent Runtime provider (Pi drawer owner)"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+subswap-core.workspace = true
+subswap-provider-common.workspace = true
+
+async-trait.workspace = true
+chrono.workspace = true
+fs2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

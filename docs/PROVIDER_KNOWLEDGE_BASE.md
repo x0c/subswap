@@ -656,31 +656,44 @@ Go 订阅 = API key（`{"type":"api","key":"sk-..."}`），无 refresh，不刷�
 
 ---
 
-## 火山方舟 Coding Plan
+## Pi coding agent Runtime
 
-独立 `Provider`（`crates/providers/volcengine/`，机主裁定 2026-11-07）：与 Claude / Codex / OpenCode
-同层级，账号列表单独分组，**不得**做成 Claude `add-api` 预设或混入 Claude 账号命名空间。
-`subswap login volcengine -- <api-key>`（别名 `ark`）显式导入；不带 Key 时仅从当前 Claude
-`settings.json` 导入官方端点已有的配置。
+独立 `Provider`（`crates/providers/pi/`）：Pi 抽屉 `~/.pi/agent/` 下多 slot API key 的唯一写主。
+每个账号占 `auth.json` 里一个 slot（`auth_slot`，如 `deepseek`）；切换 = 原子改写该 slot（保留其他 slot）
++ 更新 `settings.json` 默认选择。`models.json` 与 `sessions/` 永不触碰。
 
 | 项 | 值 |
 |---|---|
-| Anthropic Base URL | `https://ark.cn-beijing.volces.com/api/coding` |
-| 认证 | `ANTHROPIC_AUTH_TOKEN`（Bearer） |
-| 默认模型 | Opus / Sonnet / Haiku / subagent 全部 `ark-code-latest`，由控制台选择具体模型或 Auto |
-| 账号 id / label | `ark-` + Key SHA-256 前 16 hex / `Ark …末4`，不展示完整 Key |
-| 计费与自动切换 | `billing = "flat"`；所有 Key `manual_only`，不参与自动换号 |
-| 额度 | AK/SK 经火山 V4 签名直查控制面 `open.volcengineapi.com`（`GetCodingPlanUsage` 百分比优先，空/未订阅再试 `GetAFPUsage` 绝对值；`Version=2024-01-01`，scope `cn-beijing/ark/request`，query 仅 `Action`/`Version`，空请求体按 `{}` 哈希，`Content-Type: application/json`，SignedHeaders 排序 `content-type;host;x-content-sha256;x-date`，与 magpie/官方 Python/PHP demo 一致）；缺凭据或未订阅时试 `arkcli usage plan --product coding-plan` 兜底（15s 超时），最后返回空额度（默认入口显示 `custom`），不伪造数字 |
+| 家目录 | `~/.pi/agent/`（`SUBSWAP_PI_HOME` > `PI_CODING_AGENT_DIR` > `~/.pi/agent`；前者测试/便携优先） |
+| live 格式 | `auth.json` = `{slot: {"type": "api_key", "key": "..."}}`；`settings.json` 只读写 `defaultProvider` / `defaultModel` |
+| 预设 | `deepseek`（`https://api.deepseek.com/anthropic` / `deepseek-chat` / `DEEPSEEK_API_KEY`）、`volcengine`（`.../api/coding/v3` / `kimi-k3.1-pro`，无 env 映射）、`custom`（ endpoint+key+model 显式传入） |
+| 账号 id / label | `pi-` + slot+Key SHA-256 前 12 hex / `<slot> …末4`，不展示完整 Key |
+| 计费与自动切换 | 全部 `manual_only`，不参与自动换号；`query_quota` 恒为空（Pi 不暴露额度） |
+| 凭证投影 | `request_credential` 长效 key（`expires_at_ms=None`），永不刷新，不返回 refresh token；有 env 映射的 slot（`deepseek`→`DEEPSEEK_API_KEY`、`kimi-coding`/`kimi`→`KIMI_API_KEY`）支持 `run` / `shell` / `env` 进程隔离，其余 slot 只走文件切换 |
+| 切换语义 | `swap pi/<id>` 改写 slot + 更新默认选择；`swap --no-default` 只写 slot、不碰 `settings.json`（经 `Provider::activate_with_default`，共享逻辑不按名分发） |
+| 并发安全 | 写经 tmp+rename（`auth.json` 0600），成功后回读校验（Pi JS 用 proper-lockfile 目录锁，Rust fs2 锁与它互不可见，回读是最后一道网）；`swap_with_snapshot` 回滚 |
 
-切换目标是 Claude Code 的 `settings.json.env`，但 active 状态归 `volcengine`。它与 Claude
-OAuth / 自定义 API 共用 `.subswap-api.json` 的恢复信息；哨兵增加 `provider` 字段，旧版缺省
-`claude`。任一方切入时保留首次进入 API 模式前的受管 env，切回 OAuth 或删除当前
-Volcengine 账号时恢复，不能串号或丢失用户原配置。`run` / `shell` / `env` 通过独立的
-env-only 隔离能力启动 `claude`，不写全局 active。
+`subswap add-api pi [--preset deepseek|volcengine|custom]` 只入库、不激活；`subswap login pi` 同步全部 live slot（active 对齐默认 slot）；
+`subswap login volcengine -- <key>`（别名 `ark`）把火山 key 导入 Pi `volcengine` slot 并激活。
 
+## 火山方舟 Coding Plan（顶层只读兼容）
+
+旧独立 `Provider`（`crates/providers/volcengine/`，机主裁定 2026-11-07）已搬进 Pi 抽屉：CLI / daemon 启动时
+`migrate_legacy_volcengine_to_pi` 把 `volcengine/<id>` 按同 id 拷成 `pi/<id>`（secret 从 `api_key` 拷到 `pi/api_key`，
+`extra` 换成 `kind=api` + `channel` + `pi_api{native_provider,base_url,model,auth_slot}` + `manual_only` + 原 billing；
+`access_key_id` / `secret_access_key` 随搬迁删除，Pi 永不查额度；不碰任何 live 文件；配额缓存不继承 `observed_at`；
+重复运行幂等，无 `volcengine` 账号时 no-op）。
+
+- Pi 侧火山值固定改写：`base_url` = `https://ark.cn-beijing.volces.com/api/coding/v3`（区别于 Claude 路径 `.../api/coding`），
+  `model` = `kimi-k3.1-pro`，`channel` = `volcengine:<V3-base>#kimi-k3.1-pro`（与 Pi 扩展 `DEFAULT_VOLCENGINE_CHANNEL` 同形），
+  `auth_slot` = `volcengine`。
+- 顶层 `volcengine` provider 保留注册、只读兼容：不再从 Claude `settings.json` 导入 live，不再参与默认入口 live 对齐；
+  新 key 走 `subswap add-api pi --preset volcengine` 或 `subswap login volcengine -- <key>`。
+  旧 `volcengine/<id>` 引用请改用 `pi/<id>`（同 id，bare-id 仍能解析）。
+
+历史 Claude 路径值（仅追溯，日常以 Pi 侧为准）：`base_url` `https://ark.cn-beijing.volces.com/api/coding`、
+模型 `ark-code-latest`；额度曾经走 AK/SK V4 签名直查 `open.volcengineapi.com` + `arkcli` 兜底，现 Pi 侧恒为空。
 [官方 Claude Code 接入文档](https://www.volcengine.com/docs/ark/coding-plan-personal-ai-claude-code)。
-2026-11-07 使用机主提供的 Key 对上述端点发一次最小 Messages 请求，HTTP 200，
-`ark-code-latest` 由服务端路由到 `auto`。
 
 ## Antigravity / Gemini
 

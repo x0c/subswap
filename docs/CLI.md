@@ -3,20 +3,21 @@
 | 命令 | 说明 |
 |---|---|
 | `subswap` | 默认入口：扫本地自动 import → 立即显示账号骨架 → quota 渐进刷新 → 单 Provider 就绪即做 AutoSwap 决策 → 最终状态；同时 best-effort 拉起 `subswapd`（用户无感） |
-| `subswap add-api [claude\|codex]` | 交互式登记自定义 API；不带 provider 时先选择 Claude Code 或 Codex，带入参时跳过选择；非交互必须显式给 provider。保存后不自动激活 |
+| `subswap add-api [claude\|codex\|pi]` | 交互式登记自定义 API；不带 provider 时先选择 Claude Code、Codex 或 Pi，带入参时跳过选择；非交互必须显式给 provider。保存后不自动激活 |
 | `subswap login <claude\|codex>` | 调用官方 CLI 登录流程，完成后导入/覆盖当前登录账号并标记为 active |
 | `subswap login <kimi\|cursor\|commandcode>` | **不驱动登录**：用户先在对应客户端登录（Command Code 也可把 API key 写在 `--` 后面），本命令只导入当前状态并标记为 active |
 | `subswap login opencode` | 导入已登录的官方 Console 账号；未登录时调官方命令（V2 `opencode auth login opencode` / V1 `opencode console login`）登录后导入。不会把 Go API key 当成官方账号 |
 | `subswap login opencode-api-key` | 单独导入 Go API key（可用 `-- <key>`）；仅手动切换和监控余量，不参与自动换号。别名 `opencode-go` |
-| `subswap login volcengine` | 独立导入火山方舟 Coding Plan API Key（可用 `-- <key>`；不带 Key 时读取当前官方端点配置）；单独账号分组，仅手动切换。别名 `ark` |
-| `subswap swap [<id\|N>]`（快捷 `subswap [<id\|N>]`） | 手动切换；`<id>` 用 id/label/`<provider>/<id>`，`<N>` 用默认入口列出的全局序号。无参只打印编号清单（不查 quota）。裸数字/引用与 `swap` 完全同语义 |
+| `subswap login volcengine` | 火山 key 导入 Pi 抽屉：`-- <key>` 必带（别名 `ark`），导入 `pi/volcengine` slot 并激活；不带 Key 时报错指引改用该形式或 `add-api pi --preset volcengine`。AK/SK 已退役（Pi 永不查额度） |
+| `subswap login pi` | Pi 账号池同步 + 扩展显式安装入口：先幂等建 `~/.pi/agent/extensions/subswap-pi` link（指向别处永不覆盖）、`node_modules` 缺失才 `npm install --ignore-scripts`、`check` 失败只警告。缺 `pi` / 缺源码只 hint。同步 live 全部 slot（active 对齐 `settings.json` 默认选择）。改完在 Pi 里 `/reload`（或重启）。详见「Pi 扩展」 |
+| `subswap swap [<id\|N>] [--no-default]` | 手动切换；`<id>` 用 id/label/`<provider>/<id>`，`<N>` 用默认入口列出的全局序号。无参只打印编号清单（不查 quota）。裸数字/引用与 `swap` 完全同语义。`--no-default`（仅 Pi 有意义）只改写 slot、不更新 `settings.json` 默认选择 |
 | `subswap rm <id\|N>` | 删除账号：清 subswap 记录（registry + keyring），引用形式同 `swap`。**永不因 active / `manual_only` /「请先 swap」而拒绝**——当前正在用的自定义 API 号会先退出 API 模式（Claude 恢复 `settings.json` 受管字段；Codex 恢复 `config.toml` 的 `model` / `model_provider`；清 `.subswap-api.json`）再删。删的是该 provider 当前原生登录账号时，尽力从原生客户端登出/断开（codex/kimi/commandcode 删 live 文件；claude 移除 oauthAccount 并清钥匙串/file 凭证；cursor 清桌面库或 agent 凭证，桌面运行中先请它正常退出且不再拉起；opencode 系经官方 `auth logout`，V1 `opencode-api-key` 清 live slot）；删的是 parked 账号时只清本地。原生登出失败只警告，仍清本地；若客户端仍登录，下次入口可能再导入。要重新纳入已删的号，用对应 provider 的 `login` |
-| `subswap run <provider> <id> [-- args]` | 账号隔离启动：把该账号凭证投影到私有目录，设隔离环境变量后启动原生 CLI（codex/claude/kimi/commandcode/OpenCode V1 API Key），**不动全局活账号**；退出时吸收轮换后的凭证。Cursor、OpenCode 官方账号与 V2 API Key 不支持此模式 |
+| `subswap run <provider> <id> [-- args]` | 账号隔离启动：把该账号凭证投影到私有目录，设隔离环境变量后启动原生 CLI（codex/claude/kimi/commandcode/OpenCode V1 API Key/pi 有 env 映射的 slot），**不动全局活账号**；退出时吸收轮换后的凭证。Cursor、OpenCode 官方账号与 V2 API Key、Pi 无 env 映射的 slot 不支持此模式 |
 | `subswap shell <id>` | 起一个导出好隔离环境变量的子 shell，交互里连跑多条命令；provider 从账号推断；退出时吸收凭证 |
 | `subswap env <id>` | 打印 `export` 行供 `eval`。**注意**：eval 模式不持锁、退出后不吸收凭证，仅供临时短用 |
-| `subswap doctor` | 环境自检 |
+| `subswap doctor` | 环境自检（含 `[pi]`：`pi --version`、扩展 link、node>=22.19，只读不改状态） |
 | `subswap status [--json] [--no-metrics] [--refresh]` | 默认是**只读快照**：导出账号、有效 quota 窗口与原始观测时间、daemon 状态与本机请求指标；不 sync active、不查额度、不自动切换、不拉 daemon、不写任何状态。供 GUI / widget / 脚本反复调用。显式 `--refresh` 时先经共享采集器检查一次 quota，再输出同构快照；不同步 active、不 AutoSwap、不拉 daemon |
-| `subswap auth <id\|N> [--renew] [--raw]` | **受信本机消费者**的请求凭证投影：默认输出恰好一个 JSON 对象，`kind=credential`（access token + 可选过期时间）或 `kind=environment`（环境变量映射，如 Volcengine）；`--raw` 只输出 access token / API key 原文，供 Codex 官方 auth helper 使用。只含当前请求 secret，**绝不返回 refresh token**；普通模式投影期间不切 active、不查额度、不续期、不写 active/quota/registry/cache/audit、不拉起 daemon（例外仅为全新 home 的目录创建与一次性旧布局迁移）。`--renew` 仅在临近过期（60 秒窗）时只续期该账号（parked 走既有 OAuth，active 只走官方 app-server 协调），仍不碰额度/默认入口/AutoSwap/active 切换。stdout 是敏感数据 |
+| `subswap auth <id\|N> [--renew] [--raw]` | **受信本机消费者**的请求凭证投影：默认输出恰好一个 JSON 对象，`kind=credential`（access token / Pi 长效 API key + 可选过期时间）或 `kind=environment`（环境变量映射，如顶层 volcengine 只读兼容）；`--raw` 只输出 access token / API key 原文，供 Codex 官方 auth helper 使用。只含当前请求 secret，**绝不返回 refresh token**；普通模式投影期间不切 active、不查额度、不续期、不写 active/quota/registry/cache/audit、不拉起 daemon（例外仅为全新 home 的目录创建与一次性旧布局迁移）。`--renew` 仅在临近过期（60 秒窗）时只续期该账号（parked 走既有 OAuth，active 只走官方 app-server 协调；Pi 长效 key 直接回退投影），仍不碰额度/默认入口/AutoSwap/active 切换。stdout 是敏感数据 |
 
 `add-api` / `login` / `swap <目标>` / `rm` 成功后的 status-after-action 见下节。
 
@@ -182,6 +183,29 @@ Cursor 正在运行时，`swap` 会先请求它正常退出，等待进程完全
 不是漏查；有列且 `$0.00` 才表示「曾有赠送、现已用尽」。**Credits ≠ Pro 的 $20 API 已含池**——后者与
 `API` 列是同一池。自动换号把 `1st` / Credits / `API` 当**并行可用池**（任一有余量即可用）。口径见
 [PROVIDER_KNOWLEDGE_BASE.md](PROVIDER_KNOWLEDGE_BASE.md)「额度与刷新边界」。
+
+## Pi 扩展
+
+`subswap login pi` 是 Pi 扩展（`integrations/pi`）的显式安装入口，与默认入口尾部
+best-effort 调用同一条 `ensure_pi_extension` 链（幂等，类比 daemon 拉起）：
+
+- 缺 `pi` 只 hint，返回成功，不报错；
+- 扩展 link（`~/.pi/agent/extensions/subswap-pi`）不存在才 `ln -s`（比较时
+  canonicalize），指向别处**永不覆盖**只警告，存在但不是 symlink 同样只警告；
+- `node` 需 `>=22.19`，不满足只警告并跳过依赖安装；
+- 源码下 `node_modules` 缺失才 `npm install --ignore-scripts`，`npm run check`
+  失败只警告；
+- `SUBSWAP_NO_PI=1` 时整条链直接跳过（测试 / 用户禁用逃生口）。
+
+从 checkout 安装（含 typecheck）：
+
+```bash
+make install-pi
+```
+
+`subswap doctor` 的 `[pi]` 段只读探针（`pi --version`、扩展 link、node 版本），
+不建 link、不跑 npm。扩展源码变更后，已在运行的 Pi 仍需 `/reload` 或重启才生效；
+账号增删同样要 `/reload` 或开新会话。
 
 ## 自定义 API
 
