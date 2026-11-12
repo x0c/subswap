@@ -13,6 +13,7 @@ Supported in this version:
 
 - The active or most recently healthy account is tried first.
 - A real quota, rate-limit, or account-auth failure before any text, thinking, or tool-call output rotates to the next account in the same group and retries the same request.
+- Codex stream errors such as `The usage limit has been reached` trigger failover even after HTTP 200, or without an HTTP status on WebSocket.
 - Model, thinking level, original conversation, headers, and user task are preserved. Pi's provider-level retries stay at `0`; this extension is the only retry owner for a pooled request.
 - After output becomes visible, the error is surfaced unchanged. The extension never replays an already-visible turn.
 - The extension has no chat commands, prompts, notifications, widgets, or status rows. Unrecovered errors keep Pi's native presentation.
@@ -23,7 +24,7 @@ Supported in this version:
 ## Requirements
 
 - Subswap `1.16.6` or newer with `subswap auth` (including `auth --renew` for near-expiry renewal).
-- Pi `1.5.0` (verified) or a compatible version that exposes native provider registration and `lazyStream`.
+- Pi `1.5.0` / `1.5.2` (verified) or a compatible version that exposes native provider registration and `lazyStream`.
 
 ## Install
 

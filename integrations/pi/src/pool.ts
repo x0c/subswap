@@ -56,8 +56,9 @@ export function classifyAccountFailure(message: string, status?: number): boolea
 	if (status === 403) {
 		return /quota|credit|billing|balance|rate.?limit|unauthorized|forbidden|invalid.*(?:key|token)|authentication/i.test(message);
 	}
-	if (status !== undefined) return false;
-	return /\b(?:401|402|429)\b|usage_limit_reached|accountquotaexceeded|quota.?exceed|insufficient.*(?:credit|quota|balance)|rate.?limit|invalid.*(?:api.?key|token)|authentication_error|unauthorized/i.test(message);
+	// 2xx 只表示流已建立，额度拒绝仍可能来自流内；明确的其它 HTTP 错误不按文字误切。
+	if (status !== undefined && (status < 200 || status >= 300)) return false;
+	return /\b(?:401|402|429)\b|\busage[ _]limit[ _](?:has[ _]been[ _])?(?:reached|exceeded)\b|accountquotaexceeded|quota.?exceed|insufficient.*(?:credit|quota|balance)|rate.?limit|invalid.*(?:api.?key|token)|authentication_error|unauthorized/i.test(message);
 }
 
 export function cooldownFor(message: string, status: number | undefined, headers: Record<string, string> | undefined, now: number): number {

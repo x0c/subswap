@@ -196,6 +196,34 @@ test("quota refusal rotates inside one request without changing task, model, rea
 	}
 });
 
+for (const status of [undefined, 200]) {
+	test(`normalized Codex stream quota refusal rotates with transport status ${status ?? "absent"}`, async () => {
+		const run = fixture((requestModel, _context, options) => {
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => {
+				if (options?.apiKey === "secret-a") {
+					if (status === undefined) {
+						startAndError(stream, "Codex error: The usage limit has been reached");
+					} else {
+						startAndError(stream, "Codex error: The usage limit has been reached", status, requestModel, options);
+					}
+				} else {
+					success(stream, "continued");
+				}
+			});
+			return stream;
+		}, accounts.slice(0, 2));
+		const result = await run.complete();
+		assert.equal(result.stopReason, "stop");
+		assert.deepEqual(result.content, [{ type: "text", text: "continued" }]);
+		assert.deepEqual(run.attempts.map((attempt) => attempt.key), ["secret-a", "secret-b"]);
+		assert.equal(run.state.lastHealthyId, "b");
+		assert.ok(run.state.cooldowns.has("a"));
+		assert.ok(run.attempts.every((attempt) => attempt.model === "same-model" && attempt.reasoning === "xhigh"));
+		for (const attempt of run.attempts) assert.deepEqual(attempt.context, run.context);
+	});
+}
+
 test("a transient non-account failure stays on the current account", async () => {
 	const run = fixture((_requestModel, _context, options) => {
 		const stream = createAssistantMessageEventStream();
@@ -279,6 +307,20 @@ test("error classification and retry-after cooldown are conservative", () => {
 	assert.equal(cooldownFor("quota", 429, { "retry-after": "120" }, 1000), 301_000);
 	assert.equal(cooldownFor("quota", 429, { "retry-after": "600" }, 1000), 601_000);
 	assert.equal(cooldownFor("auth", 401, undefined, 1000), 61_000);
+});
+
+test("stream quota classification accepts successful transports and preserves unrelated errors", () => {
+	for (const status of [undefined, 200, 201]) {
+		assert.equal(classifyAccountFailure("Codex error: The usage limit has been reached", status), true);
+		assert.equal(classifyAccountFailure("usage_limit_reached", status), true);
+		assert.equal(classifyAccountFailure("Usage limit reached", status), true);
+		assert.equal(classifyAccountFailure("context length exceeded", status), false);
+		assert.equal(classifyAccountFailure("fetch failed", status), false);
+		assert.equal(classifyAccountFailure("usage limit configuration invalid", status), false);
+	}
+	for (const status of [400, 404, 500, 503]) {
+		assert.equal(classifyAccountFailure("Codex error: The usage limit has been reached", status), false);
+	}
 });
 
 test("retry-after lookup is ASCII case-insensitive", () => {
