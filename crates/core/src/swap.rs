@@ -97,6 +97,21 @@ pub fn swap_with_snapshot<'a, C>(
 where
     C: FnOnce() -> Result<()>,
 {
+    swap_with_snapshot_prepared(provider_id, provider_home, || Ok(targets), commit)
+}
+
+/// 与 [`swap_with_snapshot`] 相同，但在持有 Provider 锁之后才读取配置并构造目标。
+/// 受管配置的恢复值依赖当前状态时必须使用此入口，避免并发切换读取到过期恢复值。
+pub fn swap_with_snapshot_prepared<'a, P, C>(
+    provider_id: &str,
+    provider_home: &Path,
+    prepare: P,
+    commit: C,
+) -> Result<()>
+where
+    P: FnOnce() -> Result<Vec<SwapTarget<'a>>>,
+    C: FnOnce() -> Result<()>,
+{
     fs::create_dir_all(provider_home)?;
     let lock_path = provider_home.join(".subswap.lock");
     let lock_file = fs::OpenOptions::new()
@@ -109,7 +124,7 @@ where
         .lock_exclusive()
         .map_err(|e| Error::Provider(format!("lock {} failed: {e}", lock_path.display())))?;
 
-    let result = swap_locked(provider_id, targets, commit);
+    let result = prepare().and_then(|targets| swap_locked(provider_id, targets, commit));
     let _ = FileExt::unlock(&lock_file);
     result
 }
@@ -216,4 +231,28 @@ fn restrict_rollback_permissions(path: &Path) -> Result<()> {
 #[cfg(not(unix))]
 fn restrict_rollback_permissions(_path: &Path) -> Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepares_configuration_only_while_holding_provider_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = swap_with_snapshot_prepared(
+            "fake",
+            tmp.path(),
+            || {
+                let second = fs::OpenOptions::new()
+                    .write(true)
+                    .open(tmp.path().join(".subswap.lock"))?;
+                assert!(second.try_lock_exclusive().is_err());
+                // 准备失败时必须在任何快照、文件写入和 registry commit 之前退出。
+                Err(Error::Provider("stop before writing".into()))
+            },
+            || panic!("commit must not run when preparation fails"),
+        );
+        assert!(result.is_err());
+    }
 }

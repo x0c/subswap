@@ -91,7 +91,8 @@ Kimi Code、Cursor 和 Command Code 需要先在原生客户端登录另一个�
 subswap swap alice@example.com
 subswap swap claude/alice@example.com
 
-subswap add-api         # 添加 Claude Code 兼容 API 端点
+subswap add-api         # 交互选择 Claude Code 或 Codex
+subswap add-api codex   # 添加 Codex Responses API Key 渠道
 subswap autoswap on     # 开启自动换号
 subswap autoswap off    # 回到手动模式
 subswap doctor         # 检查本机路径与客户端配置
@@ -107,7 +108,7 @@ eval "$(subswap env codex/bob@example.com)"
 
 - **切换已保存账号** — 使用 `subswap swap <编号>` 选择账号，无需每次反复登录。
 - **查看额度与重置时间** — 汇总支持客户端的剩余用量，含 Codex 的重置次数与到期时间（以服务端返回为准）。
-- **使用自定义 Claude Code API** — 用 `subswap add-api` 添加 Anthropic 兼容端点；这类账号仅手动选择。
+- **使用自定义 API 渠道** — 在 `subswap add-api` 交互向导中选择 Claude Code 或 Codex；Codex Responses 端点使用官方凭证 helper，API Key 不写入 `config.toml`，自定义渠道仅手动选择。
 - **并行使用另一个账号** — 对支持隔离运行的客户端使用 `run`、`shell` 或 `env`，保留全局当前登录。
 - **开启自动换号** — 达到设定的额度条件时，由 subswap 选择另一个已保存账号。
 
@@ -117,6 +118,7 @@ eval "$(subswap env codex/bob@example.com)"
 |---|---:|---:|---:|---:|---|
 | Claude Code（OAuth） | 是 | 是 | 是 | 是 | 自定义 API 端点仅手动选择。 |
 | Codex（ChatGPT 登录） | 是 | 是 | 是 | 是 | 全局切换后需重启已有 Codex 会话。 |
+| Claude Code / Codex 自定义 API Key | 是 | 否 | 否 | 是 | Codex 使用 Responses API 与官方 auth helper。 |
 | Kimi Code | 是 | 是 | 是 | 是 | 先在原生客户端登录，再导入。 |
 | Cursor 桌面版 / CLI | 是 | 是 | 是 | 否 | 桌面版切换账号时会自动重启 Cursor 应用。 |
 | OpenCode Console | 是 | 是 | 是 | 否 | 自动换号仅在官方 Console 账号之间进行。 |

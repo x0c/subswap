@@ -1709,6 +1709,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-tungstenite",
+ "toml",
+ "toml_edit",
  "tracing",
 ]
 

@@ -142,10 +142,18 @@ pub fn access_token_exp_epoch(blob: &str) -> Option<i64> {
 
 /// 投影 Pi 等受信本机消费者所需的当前 access token；绝不包含 refresh token。
 pub fn request_credential(blob: &str) -> Result<RequestCredential> {
+    let value = serde_json::from_str::<serde_json::Value>(blob).ok();
     let secret = extract_access_token(blob)
+        .or_else(|| {
+            value
+                .as_ref()
+                .and_then(|v| string_at(v, &["OPENAI_API_KEY"]))
+        })
         .map(|token| token.trim().to_string())
         .filter(|token| !token.is_empty())
-        .ok_or_else(|| Error::Credential("Codex credentials contain no access token".into()))?;
+        .ok_or_else(|| {
+            Error::Credential("Codex credentials contain no access token or API key".into())
+        })?;
     let expires_at_ms = access_token_exp_epoch(blob).and_then(|exp| exp.checked_mul(1000));
     Ok(RequestCredential {
         secret,

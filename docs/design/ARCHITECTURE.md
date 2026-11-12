@@ -166,7 +166,7 @@ Provider.activate(id)
 ### 3.3.5 Claude 自定义 API
 
 ```
-subswap add-api
+subswap add-api claude
    ├─ 交互向导 / DeepSeek 预设
    ├─ API Key → CredentialStore(field=api_key)
    └─ 非敏感端点与模型映射 → registry extra(kind=api, manual_only=true)
@@ -183,6 +183,32 @@ subswap swap <oauth-id>
 ```
 
 属 `claude` Provider（列表/编号/`swap`/`rm` 一致）；无 quota；`manual_only` 禁止自动切入/切出。
+
+### 3.3.6 Codex 自定义 API
+
+```
+subswap add-api [claude|codex]
+   ├─ 无 provider + TTY：先选 Claude Code / Codex
+   ├─ 有 provider：跳过客户端选择
+   └─ 非交互无 provider：明确报错，不默认 Claude
+
+subswap add-api codex
+   ├─ endpoint / model / API Key → codex 账号（manual_only）
+   └─ Key → CredentialStore(auth_json)，端点与模型 → registry extra
+
+subswap swap <codex-api-id>
+   ├─ FileBlobRuntime.activation_targets 提供 config + marker 目标
+   ├─ config.toml 选择 [model_providers.subswap] / Responses / model
+   ├─ auth helper = subswap auth codex/<id> --raw（Key 不进 config）
+   └─ 不覆盖 auth.json；config/marker/registry 同一快照提交或回滚
+
+subswap swap <codex-oauth-id> / rm <active-api-id>
+   ├─ 恢复首次进入 API 模式前的 model / model_provider
+   ├─ 移除 Subswap provider 与 .subswap-api.json
+   └─ OAuth swap 再由共享引擎原子覆盖 auth.json
+```
+
+自定义 API 与 OAuth 同属 `codex` Provider；无订阅 quota，`manual_only` 禁止自动切入/切出。隔离运行在同一私有 `CODEX_HOME` 物化 config + helper，不依赖全局 active。
 
 ### 3.4 `subswapd` daemon（M4）
 
@@ -396,11 +422,12 @@ Reference inspected: `realiti4/claude-swap` revision `042a36b673d51f4bf990b04f90
 
 ### 7.4 Codex provider（`crates/providers/codex/src/`）
 
-自 Task 8a/8b 起 Codex 跑在共享引擎（§7.5）上，`runtime.rs` 只是纯转发的 adapter：
+自 Task 8a/8b 起 Codex 跑在共享引擎（§7.5）上，`runtime.rs` 负责 Codex 差异点转发：
 
 | 职责 | 函数 / 文件 |
 |---|---|
-| `FileBlobRuntime` adapter（纯转发，不新增逻辑） | `runtime.rs::CodexRuntime` |
+| `FileBlobRuntime` adapter（OAuth 查询/刷新与自定义配置 hook 转发） | `runtime.rs::CodexRuntime` |
+| 自定义 API 登记、config/marker 投影、OAuth 恢复、auth helper 路径与隔离物化 | `api.rs::add_api` / `activation_targets` / `disconnect_active` / `materialize_isolated` |
 | 差异点：`store_field()→"auth_json"` / `dedup_extra_key()→"chatgpt_account_id"`（迁移前存量数据兼容） | `runtime.rs` |
 | legacy 恢复（store/live 都拿不到时从 `~/.codex/accounts/` 找回）+ 隔离物化时拷 `config.toml` | `legacy.rs::recover_legacy_auth_for_account` / `copy_codex_config_best_effort` |
 | Active official quota query: Unix WebSocket control socket and identity preflight; temporary stdio app-server only when the control channel is unavailable | `control_socket.rs::fetch_usage` / `app_server.rs::fetch_usage` / `AppServerSession::query_rate_limits` |
@@ -415,7 +442,7 @@ Reference inspected: `realiti4/claude-swap` revision `042a36b673d51f4bf990b04f90
 
 | 职责 | 函数 / 文件 |
 |---|---|
-| adapter 契约（每个 runtime 的差异点，含 `store_field()`/`dedup_extra_key()` 两个兼容 hook） | `runtime.rs::FileBlobRuntime` |
+| adapter 契约（每个 runtime 的差异点，含 `store_field()`/`dedup_extra_key()` 兼容 hook 与 `activation_targets()`/`active_account_override()`/`disconnect_account()` 自定义激活 hook） | `runtime.rs::FileBlobRuntime` |
 | 机制实现：原子切换 / capture-on-leave / capture-on-arrival / parked-only 刷新 / 取 blob fallback 链 | `engine.rs::FileBlobProvider<A>` |
 | 隔离运行的对象安全抽象（供 `run.rs` 查表分发，不必按 provider 硬编码分支） | `isolated.rs::IsolatedProvider`（`FileBlobRuntime` 的 blanket impl） |
 

@@ -21,7 +21,7 @@
 
 | 目标 | 机制 | 结论 |
 |---|---|---|
-| Codex（全平台） | `CODEX_HOME=<私有目录>`，auth.json 落该目录，Codex CLI 自刷新 | ✅ |
+| Codex（全平台） | `CODEX_HOME=<私有目录>`，OAuth auth.json 落该目录，Codex CLI 自刷新；自定义 API 额外物化 `model_providers.subswap` config，官方 auth helper 从 Subswap 只读 Key | ✅ |
 | Kimi（全平台） | `KIMI_CODE_HOME=<私有目录>`，凭证落该目录 | ✅ |
 | OpenCode API Key（全平台） | V1：`XDG_DATA_HOME=<私有目录>` 写 `opencode/auth.json`，并设置 `OPENCODE_AUTH_CONTENT`；V2：拒绝隔离，避免启动后误用其他凭证。官方 Console 账号也不支持此入口 | ✅ V1 Key；V2 Key、Console 否 |
 | Claude / Linux | `CLAUDE_CONFIG_DIR=<私有目录>` + 写 `.credentials.json`；非账号内容链接回全局 `~/.claude` | ✅ |
@@ -94,7 +94,9 @@ account = $USER（按上面正则清洗，非法 → "claude-code-user"）
 subswap run codex <id> [-- ...]   # ✅ 设 CODEX_HOME=<私有目录>
    ├─ export_auth_blob(<id>)（active 优先 live，其余 FileStore）
    ├─ Checkout::acquire：<data_dir>/envs/codex/<id>/<seq>/（Drop 清理；崩溃残留为近似指标）
-   ├─ 物化：auth.json(0600)，best-effort 复制 config.toml
+   ├─ 物化：auth.json(0600)；OAuth best-effort 复制 config.toml
+   ├─ 自定义 API：auth.json 仅空 JSON，复制其他 config 并选择该账号的 model/provider/Responses/auth helper
+   ├─ 全局 API 活跃但隔离 OAuth：只在私有 config 恢复原模型/Provider，不改全局
    ├─ 设 CODEX_HOME，spawn，等待
    └─ 退出：absorb_auth_blob → FileStore，release
 subswap run claude <id> [-- ...]  # ✅ <data_dir>/envs/claude/<id>/
@@ -111,7 +113,7 @@ subswap env <id>                  # ✅ 打印 export，供 eval
 
 - **macOS item service 名**：§2.1 公式已对 claude 2.1.177 钉死，且 2026-06-15 实机验证可读。上游改命名仍会破坏植入 → 须版本兜底 / `security find-generic-password` 自检。
 - **私有目录明文凭证**：Linux `.credentials.json`、macOS 命名空间 item → 权限 `0600`、目录 `0700`；会话结束清理或保留（待定）。
-- **manual_only API 账号**：进程级 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 天然适配隔离；仍受 `manual_only`（不参与自动切换）。独立 `volcengine` Provider 也通过 `EnvIsolatedProvider` 使用同一机制，原生 CLI 为 `claude`，账号与 active 状态不归 Claude。
+- **manual_only API 账号**：Claude 的进程级 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 天然适配隔离；Codex 自定义渠道在私有 `CODEX_HOME` 写非敏感 provider 配置，官方 helper 按需输出 Key，均不参与自动切换。独立 `volcengine` Provider 也通过 `EnvIsolatedProvider` 使用同一机制，原生 CLI 为 `claude`，账号与 active 状态不归 Claude。
 - **崩溃残留 env 目录**：v0.3.25 无 flock 后，崩溃时 `Checkout::Drop` 不执行 → `<id>/<seq>/` 可能残留；`is_checked_out` 以数字名子目录存在为近似活跃指标 → 误判活跃直至手动清理（不影响全局 `swap`，但暂停该 Claude 账号 daemon 保活）。清理：删 `<data_dir>/envs/<provider>/<id>/` 下数字名子目录。
 - **对全局 active 做隔离启动**：会告警；手动 `swap`/默认入口/daemon auto-swap 仍可在隔离期间切换。仅恰逢 refresh 轮换才可能互废 token；当前接受以保证全局切换可用。
 - **daemon 避让已接线**：`keep_claude_tokens_alive` 每轮先查 `is_checked_out`，命中跳过。

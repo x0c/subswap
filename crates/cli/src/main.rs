@@ -57,9 +57,13 @@ struct Cli {
 // clap 子命令只在进程启动时构造一次；为 add-api 的向导参数逐字段装箱只会增加样板。
 #[allow(clippy::large_enum_variant)]
 enum Cmd {
-    /// Add a Claude Code compatible API endpoint without activating it.
+    /// Add a custom API channel; omit the client to choose interactively.
     AddApi {
-        /// Preset: deepseek, kimi or custom.
+        /// Client: claude or codex. Omit in a terminal to choose interactively.
+        #[arg(value_name = "PROVIDER")]
+        provider: Option<String>,
+
+        /// Claude preset: deepseek, kimi or custom.
         #[arg(long)]
         preset: Option<String>,
 
@@ -95,8 +99,8 @@ enum Cmd {
         #[arg(long)]
         haiku_model: Option<String>,
 
-        /// Deprecated compatibility alias for --sonnet-model.
-        #[arg(long, hide = true)]
+        /// Codex model; also kept as a deprecated Claude alias for --sonnet-model.
+        #[arg(long)]
         model: Option<String>,
 
         /// Deprecated compatibility alias for --haiku-model.
@@ -148,6 +152,9 @@ enum Cmd {
         /// when it is near expiry, then project the same single-JSON schema.
         #[arg(long)]
         renew: bool,
+        /// Print only the access token/API key for a native credential helper.
+        #[arg(long)]
+        raw: bool,
     },
 
     /// Swap to <id|N>. With no argument, prints numbered accounts and exits.
@@ -255,6 +262,7 @@ async fn main() -> Result<()> {
             None => cmd::default::run(&ctx, cli.json).await,
         },
         Some(Cmd::AddApi {
+            provider,
             preset,
             id,
             name,
@@ -272,6 +280,7 @@ async fn main() -> Result<()> {
         }) => {
             cmd::add_api::run(
                 &ctx,
+                provider,
                 cmd::add_api::AddApiOptions {
                     preset,
                     id,
@@ -299,7 +308,7 @@ async fn main() -> Result<()> {
             device_auth,
             args,
         }) => cmd::login::run(&ctx, &provider, email, sso, device_auth, args, cli.json).await,
-        Some(Cmd::Auth { id, renew }) => cmd::auth::run(&ctx, &id, renew).await,
+        Some(Cmd::Auth { id, renew, raw }) => cmd::auth::run(&ctx, &id, renew, raw).await,
         Some(Cmd::Swap { id }) => cmd::swap::run(&ctx, id.as_deref(), cli.json).await,
         Some(Cmd::Run { provider, id, args }) => cmd::run::run(&ctx, &provider, &id, args).await,
         Some(Cmd::Shell { id }) => cmd::run::shell(&ctx, &id).await,

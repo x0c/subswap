@@ -353,6 +353,22 @@ parked 查额度前由引擎调 `runtime.refresh()`：`CodexRuntime::refresh` �
 
 Portable subset: [Third-party CLI credential coordination](~/.config/agentsync/docs/AGENT_TOOL_CLI_INTEGRATION_GUIDE.md#third-party-cli-credential-coordination-optional-snapshot-coordination-design-only).
 
+### Codex 自定义 API Key 渠道
+
+`subswap add-api` 不带参数时先交互选择 Claude Code 或 Codex；`subswap add-api codex` 跳过选择，非交互脚本必须显式选择 `codex`。Codex 渠道与 OAuth 账号同属 `codex` Provider，统一编号、`swap`、`rm`，全部 `manual_only`，保存后不自动激活。
+
+采用 Codex 官方 `model_providers` 与 command-backed `auth`：激活时选择 `[model_providers.subswap]`、`wire_api = "responses"` 和登记的模型；helper 为 `subswap auth codex/<id> --raw`，只从 Subswap CredentialStore 向 stdout 输出当前 API Key。Key 不写入 `config.toml`、shell 配置或 registry；`auth.json` 中仅保留原有 OAuth 凭证，不被自定义渠道覆盖。
+
+`~/.codex/.subswap-api.json` 记录 active id 与首次切入前的 `model` / `model_provider`。自定义 A→B 保留首次的 OAuth 恢复值（包括原先缺键）；切回 OAuth、删除 active 自定义渠道时恢复受管配置并删除标记。config、auth.json（仅 OAuth 目标）与 registry active 在同一 `.subswap.lock` + 快照提交内回滚；已有非 Subswap 的 `[model_providers.subswap]` 时拒绝覆盖。默认入口通过标记 + 当前 `model_provider` 对齐 active，自定义 active 的 `manual_only` 阻止 AutoSwap 切走。
+
+`subswap run/shell/env` 的私有 `CODEX_HOME` 也物化该 config 与 auth helper；自定义账号的隔离 `auth.json` 仅为空 JSON，不复制 Key，退出时也不吸收这份空 JSON。全局自定义渠道活跃时，隔离 OAuth 账号会在私有 config 中恢复原模型/Provider，不继承全局自定义渠道。自定义 Key 无 refresh、无订阅 quota，`query_quota` 返回空列表。
+
+自定义账号不从 OAuth live 读取或回灌凭证，展示名与 OAuth 邮箱相同也只读取自己存储的 Key。保留在全局 `auth.json` 中的 OAuth 仍可能被旧 Codex 进程持有，因此即使 registry 把它标为 parked，Codex runtime 也禁止走直连 parked refresh；仍由官方协调机制负责刷新。配置计划与 capture-on-leave 在 Provider 锁内生成，避免 A/B 并发切换读到错误的恢复值。
+
+已在 Codex CLI 0.167.2 用本地 Responses mock 验证全局选择和隔离 `run` 的 Bearer Key、模型与端点真实生效，未使用真实 Key 或打上游。
+
+官方依据：[Custom model providers](https://developers.openai.com/codex/config-file/config-advanced#custom-model-providers)、[Use API/provider credentials](https://developers.openai.com/codex/enterprise/connect-to-a-gateway)。
+
 ### auth.json schema 不稳定（透传策略）
 
 不绑定具体 schema（经历过 v2→v3→v4）：

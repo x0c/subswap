@@ -91,7 +91,8 @@ After a Codex swap, restart an already-running Codex CLI session, or reload the 
 subswap swap alice@example.com
 subswap swap claude/alice@example.com
 
-subswap add-api         # add a Claude Code compatible API endpoint
+subswap add-api         # choose Claude Code or Codex interactively
+subswap add-api codex   # add a Codex Responses API key channel
 subswap autoswap on     # enable automatic switching
 subswap autoswap off    # return to manual mode
 subswap doctor         # inspect local paths and client setup
@@ -107,7 +108,7 @@ eval "$(subswap env codex/bob@example.com)"
 
 - **Switch saved accounts** — choose an account with `subswap swap <number>` instead of signing in again.
 - **Check quota and reset times** — see remaining usage across supported clients, including Codex reset counts and expiration times when the service provides them.
-- **Use custom Claude Code API endpoints** — add an Anthropic-compatible endpoint with `subswap add-api`; these accounts are selected manually.
+- **Use custom API channels** — choose Claude Code or Codex in the interactive `subswap add-api` wizard. Codex uses the official credential helper for Responses endpoints, keeping API keys out of `config.toml`; custom channels are manual-only.
 - **Run another account in parallel** — use `run`, `shell`, or `env` for clients that support isolation, keeping the global active login unchanged.
 - **Enable automatic switching** — let subswap select another saved account when the configured quota conditions are met.
 
@@ -117,6 +118,7 @@ eval "$(subswap env codex/bob@example.com)"
 |---|---:|---:|---:|---:|---|
 | Claude Code (OAuth) | Yes | Yes | Yes | Yes | Custom API endpoints are manual-only. |
 | Codex (ChatGPT login) | Yes | Yes | Yes | Yes | Restart existing Codex sessions after a global swap. |
+| Claude Code / Codex custom API key | Yes | No | No | Yes | Codex uses Responses API and the official auth helper. |
 | Kimi Code | Yes | Yes | Yes | Yes | Sign in with the native client, then import. |
 | Cursor desktop / CLI | Yes | Yes | Yes | No | Desktop switching restarts the app. |
 | OpenCode Console | Yes | Yes | Yes | No | Automatic switching stays within official Console accounts. |

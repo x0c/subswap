@@ -215,20 +215,22 @@ fn help_shows_only_current_commands() {
 }
 
 #[test]
-fn add_api_help_exposes_exactly_three_model_roles() {
+fn add_api_help_exposes_client_and_model_options() {
     let output = subswap().args(["add-api", "--help"]).output().unwrap();
     assert!(output.status.success());
 
     let stdout = String::from_utf8(output.stdout).unwrap();
-    for flag in ["--opus-model", "--sonnet-model", "--haiku-model"] {
+    assert!(
+        stdout.contains("[PROVIDER]"),
+        "missing optional client in:\n{stdout}"
+    );
+    for flag in ["--opus-model", "--sonnet-model", "--haiku-model", "--model"] {
         assert!(stdout.contains(flag), "missing {flag} in:\n{stdout}");
     }
-    for removed in ["--model", "--subagent-model"] {
-        assert!(
-            !stdout.contains(removed),
-            "add-api help must not expose {removed}:\n{stdout}"
-        );
-    }
+    assert!(
+        !stdout.contains("--subagent-model"),
+        "add-api help must not expose --subagent-model:\n{stdout}"
+    );
 }
 
 #[test]
@@ -242,6 +244,7 @@ fn add_api_accepts_legacy_model_as_the_only_model_flag() {
         isolated_subswap(&tmp)
             .args([
                 "add-api",
+                "claude",
                 "--preset",
                 "custom",
                 "--id",
@@ -287,6 +290,158 @@ fn add_api_accepts_legacy_model_as_the_only_model_flag() {
 }
 
 #[test]
+fn add_api_requires_an_explicit_client_without_a_terminal() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = isolated_subswap(&tmp)
+        .args(["add-api", "--yes"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("provider is required without an interactive terminal"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn codex_api_channel_swaps_projects_raw_key_restores_oauth_and_removes_cleanly() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_fast_quota_timeout(&tmp);
+    let codex = tmp.path().join("codex");
+    fs::create_dir_all(&codex).unwrap();
+    let original_config = concat!(
+        "model = \"gpt-original\"\n",
+        "model_provider = \"openai\"\n\n",
+        "[model_providers.other]\n",
+        "name = \"Keep me\"\n",
+        "base_url = \"https://other.example/v1\"\n\n",
+        "[features]\n",
+        "foo = true\n"
+    );
+    write(&codex.join("config.toml"), original_config);
+    let live = concat!(
+        "{\"account_key\":\"oauth@example.com\",\"email\":\"oauth@example.com\",",
+        "\"tokens\":{\"access_token\":\"oauth-access\",\"refresh_token\":\"oauth-refresh\"}}"
+    );
+    write(&codex.join("auth.json"), live);
+    write(
+        &app_config_dir(&tmp).join("registry.toml"),
+        r#"[[accounts]]
+provider = "codex"
+id = "oauth@example.com"
+label = "oauth@example.com"
+active = true
+created_at = "2026-06-09T00:00:00Z"
+priority = 100
+
+[accounts.extra]
+"#,
+    );
+    write(
+        &app_data_dir(&tmp).join("credentials.json"),
+        &serde_json::json!({"codex:oauth@example.com:auth_json": live}).to_string(),
+    );
+
+    let added = assert_success(
+        isolated_subswap(&tmp)
+            .args([
+                "--json",
+                "add-api",
+                "codex",
+                "--id",
+                "gateway",
+                "--name",
+                "oauth@example.com",
+                "--endpoint",
+                "https://gateway.example/v1/",
+                "--api-key",
+                "gateway-secret",
+                "--model",
+                "gpt-custom",
+                "--yes",
+            ])
+            .output()
+            .unwrap(),
+    );
+    let receipt: serde_json::Value = serde_json::from_str(&added).unwrap();
+    assert_eq!(receipt["provider"], "codex");
+    assert_eq!(receipt["id"], "gateway");
+    assert_eq!(receipt["active"], false);
+
+    let raw = assert_success(
+        isolated_subswap(&tmp)
+            .args(["auth", "codex/gateway", "--raw"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(raw.trim(), "gateway-secret");
+
+    assert_success(
+        isolated_subswap(&tmp)
+            .args(["--json", "swap", "gateway"])
+            .output()
+            .unwrap(),
+    );
+    let custom = fs::read_to_string(codex.join("config.toml")).unwrap();
+    assert!(custom.contains("model = \"gpt-custom\""), "{custom}");
+    assert!(custom.contains("model_provider = \"subswap\""), "{custom}");
+    assert!(custom.contains("base_url = \"https://gateway.example/v1\""));
+    assert!(custom.contains("wire_api = \"responses\""));
+    assert!(custom.contains("refresh_interval_ms = 0"));
+    assert!(custom.contains("[features]"));
+    assert!(!custom.contains("gateway-secret"));
+    assert!(codex.join(".subswap-api.json").is_file());
+    // 同名 OAuth live 不能成为该自定义渠道的 secret 来源，capture 也不能覆盖 API Key。
+    let raw_after_swap = assert_success(
+        isolated_subswap(&tmp)
+            .args(["auth", "codex/gateway", "--raw"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(raw_after_swap.trim(), "gateway-secret");
+    let isolated_env = assert_success(
+        isolated_subswap(&tmp)
+            .args(["env", "codex/gateway"])
+            .output()
+            .unwrap(),
+    );
+    assert!(!isolated_env.contains("gateway-secret"));
+
+    assert_success(
+        isolated_subswap(&tmp)
+            .args(["--json", "swap", "1"])
+            .output()
+            .unwrap(),
+    );
+    let restored = fs::read_to_string(codex.join("config.toml")).unwrap();
+    assert!(restored.contains("model = \"gpt-original\""), "{restored}");
+    assert!(restored.contains("model_provider = \"openai\""));
+    assert!(restored.contains("[model_providers.other]"));
+    assert!(!restored.contains("[model_providers.subswap]"));
+    assert!(!codex.join(".subswap-api.json").exists());
+
+    assert_success(
+        isolated_subswap(&tmp)
+            .args(["--json", "swap", "gateway"])
+            .output()
+            .unwrap(),
+    );
+    assert_success(
+        isolated_subswap(&tmp)
+            .args(["--json", "rm", "gateway"])
+            .output()
+            .unwrap(),
+    );
+    let after_rm = fs::read_to_string(codex.join("config.toml")).unwrap();
+    assert!(after_rm.contains("model = \"gpt-original\""), "{after_rm}");
+    assert!(!after_rm.contains("[model_providers.subswap]"));
+    assert!(!codex.join(".subswap-api.json").exists());
+    let credentials = fs::read_to_string(app_data_dir(&tmp).join("credentials.json")).unwrap();
+    assert!(!credentials.contains("gateway-secret"));
+}
+
+#[test]
 fn bare_number_is_a_swap_shortcut() {
     let tmp = tempfile::tempdir().unwrap();
     setup_test_keychain(&tmp);
@@ -299,6 +454,7 @@ fn bare_number_is_a_swap_shortcut() {
             isolated_subswap(&tmp)
                 .args([
                     "add-api",
+                    "claude",
                     "--preset",
                     "custom",
                     "--id",
@@ -383,6 +539,7 @@ emailAddress = "oauth@example.com"
         isolated_subswap(&tmp)
             .args([
                 "add-api",
+                "claude",
                 "--preset",
                 "deepseek",
                 "--api-key",
@@ -1035,6 +1192,7 @@ fn rm_and_swap_reprint_the_status_overview() {
         isolated_subswap(&tmp)
             .args([
                 "add-api",
+                "claude",
                 "--preset",
                 "custom",
                 "--id",
@@ -1058,6 +1216,7 @@ fn rm_and_swap_reprint_the_status_overview() {
         isolated_subswap(&tmp)
             .args([
                 "add-api",
+                "claude",
                 "--preset",
                 "custom",
                 "--id",

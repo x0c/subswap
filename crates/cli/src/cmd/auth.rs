@@ -35,7 +35,7 @@ struct AuthOutput {
 /// `renew=true`（`--renew`）时：先按 60 秒续期窗判断，仍新鲜则直接投影；
 /// 临近过期才只续期该账号（parked 走既有 OAuth，active 走官方 app-server 协调），
 /// 再返回同一单 JSON 投影；绝不碰额度/默认入口/AutoSwap/active 切换/拉起 subswapd；官方 codex app-server 子进程协调除外。
-pub async fn run(ctx: &AppContext, input: &str, renew: bool) -> Result<()> {
+pub async fn run(ctx: &AppContext, input: &str, renew: bool, raw: bool) -> Result<()> {
     let account = resolve_account(ctx, input)?;
     let provider = ctx.providers.get(&account.provider)?;
 
@@ -75,6 +75,18 @@ pub async fn run(ctx: &AppContext, input: &str, renew: bool) -> Result<()> {
             account.provider
         );
     };
+
+    if raw {
+        return match projection {
+            AuthProjection::Credential { secret, .. } => {
+                println!("{secret}");
+                Ok(())
+            }
+            AuthProjection::Environment { .. } => {
+                bail!("--raw requires an access token or API key credential")
+            }
+        };
+    }
 
     let output = AuthOutput {
         schema_version: 1,

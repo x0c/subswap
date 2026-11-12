@@ -5,6 +5,7 @@
 //! - 整段 `~/.codex/auth.json` 作为 opaque blob 进 store，subswap 不假设 schema 稳定。
 //! - 切换 = flock → snapshot 旧文件 → 原子写新 auth.json → 任一步失败回滚。
 
+mod api;
 mod app_server;
 mod codex_files;
 #[cfg(unix)]
@@ -23,6 +24,7 @@ use subswap_core::error::Result;
 use subswap_core::{AccountId, AccountRegistry, CredentialStore};
 use subswap_provider_common::FileBlobProvider;
 
+pub use api::{add_api, CodexApiConfig};
 pub use runtime::{CodexRuntime, PROVIDER_ID};
 
 /// registry.toml `extra.chatgpt_account_id` 字段名，用于额度查询时拼 header，

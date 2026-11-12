@@ -3,7 +3,7 @@
 use std::io::{self, IsTerminal};
 
 use anyhow::{bail, Context, Result};
-use dialoguer::{Confirm, Input, Select};
+use dialoguer::{Confirm, Input, Password, Select};
 use subswap_core::{AuditEvent, BillingKind};
 use subswap_provider_claude::ClaudeApiConfig;
 
@@ -43,25 +43,54 @@ struct Draft {
     skip_confirmation: bool,
 }
 
-pub async fn run(ctx: &AppContext, options: AddApiOptions, json: bool) -> Result<()> {
+pub async fn run(
+    ctx: &AppContext,
+    provider: Option<String>,
+    options: AddApiOptions,
+    json: bool,
+) -> Result<()> {
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
-    let draft = build_draft(options, interactive)?;
-
-    if !draft.endpoint.starts_with("https://") && !draft.endpoint.starts_with("http://") {
-        bail!("endpoint must start with http:// or https://");
+    match select_client(provider, interactive)?.as_str() {
+        "claude" => run_claude(ctx, options, interactive, json).await,
+        "codex" => run_codex(ctx, options, interactive, json).await,
+        _ => unreachable!(),
     }
+}
 
-    if interactive
-        && !draft.skip_confirmation
-        && !Confirm::new()
-            .with_prompt(format!("Add provider {}?", draft.name))
-            .default(true)
-            .interact()?
-    {
+fn select_client(provider: Option<String>, interactive: bool) -> Result<String> {
+    if let Some(provider) = provider {
+        return match provider.trim().to_ascii_lowercase().as_str() {
+            "claude" | "anthropic" => Ok("claude".into()),
+            "codex" | "openai" | "chatgpt" => Ok("codex".into()),
+            other => bail!("unknown client: {other} (expected claude or codex)"),
+        };
+    }
+    if !interactive {
+        bail!(
+            "provider is required without an interactive terminal; use `subswap add-api claude` or `subswap add-api codex`"
+        );
+    }
+    let clients = ["Claude Code", "Codex"];
+    let selected = Select::new()
+        .with_prompt("Client")
+        .items(&clients)
+        .default(0)
+        .interact()?;
+    Ok(if selected == 0 { "claude" } else { "codex" }.into())
+}
+
+async fn run_claude(
+    ctx: &AppContext,
+    options: AddApiOptions,
+    interactive: bool,
+    json: bool,
+) -> Result<()> {
+    let draft = build_draft(options, interactive)?;
+    validate_endpoint(&draft.endpoint)?;
+    if !confirm_add(interactive, draft.skip_confirmation, &draft.name)? {
         println!("Cancelled.");
         return Ok(());
     }
-
     let account = ctx
         .claude
         .add_api(
@@ -71,8 +100,6 @@ pub async fn run(ctx: &AppContext, options: AddApiOptions, json: bool) -> Result
             ClaudeApiConfig {
                 base_url: draft.endpoint.trim_end_matches('/').to_string(),
                 auth_field: draft.auth_field,
-                // Claude Code 的默认模型和子任务模型分别跟随 Sonnet、Haiku，
-                // 对用户始终只暴露 Opus / Sonnet / Haiku 三个角色。
                 model: draft.sonnet_model.clone(),
                 opus_model: draft.opus_model,
                 sonnet_model: draft.sonnet_model,
@@ -83,14 +110,136 @@ pub async fn run(ctx: &AppContext, options: AddApiOptions, json: bool) -> Result
             draft.billing,
         )
         .context("add Claude API provider")?;
+    finish_add(ctx, "claude", &account, json).await
+}
+
+async fn run_codex(
+    ctx: &AppContext,
+    options: AddApiOptions,
+    interactive: bool,
+    json: bool,
+) -> Result<()> {
+    if options.preset.is_some()
+        || options.auth.is_some()
+        || options.opus_model.is_some()
+        || options.sonnet_model.is_some()
+        || options.haiku_model.is_some()
+        || options.subagent_model.is_some()
+        || options.effort.is_some()
+    {
+        bail!("Codex uses --endpoint, --api-key and --model; Claude-only options do not apply");
+    }
+    let name = value_or_prompt(options.name, interactive, "Name", "Custom API")?;
+    let id = value_or_prompt(options.id, interactive, "Id", &slugify(&name))?;
+    let endpoint = value_or_prompt(options.endpoint, interactive, "Endpoint", "")?;
+    validate_endpoint(&endpoint)?;
+    let api_key = match options.api_key {
+        Some(value) if !value.trim().is_empty() => value,
+        Some(_) => bail!("API key cannot be empty"),
+        None if interactive => Password::new()
+            .with_prompt("API key")
+            .validate_with(|value: &String| -> Result<(), &str> {
+                if value.trim().is_empty() {
+                    Err("API key cannot be empty")
+                } else {
+                    Ok(())
+                }
+            })
+            .interact()?,
+        None => bail!("--api-key is required without an interactive terminal"),
+    };
+    let model = value_or_prompt(options.model, interactive, "Model", "")?;
+    if model.trim().is_empty() {
+        bail!("--model is required without an interactive terminal");
+    }
+    let billing = match options.billing {
+        Some(value) => normalize_billing(&value)?,
+        None if interactive => prompt_billing()?,
+        None => BillingKind::Metered,
+    };
+    if !confirm_add(interactive, options.yes, &name)? {
+        println!("Cancelled.");
+        return Ok(());
+    }
+    let store = ctx.store.clone();
+    let registry = ctx.registry.clone();
+    let account = tokio::task::spawn_blocking(move || {
+        subswap_provider_codex::add_api(
+            store.as_ref(),
+            registry.as_ref(),
+            id,
+            name,
+            api_key,
+            subswap_provider_codex::CodexApiConfig {
+                base_url: endpoint.trim_end_matches('/').to_string(),
+                model,
+                wire_api: "responses".into(),
+            },
+            billing,
+        )
+    })
+    .await
+    .context("add Codex API task failed")?
+    .context("add Codex API provider")?;
+    finish_add(ctx, "codex", &account, json).await
+}
+
+fn validate_endpoint(endpoint: &str) -> Result<()> {
+    if !endpoint.starts_with("https://") && !endpoint.starts_with("http://") {
+        bail!("endpoint must start with http:// or https://");
+    }
+    Ok(())
+}
+
+fn confirm_add(interactive: bool, skip: bool, name: &str) -> Result<bool> {
+    if !interactive || skip {
+        return Ok(true);
+    }
+    Ok(Confirm::new()
+        .with_prompt(format!("Add provider {name}?"))
+        .default(true)
+        .interact()?)
+}
+
+fn prompt_billing() -> Result<BillingKind> {
+    let choices = [
+        "Metered (按量计费)",
+        "Unlimited (不限量)",
+        "Flat (固定费率)",
+    ];
+    Ok(
+        match Select::new()
+            .with_prompt("Billing")
+            .items(&choices)
+            .default(0)
+            .interact()?
+        {
+            0 => BillingKind::Metered,
+            1 => BillingKind::Unlimited,
+            _ => BillingKind::Flat,
+        },
+    )
+}
+
+async fn finish_add(
+    ctx: &AppContext,
+    provider: &str,
+    account: &subswap_core::Account,
+    json: bool,
+) -> Result<()> {
     ctx.audit.append(AuditEvent::ok(
         "add_api",
-        "claude",
+        provider,
         Some(account.id.0.as_str()),
     ));
-    println!("added → claude/{}", account.id);
-    println!("Run `subswap swap {}` to activate it.", account.id);
-    if !json {
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "provider": provider, "id": account.id.0, "active": account.active })
+        );
+    } else {
+        println!("added → {provider}/{}", account.id);
+        println!("Run `subswap swap {}` to activate it.", account.id);
         print_status_overview(ctx).await?;
     }
     Ok(())
@@ -137,7 +286,7 @@ fn build_draft(options: AddApiOptions, interactive: bool) -> Result<Draft> {
     let api_key = match options.api_key {
         Some(value) if !value.trim().is_empty() => value,
         Some(_) => bail!("API key cannot be empty"),
-        None if interactive => Input::new()
+        None if interactive => Password::new()
             .with_prompt("API key")
             .validate_with(|value: &String| -> Result<(), &str> {
                 if value.trim().is_empty() {
@@ -146,7 +295,7 @@ fn build_draft(options: AddApiOptions, interactive: bool) -> Result<Draft> {
                     Ok(())
                 }
             })
-            .interact_text()?,
+            .interact()?,
         None => bail!("--api-key is required without an interactive terminal"),
     };
     let auth = match options.auth {

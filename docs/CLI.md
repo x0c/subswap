@@ -3,20 +3,20 @@
 | 命令 | 说明 |
 |---|---|
 | `subswap` | 默认入口：扫本地自动 import → 立即显示账号骨架 → quota 渐进刷新 → 单 Provider 就绪即做 AutoSwap 决策 → 最终状态；同时 best-effort 拉起 `subswapd`（用户无感） |
-| `subswap add-api` | 交互式登记 Claude Code 兼容 API；DeepSeek / Kimi 预设只需输入名称与隐藏 API Key；保存后不自动激活 |
+| `subswap add-api [claude\|codex]` | 交互式登记自定义 API；不带 provider 时先选择 Claude Code 或 Codex，带入参时跳过选择；非交互必须显式给 provider。保存后不自动激活 |
 | `subswap login <claude\|codex>` | 调用官方 CLI 登录流程，完成后导入/覆盖当前登录账号并标记为 active |
 | `subswap login <kimi\|cursor\|commandcode>` | **不驱动登录**：用户先在对应客户端登录（Command Code 也可把 API key 写在 `--` 后面），本命令只导入当前状态并标记为 active |
 | `subswap login opencode` | 导入已登录的官方 Console 账号；未登录时调官方命令（V2 `opencode auth login opencode` / V1 `opencode console login`）登录后导入。不会把 Go API key 当成官方账号 |
 | `subswap login opencode-api-key` | 单独导入 Go API key（可用 `-- <key>`）；仅手动切换和监控余量，不参与自动换号。别名 `opencode-go` |
 | `subswap login volcengine` | 独立导入火山方舟 Coding Plan API Key（可用 `-- <key>`；不带 Key 时读取当前官方端点配置）；单独账号分组，仅手动切换。别名 `ark` |
 | `subswap swap [<id\|N>]`（快捷 `subswap [<id\|N>]`） | 手动切换；`<id>` 用 id/label/`<provider>/<id>`，`<N>` 用默认入口列出的全局序号。无参只打印编号清单（不查 quota）。裸数字/引用与 `swap` 完全同语义 |
-| `subswap rm <id\|N>` | 删除账号：清 subswap 记录（registry + keyring），引用形式同 `swap`。**永不因 active / `manual_only` /「请先 swap」而拒绝**——当前正在用的自定义 API 号会先退出 API 模式（恢复 `settings.json` 受管字段并清 `.subswap-api.json`）再删。删的是该 provider 当前原生登录账号时，尽力从原生客户端登出/断开（codex/kimi/commandcode 删 live 文件；claude 移除 oauthAccount 并清钥匙串/file 凭证；cursor 清桌面库或 agent 凭证，桌面运行中先请它正常退出且不再拉起；opencode 系经官方 `auth logout`，V1 `opencode-api-key` 清 live slot）；删的是 parked 账号时只清本地。原生登出失败只警告，仍清本地；若客户端仍登录，下次入口可能再导入。要重新纳入已删的号，用对应 provider 的 `login` |
+| `subswap rm <id\|N>` | 删除账号：清 subswap 记录（registry + keyring），引用形式同 `swap`。**永不因 active / `manual_only` /「请先 swap」而拒绝**——当前正在用的自定义 API 号会先退出 API 模式（Claude 恢复 `settings.json` 受管字段；Codex 恢复 `config.toml` 的 `model` / `model_provider`；清 `.subswap-api.json`）再删。删的是该 provider 当前原生登录账号时，尽力从原生客户端登出/断开（codex/kimi/commandcode 删 live 文件；claude 移除 oauthAccount 并清钥匙串/file 凭证；cursor 清桌面库或 agent 凭证，桌面运行中先请它正常退出且不再拉起；opencode 系经官方 `auth logout`，V1 `opencode-api-key` 清 live slot）；删的是 parked 账号时只清本地。原生登出失败只警告，仍清本地；若客户端仍登录，下次入口可能再导入。要重新纳入已删的号，用对应 provider 的 `login` |
 | `subswap run <provider> <id> [-- args]` | 账号隔离启动：把该账号凭证投影到私有目录，设隔离环境变量后启动原生 CLI（codex/claude/kimi/commandcode/OpenCode V1 API Key），**不动全局活账号**；退出时吸收轮换后的凭证。Cursor、OpenCode 官方账号与 V2 API Key 不支持此模式 |
 | `subswap shell <id>` | 起一个导出好隔离环境变量的子 shell，交互里连跑多条命令；provider 从账号推断；退出时吸收凭证 |
 | `subswap env <id>` | 打印 `export` 行供 `eval`。**注意**：eval 模式不持锁、退出后不吸收凭证，仅供临时短用 |
 | `subswap doctor` | 环境自检 |
 | `subswap status [--json] [--no-metrics] [--refresh]` | 默认是**只读快照**：导出账号、有效 quota 窗口与原始观测时间、daemon 状态与本机请求指标；不 sync active、不查额度、不自动切换、不拉 daemon、不写任何状态。供 GUI / widget / 脚本反复调用。显式 `--refresh` 时先经共享采集器检查一次 quota，再输出同构快照；不同步 active、不 AutoSwap、不拉 daemon |
-| `subswap auth <id\|N> [--renew]` | **受信本机消费者**的请求凭证投影：输出恰好一个 JSON 对象，`kind=credential`（access token + 可选过期时间）或 `kind=environment`（环境变量映射，如 Volcengine）。只含当前请求 secret，**绝不返回 refresh token**；普通模式投影期间不切 active、不查额度、不续期、不写 active/quota/registry/cache/audit、不拉起 daemon（例外仅为全新 home 的目录创建与一次性旧布局迁移）。`--renew` 仅在临近过期（60 秒窗）时只续期该账号（parked 走既有 OAuth，active 只走官方 app-server 协调），仍不碰额度/默认入口/AutoSwap/active 切换。stdout 是敏感数据 |
+| `subswap auth <id\|N> [--renew] [--raw]` | **受信本机消费者**的请求凭证投影：默认输出恰好一个 JSON 对象，`kind=credential`（access token + 可选过期时间）或 `kind=environment`（环境变量映射，如 Volcengine）；`--raw` 只输出 access token / API key 原文，供 Codex 官方 auth helper 使用。只含当前请求 secret，**绝不返回 refresh token**；普通模式投影期间不切 active、不查额度、不续期、不写 active/quota/registry/cache/audit、不拉起 daemon（例外仅为全新 home 的目录创建与一次性旧布局迁移）。`--renew` 仅在临近过期（60 秒窗）时只续期该账号（parked 走既有 OAuth，active 只走官方 app-server 协调），仍不碰额度/默认入口/AutoSwap/active 切换。stdout 是敏感数据 |
 
 `add-api` / `login` / `swap <目标>` / `rm` 成功后的 status-after-action 见下节。
 
@@ -70,6 +70,7 @@ GUI/小组件按秒级重绘轮询时应加 `--no-metrics`：计数器会随 60 
 - 普通模式投影期间只读：不切换 active、不查额度、不续期 token、不写 active/quota/registry/cache/audit，不拉起 daemon；共享引擎的 live/legacy 读取不回填凭证仓库。例外仅为全新 home 的目录创建（`AppPaths::resolve`）与一次性旧布局迁移（keyring 懒回填、旧 OpenCode API Key 迁移），已就绪的 home 上投影本身不触发。CLI 日志走 stderr，stdout 永远恰好一个 JSON 对象。
 - `subswap auth <id|N> --renew`：仍新鲜（离过期 60 秒以上）直接返回同一投影，不做网络工作；临近过期才只续期该账号——parked 走既有直连 OAuth（含 dead-token 守卫），active 只走官方协调（Codex 经官方 app-server，含身份预检与 live-owner 重验；官方协调不可用时保守拒绝）。`--renew` 同样不查额度、不跑默认入口/AutoSwap、不改 registry active、不拉起 subswapd。
 - 不支持的 Provider 明确报错，不静默返回空 secret。
+- `--raw` 只对 `credential` 形态输出 secret 原文加换行，不输出 JSON；用于 Codex `[model_providers.<id>.auth]` command helper。环境变量形态不支持 `--raw`。
 - stdout 是敏感数据：调用方不得写入日志、会话或通知；应按凭证过期时间缓存，并在账号请求失败后丢弃重读。
 
 ### 额度窗口排序与标签
@@ -182,15 +183,21 @@ Cursor 正在运行时，`swap` 会先请求它正常退出，等待进程完全
 `API` 列是同一池。自动换号把 `1st` / Credits / `API` 当**并行可用池**（任一有余量即可用）。口径见
 [PROVIDER_KNOWLEDGE_BASE.md](PROVIDER_KNOWLEDGE_BASE.md)「额度与刷新边界」。
 
-## Claude 自定义 API
+## 自定义 API
 
 ```bash
-subswap add-api
+subswap add-api                 # 先交互选择 Claude Code 或 Codex
+subswap add-api claude          # 跳过客户端选择，进入 Claude 向导
+subswap add-api codex           # 跳过客户端选择，进入 Codex 向导
 subswap swap deepseek
-subswap swap <原 Claude OAuth 账号>
+subswap swap <原 OAuth 账号>
 ```
 
-`add-api` 默认打开交互向导：
+不带 provider 且stdin/stdout都是终端时，`add-api` 第一项选择客户端，不再隐式默认 Claude；带 `claude` / `codex` 时跳过该项。脚本等非交互场景必须显式传 provider，避免继续依赖旧的 Claude 默认值。
+
+### Claude Code
+
+Claude 向导沿用 DeepSeek / Kimi / Custom 预设：
 
 - DeepSeek 预设自动填充 `https://api.deepseek.com/anthropic`、Opus/Sonnet/Haiku 三档模型与 effort；用户只需确认名称并输入隐藏 API Key。
 - Kimi 预设自动填充 `https://api.kimi.com/coding`、effort 与 `ANTHROPIC_API_KEY` 认证；向导分别选择 Opus、Sonnet、Haiku 三档。Opus/Sonnet 可选 `kimi-for-coding`、`k3`、`k3[1m]`，Haiku 可选 `kimi-for-coding` 或 `kimi-for-coding-highspeed`；三档默认均为 `kimi-for-coding`。非交互（`--yes`）同默认；可用 `--opus-model`、`--sonnet-model`、`--haiku-model` 覆盖。
@@ -200,11 +207,30 @@ subswap swap <原 Claude OAuth 账号>
 - 保存后只进入现有 Claude 账号列表，不自动切换；编号、`swap`、`rm` 与 OAuth 账号一致。
 
 ```bash
-subswap add-api --preset deepseek --api-key "$DEEPSEEK_API_KEY" --yes
-subswap add-api --preset kimi --api-key "$KIMI_API_KEY" --yes
+subswap add-api claude --preset deepseek --api-key "$DEEPSEEK_API_KEY" --yes
+subswap add-api claude --preset kimi --api-key "$KIMI_API_KEY" --yes
 ```
 
 自定义 API 账号没有 quota，统一标记为 `manual_only`：不能被自动选中；处于 active 时自动换号完全停用。
-删除 active 的自定义 API 会被拒绝，必须先 `subswap swap` 切回 OAuth 或其他账号，避免删除恢复信息后 Claude Code 仍停留在无法识别的 API 状态。
+删除 active 的自定义 API 不会被拒绝：先恢复进入 API 模式前的受管配置，再删除本地账号与 Key。
+
+### Codex
+
+Codex 向导询问名称、稳定 ID、Responses API 端点、隐藏 API Key、模型与计费方式；无 Claude 的角色模型或认证字段预设。
+
+```bash
+subswap add-api codex
+subswap add-api codex --id gateway --name "Gateway" \
+  --endpoint "https://gateway.example.com/v1" \
+  --api-key "$GATEWAY_API_KEY" --model "gpt-your-model" --yes
+subswap swap gateway
+subswap swap <原 Codex OAuth 账号>
+```
+
+激活使用 Codex 官方 `[model_providers.subswap]` 与 command-backed `auth`：模型、端点与 `wire_api = "responses"` 写入 `~/.codex/config.toml`，helper 执行 `subswap auth codex/<id> --raw` 按需取 Key。Key 只存 CredentialStore，不写入 `config.toml`、registry 或 shell 配置。切到另一个自定义渠道会保留首次进入 API 模式前的 OAuth 配置；切回 OAuth 或删除 active 渠道时恢复 `model` / `model_provider`、移除 Subswap Provider 与 `.subswap-api.json`，其他 Codex 配置保持不变。切换后仍需重启已经运行的 Codex 会话。
+
+`subswap run codex <自定义渠道>` / `shell` / `env` 同样在私有 `CODEX_HOME` 物化该配置；helper 仍只从 Subswap 读取 Key，隔离 `auth.json` 不复制 Key。全局自定义渠道不会污染隔离启动的 OAuth 账号。自定义渠道无订阅 quota，全部 `manual_only`。
+
+`subswap --json add-api <claude|codex> ...` 成功时只输出一份 `provider` / `id` / `active` JSON 回执，不打印人读提示或余量表。
 
 <!-- 该文档整理/压缩于 2026-09-05 -->

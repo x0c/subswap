@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use subswap_core::error::Result;
-use subswap_core::{Account, Quota, RequestCredential};
+use subswap_core::swap::SwapTarget;
+use subswap_core::{Account, AccountId, Quota, RequestCredential};
 
 use crate::json::extract_access_token;
 
@@ -97,8 +98,36 @@ pub trait FileBlobRuntime: Send + Sync + 'static {
         None
     }
 
+    /// 可选：声明激活时额外写入的客户端配置。返回值分别表示是否覆盖 live 凭证、
+    /// 需要与 registry active 同一快照提交/回滚的额外目标。
+    fn activation_targets<'a>(
+        &self,
+        _account: &Account,
+        _home: &Path,
+    ) -> Result<(bool, Vec<SwapTarget<'a>>)> {
+        Ok((true, Vec::new()))
+    }
+
+    /// 此账号是否可从原生 live 凭证读取/回灌。独立 API Key 账号返回 false，
+    /// 防止相同展示名把 OAuth secret 误投影到自定义端点。
+    fn uses_live_credentials(&self, _account: &Account) -> bool {
+        true
+    }
+
+    /// 可选：原生客户端当前选择的是非 live 凭证账号（例如自定义 API 配置）。
+    fn active_account_override(&self, _home: &Path) -> Option<AccountId> {
+        None
+    }
+
+    /// 可选：删除当前非 live 凭证账号时先退出其客户端模式。返回是否已处理。
+    fn disconnect_account(&self, _account: &Account, _home: &Path) -> Result<bool> {
+        Ok(false)
+    }
+
     /// 可选：额外物化（如复制真实 config 进隔离目录）。默认无。
-    fn materialize_extra(&self, _home: &Path, _env_dir: &Path) {}
+    fn materialize_extra(&self, _home: &Path, _env_dir: &Path, _account: &Account) -> Result<()> {
+        Ok(())
+    }
 
     /// 从 live 文件内容抽出本 provider 应持久化的 blob。默认整文件即 blob。
     ///
@@ -116,6 +145,12 @@ pub trait FileBlobRuntime: Send + Sync + 'static {
     /// 从 blob 抽额度查询用的 token。默认找 `access_token`；纯 API key 覆盖为读 `key`。
     fn access_token(&self, blob: &str) -> Option<String> {
         extract_access_token(blob)
+    }
+
+    /// 隔离凭证文件的投影内容。默认完整 blob；使用独立 auth helper 的账号可返回空 JSON，
+    /// 避免把 helper 管理的 Key 再复制到客户端目录。
+    fn isolation_blob(&self, _account: &Account, blob: &str) -> String {
+        blob.to_string()
     }
 
     /// 隔离目录内 live 文件相对 env_dir 的路径。默认与 `live_cred_path` 相对 home 的子路径相同。

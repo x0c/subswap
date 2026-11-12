@@ -44,10 +44,11 @@ impl<A: FileBlobRuntime> IsolatedProvider for FileBlobProvider<A> {
 
     fn materialize(&self, id: &AccountId, env_dir: &Path) -> Result<()> {
         let blob = self.export_blob(id)?;
-        let composed = self.compose_live_blob(None, &blob);
+        let projection = self.isolation_blob_for(id, &blob)?;
+        let composed = self.compose_live_blob(None, &projection);
         let dest = env_dir.join(self.isolation_dest_rel());
         FileBlobProvider::<A>::write_blob(&dest, &composed)?;
-        self.materialize_extra_into(env_dir);
+        self.materialize_extra_into(id, env_dir)?;
         Ok(())
     }
 

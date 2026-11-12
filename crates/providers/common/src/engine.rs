@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use subswap_core::error::{Error, Result};
-use subswap_core::swap::{swap_with_snapshot, SwapTarget};
+use subswap_core::swap::{swap_with_snapshot_prepared, SwapTarget};
 use subswap_core::{
     Account, AccountId, AccountRegistry, ClientTarget, CredentialStore, OfficialDisconnect,
     Provider, Quota, RequestCredential,
@@ -88,8 +88,10 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
     }
 
     /// 转调 runtime 的额外物化（如 Codex 复制 `config.toml` 进隔离目录）。
-    pub fn materialize_extra_into(&self, env_dir: &Path) {
-        self.runtime.materialize_extra(&self.home, env_dir);
+    pub fn materialize_extra_into(&self, id: &AccountId, env_dir: &Path) -> Result<()> {
+        let account = self.require_account(id)?;
+        self.runtime
+            .materialize_extra(&self.home, env_dir, &account)
     }
 
     /// 隔离目录内 live 文件相对 env_dir 的路径。
@@ -102,6 +104,12 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
     /// 把账号 blob 合进现有 live 内容（默认整文件覆盖）。
     pub fn compose_live_blob(&self, existing: Option<&str>, blob: &str) -> String {
         self.runtime.compose_live(existing, blob)
+    }
+
+    /// 隔离目录只物化 runtime 允许的凭证字段；helper-only 账号不复制 Key。
+    pub fn isolation_blob_for(&self, id: &AccountId, blob: &str) -> Result<String> {
+        let account = self.require_account(id)?;
+        Ok(self.runtime.isolation_blob(&account, blob))
     }
 
     /// 从 live 文件内容抽出本 provider 的 blob（默认整文件）。
@@ -292,6 +300,12 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
 
     /// 只对齐当前 live 的元数据 active 标记，不写凭证（默认入口用，避免弹钥匙串）。
     pub fn sync_active_metadata(&self, label_hint: Option<String>) -> Result<Account> {
+        if let Some(id) = self.runtime.active_account_override(&self.home) {
+            if let Some(account) = self.registry.find(self.runtime.id(), &id)? {
+                self.registry.set_active(self.runtime.id(), &id)?;
+                return Ok(account);
+            }
+        }
         let raw = self.read_extracted_live()?;
         // 复用 store_account，但不覆盖 store 里已有的可切换 blob：仅当 store 尚无该账号时才写。
         let meta = self.runtime.parse_metadata(&raw);
@@ -339,6 +353,9 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
     /// 文件（原生登出）；live 是别的账号或根本不存在时返回 `AlreadyGone`，
     /// 调用方直接清本地即可。删除后复核 live 已无该账号，否则报错。
     pub fn disconnect_live_file_if_matches(&self, account: &Account) -> Result<OfficialDisconnect> {
+        if self.runtime.disconnect_account(account, &self.home)? {
+            return Ok(OfficialDisconnect::Disconnected);
+        }
         let live_id = match self.live_account_id() {
             Ok(id) => id,
             Err(_) => return Ok(OfficialDisconnect::AlreadyGone),
@@ -389,6 +406,11 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
     /// 当前 live 凭证对应的 registry id。`rm` 用它判断删除的号是否仍在客户端登录着，
     /// 默认入口用它判断「客户端登录着但同步失败」要不要提示。
     pub fn live_account_id(&self) -> Result<AccountId> {
+        if let Some(id) = self.runtime.active_account_override(&self.home) {
+            if self.registry.find(self.runtime.id(), &id)?.is_some() {
+                return Ok(id);
+            }
+        }
         let raw = self.read_extracted_live()?;
         let meta = self.runtime.parse_metadata(&raw);
         if let Some(existing) = self.find_by_dedup(&meta) {
@@ -502,6 +524,9 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
     }
 
     fn read_live_if_matches(&self, account: &Account) -> Option<String> {
+        if !self.runtime.uses_live_credentials(account) {
+            return None;
+        }
         let raw = self.read_extracted_live().ok()?;
         let meta = self.runtime.parse_metadata(&raw);
         Self::metadata_matches(&meta, account, self.runtime.dedup_extra_key()).then_some(raw)
@@ -538,7 +563,10 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
         let owner = registry
             .list_by_provider(runtime.id())?
             .into_iter()
-            .find(|a| Self::metadata_matches(&meta, a, dedup_extra_key));
+            .find(|a| {
+                runtime.uses_live_credentials(a)
+                    && Self::metadata_matches(&meta, a, dedup_extra_key)
+            });
         let Some(owner) = owner else { return Ok(()) };
 
         if extract_refresh_token(&live_raw).is_none() {
@@ -591,6 +619,10 @@ impl<A: FileBlobRuntime> FileBlobProvider<A> {
     pub fn absorb_blob(&self, id: &AccountId, raw: &str) -> Result<()> {
         serde_json::from_str::<serde_json::Value>(raw)
             .map_err(|e| Error::Provider(format!("isolated credentials not valid JSON: {e}")))?;
+        let account = self.require_account(id)?;
+        if !self.runtime.uses_live_credentials(&account) {
+            return Ok(());
+        }
         self.store.set(
             self.runtime.id(),
             id.0.as_str(),
@@ -642,33 +674,47 @@ impl<A: FileBlobRuntime> Provider for FileBlobProvider<A> {
         let store = self.store.clone();
         let registry = self.registry.clone();
         let id_owned = id.clone();
+        let account_for_activation = account.clone();
 
         tokio::task::spawn_blocking(move || {
-            // capture-on-leave：覆盖 live 前，先把当前 live 凭证回灌进它所属账号的 store。
-            // 否则切走的账号 store 副本会停在旧 refresh token，下次切回写回旧 token → "already used"。
-            if let Err(e) = FileBlobProvider::<A>::capture_live_into_store_with(
-                runtime.as_ref(),
-                store.as_ref(),
-                registry.as_ref(),
+            swap_with_snapshot_prepared(
+                provider_id,
                 &home,
-            ) {
-                tracing::warn!(err = %e, "capture-on-leave failed; continuing swap");
-            }
+                || {
+                    // capture-on-leave：覆盖 live 前，先把当前 live 凭证回灌进它所属账号的 store。
+                    // 否则切走的账号 store 副本会停在旧 refresh token，下次切回写回旧 token → "already used"。
+                    if let Err(e) = FileBlobProvider::<A>::capture_live_into_store_with(
+                        runtime.as_ref(),
+                        store.as_ref(),
+                        registry.as_ref(),
+                        &home,
+                    ) {
+                        tracing::warn!(err = %e, "capture-on-leave failed; continuing swap");
+                    }
 
-            let blob = target_raw;
-            let runtime_for_write = runtime.clone();
-            let targets = vec![SwapTarget {
-                snapshot_name: "credentials",
-                live_path,
-                writer: Box::new(move |p: &Path| {
-                    let existing = fs::read_to_string(p).ok();
-                    let composed = runtime_for_write.compose_live(existing.as_deref(), &blob);
-                    FileBlobProvider::<A>::write_blob(p, &composed)
-                }),
-            }];
-            swap_with_snapshot(provider_id, &home, targets, || {
-                registry.set_active(provider_id, &id_owned)
-            })
+                    let (write_credentials, mut targets) =
+                        runtime.activation_targets(&account_for_activation, &home)?;
+                    if write_credentials {
+                        let blob = target_raw;
+                        let runtime_for_write = runtime.clone();
+                        targets.insert(
+                            0,
+                            SwapTarget {
+                                snapshot_name: "credentials",
+                                live_path,
+                                writer: Box::new(move |p: &Path| {
+                                    let existing = fs::read_to_string(p).ok();
+                                    let composed =
+                                        runtime_for_write.compose_live(existing.as_deref(), &blob);
+                                    FileBlobProvider::<A>::write_blob(p, &composed)
+                                }),
+                            },
+                        );
+                    }
+                    Ok(targets)
+                },
+                || registry.set_active(provider_id, &id_owned),
+            )
         })
         .await
         .map_err(|e| Error::Provider(format!("spawn_blocking join failed: {e}")))?

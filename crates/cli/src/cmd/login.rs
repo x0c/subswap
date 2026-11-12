@@ -69,9 +69,10 @@ pub async fn run(
                 .codex
                 .import_active(None)
                 .context("import Codex login")?;
-            ctx.registry
-                .set_active("codex", &account.id)
-                .context("mark Codex login active")?;
+            ctx.codex
+                .activate(&account.id)
+                .await
+                .context("activate Codex login and restore OAuth configuration")?;
             ctx.audit.append(AuditEvent::ok(
                 "login",
                 "codex",
@@ -303,9 +304,8 @@ pub async fn run(
                 // 只更新 AK/SK：优先当前 live 账号，否则取 registry 中 active 的 volcengine 账号。
                 let access_key_id = access_key_id
                     .context("missing --ak-id (usage: `-- --ak-id <AK> --ak-secret <SK>`)")?;
-                let secret_access_key = secret_access_key.context(
-                    "missing --ak-secret (usage: `-- --ak-id <AK> --ak-secret <SK>`)",
-                )?;
+                let secret_access_key = secret_access_key
+                    .context("missing --ak-secret (usage: `-- --ak-id <AK> --ak-secret <SK>`)")?;
                 let target_id = match ctx.volcengine.live_account_id() {
                     Ok(id) => id,
                     Err(_) => ctx
@@ -416,7 +416,9 @@ fn parse_volcengine_login_args(
                     continue;
                 }
                 if trimmed.starts_with("--") {
-                    bail!("unknown flag `{trimmed}` (expected --ak-id / --ak-secret or one API key)");
+                    bail!(
+                        "unknown flag `{trimmed}` (expected --ak-id / --ak-secret or one API key)"
+                    );
                 }
                 if inference_key.is_some() {
                     bail!("expected at most one Volcengine Coding Plan API key after `--`");
@@ -430,7 +432,10 @@ fn parse_volcengine_login_args(
             inference_key = None;
         }
     }
-    if access_key_id.as_ref().is_some_and(|value| value.trim().is_empty()) {
+    if access_key_id
+        .as_ref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
         access_key_id = None;
     }
     if secret_access_key
@@ -523,14 +528,9 @@ mod tests {
 
     #[test]
     fn parses_key_with_aksk_flags() {
-        let (key, ak, sk) = parse_volcengine_login_args(&args(&[
-            "my-key",
-            "--ak-id",
-            "AK",
-            "--ak-secret",
-            "SK",
-        ]))
-        .unwrap();
+        let (key, ak, sk) =
+            parse_volcengine_login_args(&args(&["my-key", "--ak-id", "AK", "--ak-secret", "SK"]))
+                .unwrap();
         assert_eq!(key.as_deref(), Some("my-key"));
         assert_eq!(ak.as_deref(), Some("AK"));
         assert_eq!(sk.as_deref(), Some("SK"));
@@ -538,13 +538,8 @@ mod tests {
 
     #[test]
     fn parses_aksk_only_and_equals_forms() {
-        let (key, ak, _) = parse_volcengine_login_args(&args(&[
-            "--ak-id",
-            "AK",
-            "--ak-secret",
-            "SK",
-        ]))
-        .unwrap();
+        let (key, ak, _) =
+            parse_volcengine_login_args(&args(&["--ak-id", "AK", "--ak-secret", "SK"])).unwrap();
         assert!(key.is_none());
         assert_eq!(ak.as_deref(), Some("AK"));
 
