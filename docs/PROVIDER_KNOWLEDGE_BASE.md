@@ -365,7 +365,16 @@ Portable subset: [Third-party CLI credential coordination](~/.config/agentsync/d
 
 自定义账号不从 OAuth live 读取或回灌凭证，展示名与 OAuth 邮箱相同也只读取自己存储的 Key。保留在全局 `auth.json` 中的 OAuth 仍可能被旧 Codex 进程持有，因此即使 registry 把它标为 parked，Codex runtime 也禁止走直连 parked refresh；仍由官方协调机制负责刷新。配置计划与 capture-on-leave 在 Provider 锁内生成，避免 A/B 并发切换读到错误的恢复值。
 
-已在 Codex CLI 0.167.2 用本地 Responses mock 验证全局选择和隔离 `run` 的 Bearer Key、模型与端点真实生效，未使用真实 Key 或打上游。
+已在 Codex CLI 0.167.2 用本地 Responses mock 验证全局选择和隔离 `run` 的 Bearer Key、模型与端点真实生效。
+
+DeepSeek 是可直接接入的官方 Responses 渠道（2026-11-12 实测）：`base_url = https://api.deepseek.com/v1`，key 走 Bearer，模型用 `deepseek-flash` 或 `deepseek-v4-pro`；`POST /v1/responses` 与工具调用可用。同一 key 的 Anthropic 兼容入口仍是 `https://api.deepseek.com/anthropic`，两套配置互不影响。Codex 会额外请求 `GET /v1/models` 填充模型目录，DeepSeek 返回的是普通 OpenAI 模型列表，Codex 解码失败只打一条 stderr 警告，不影响对话；模型元数据缺失时 Codex 使用 fallback 元数据。实测接入命令：
+
+```bash
+subswap add-api codex --id deepseek --name DeepSeek \
+  --endpoint https://api.deepseek.com/v1 \
+  --model deepseek-v4-pro --yes
+subswap swap codex/deepseek
+```
 
 官方依据：[Custom model providers](https://developers.openai.com/codex/config-file/config-advanced#custom-model-providers)、[Use API/provider credentials](https://developers.openai.com/codex/enterprise/connect-to-a-gateway)。
 
