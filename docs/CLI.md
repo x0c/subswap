@@ -5,14 +5,14 @@
 | `subswap` | 默认入口：扫本地自动 import → 立即显示账号骨架 → quota 渐进刷新 → 单 Provider 就绪即做 AutoSwap 决策 → 最终状态；同时 best-effort 拉起 `subswapd`（用户无感） |
 | `subswap add-api [claude\|codex\|pi]` | 交互式登记自定义 API；不带 provider 时先选择 Claude Code、Codex 或 Pi，带入参时跳过选择；非交互必须显式给 provider。保存后不自动激活 |
 | `subswap login <claude\|codex>` | 调用官方 CLI 登录流程，完成后导入/覆盖当前登录账号并标记为 active |
-| `subswap login <kimi\|cursor\|commandcode>` | **不驱动登录**：用户先在对应客户端登录（Command Code 也可把 API key 写在 `--` 后面），本命令只导入当前状态并标记为 active |
+| `subswap login <kimi\|cursor\|commandcode\|antigravity>` | **不驱动登录**：用户先在对应客户端登录（Command Code 也可把 API key 写在 `--` 后面；Antigravity 别名 `agy`/`gemini`，当前支持 macOS 钥匙串），本命令只导入当前状态并标记为 active |
 | `subswap login opencode` | 导入已登录的官方 Console 账号；未登录时调官方命令（V2 `opencode auth login opencode` / V1 `opencode console login`）登录后导入。不会把 Go API key 当成官方账号 |
 | `subswap login opencode-api-key` | 单独导入 Go API key（可用 `-- <key>`）；仅手动切换和监控余量，不参与自动换号。别名 `opencode-go` |
 | `subswap login volcengine` | 火山 key 导入 Pi 抽屉：`-- <key>` 必带（别名 `ark`），导入 `pi/volcengine` slot 并激活；不带 Key 时报错指引改用该形式或 `add-api pi --preset volcengine`。AK/SK 已退役（Pi 永不查额度） |
 | `subswap login pi` | Pi 账号池同步 + 扩展显式安装入口：先幂等建 `~/.pi/agent/extensions/subswap-pi` link（指向别处永不覆盖）、`node_modules` 缺失才 `npm install --ignore-scripts`、`check` 失败只警告。缺 `pi` / 缺源码只 hint。同步 live 全部 slot（active 对齐 `settings.json` 默认选择）。改完在 Pi 里 `/reload`（或重启）。详见「Pi 扩展」 |
 | `subswap swap [<id\|N>] [--no-default]` | 手动切换；`<id>` 用 id/label/`<provider>/<id>`，`<N>` 用默认入口列出的全局序号。无参只打印编号清单（不查 quota）。裸数字/引用与 `swap` 完全同语义。`--no-default`（仅 Pi 有意义）只改写 slot、不更新 `settings.json` 默认选择 |
 | `subswap rm <id\|N>` | 删除账号：清 subswap 记录（registry + keyring），引用形式同 `swap`。**永不因 active / `manual_only` /「请先 swap」而拒绝**——当前正在用的自定义 API 号会先退出 API 模式（Claude 恢复 `settings.json` 受管字段；Codex 恢复 `config.toml` 的 `model` / `model_provider`；清 `.subswap-api.json`）再删。删的是该 provider 当前原生登录账号时，尽力从原生客户端登出/断开（codex/kimi/commandcode 删 live 文件；claude 移除 oauthAccount 并清钥匙串/file 凭证；cursor 清桌面库或 agent 凭证，桌面运行中先请它正常退出且不再拉起；opencode 系经官方 `auth logout`，V1 `opencode-api-key` 清 live slot）；删的是 parked 账号时只清本地。原生登出失败只警告，仍清本地；若客户端仍登录，下次入口可能再导入。要重新纳入已删的号，用对应 provider 的 `login` |
-| `subswap run <provider> <id> [-- args]` | 账号隔离启动：把该账号凭证投影到私有目录，设隔离环境变量后启动原生 CLI（codex/claude/kimi/commandcode/OpenCode V1 API Key/pi 有 env 映射的 slot），**不动全局活账号**；退出时吸收轮换后的凭证。Cursor、OpenCode 官方账号与 V2 API Key、Pi 无 env 映射的 slot 不支持此模式 |
+| `subswap run <provider> <id> [-- args]` | 账号隔离启动：把该账号凭证投影到私有目录，设隔离环境变量后启动原生 CLI（codex/claude/kimi/commandcode/OpenCode V1 API Key/pi 有 env 映射的 slot），**不动全局活账号**；退出时吸收轮换后的凭证。Cursor、Antigravity、OpenCode 官方账号与 V2 API Key、Pi 无 env 映射的 slot 不支持此模式 |
 | `subswap shell <id>` | 起一个导出好隔离环境变量的子 shell，交互里连跑多条命令；provider 从账号推断；退出时吸收凭证 |
 | `subswap env <id>` | 打印 `export` 行供 `eval`。**注意**：eval 模式不持锁、退出后不吸收凭证，仅供临时短用 |
 | `subswap doctor` | 环境自检（含 `[pi]`：`pi --version`、扩展 link、node>=22.19，只读不改状态） |

@@ -182,9 +182,10 @@ pub fn render_to_string(
             ));
         }
 
+        let pool_width = provider_pool_width(&snap.accounts);
         for awq in &snap.accounts {
             global_index += 1;
-            out.push_str(&render_row(awq, global_index, layout, color));
+            out.push_str(&render_row(awq, global_index, layout, pool_width, color));
             out.push('\n');
         }
         out.push('\n');
@@ -225,7 +226,24 @@ fn render_layout(snapshots: &[ProviderSnapshot]) -> RenderLayout {
     }
 }
 
-fn render_row(awq: &AccountWithQuotas, index: usize, layout: RenderLayout, color: bool) -> String {
+fn provider_pool_width(accounts: &[AccountWithQuotas]) -> usize {
+    accounts
+        .iter()
+        .flat_map(|a| a.quotas.iter())
+        .filter(|q| quota_has_display_value(q))
+        .filter_map(|q| q.pool_group())
+        .map(visible_width)
+        .max()
+        .unwrap_or(0)
+}
+
+fn render_row(
+    awq: &AccountWithQuotas,
+    index: usize,
+    layout: RenderLayout,
+    pool_width: usize,
+    color: bool,
+) -> String {
     let active = awq.account.active;
     let star_plain = if active { "*" } else { " " };
     let star = if active {
@@ -238,12 +256,42 @@ fn render_row(awq: &AccountWithQuotas, index: usize, layout: RenderLayout, color
 
     let name_plain = truncate_to_width(&account_name(awq), layout.name_width);
     let name_padded = format!("{name_plain:<width$}", width = layout.name_width);
+    let cont_indent = " ".repeat(2 + 1 + 1 + layout.index_width + 1 + visible_width(&name_padded) + 2);
     // 激活账号保持默认色（视觉上比 dim 的兄弟亮），非激活整体灰掉。
     let name = if active {
         name_padded
     } else {
         style(color, "2", &name_padded)
     };
+
+    match &awq.fetch_state {
+        QuotaFetchState::Ready => {
+            if let Some(lines) = render_grouped_quotas(
+                &awq.quotas,
+                layout.quota_width,
+                pool_width,
+                color,
+                None,
+            ) {
+                return join_account_lines(&star, &num, &name, &cont_indent, &lines);
+            }
+        }
+        QuotaFetchState::Stale { cached_at, error } => {
+            let age = format_age(*cached_at);
+            let reason = compact_error(error);
+            let tag = style(color, "2", &format!("(cached ~{age} · {reason})"));
+            if let Some(lines) = render_grouped_quotas(
+                &awq.quotas,
+                layout.quota_width,
+                pool_width,
+                color,
+                Some(&tag),
+            ) {
+                return join_account_lines(&star, &num, &name, &cont_indent, &lines);
+            }
+        }
+        _ => {}
+    }
 
     let body = match &awq.fetch_state {
         QuotaFetchState::Loading => style(color, "2", "quota loading"),
@@ -284,6 +332,78 @@ fn render_row(awq: &AccountWithQuotas, index: usize, layout: RenderLayout, color
     } else {
         format!("  {star} {num} {name}  {body}")
     }
+}
+
+fn join_account_lines(
+    star: &str,
+    num: &str,
+    name: &str,
+    cont_indent: &str,
+    lines: &[String],
+) -> String {
+    let mut out = String::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if idx == 0 {
+            out.push_str(&format!("  {star} {num} {name}  {line}"));
+        } else {
+            out.push('\n');
+            out.push_str(cont_indent);
+            out.push_str(line);
+        }
+    }
+    out
+}
+
+/// 当账号下的可展示额度显式携带子池名（如 `Gemini` / `Claude/GPT`）时，按池出现顺序分行对齐渲染。
+fn render_grouped_quotas(
+    quotas: &[Quota],
+    quota_width: usize,
+    pool_width: usize,
+    color: bool,
+    stale_tag: Option<&str>,
+) -> Option<Vec<String>> {
+    let displayable: Vec<&Quota> = quotas
+        .iter()
+        .filter(|q| quota_has_display_value(q))
+        .collect();
+    if displayable.is_empty() || !displayable.iter().any(|q| q.pool_group().is_some()) {
+        return None;
+    }
+    let mut groups: Vec<(&str, Vec<Quota>)> = Vec::new();
+    for q in displayable {
+        let label = q.pool_group().unwrap_or("");
+        if let Some((_, bucket)) = groups.iter_mut().find(|(g, _)| *g == label) {
+            bucket.push(q.clone());
+        } else {
+            groups.push((label, vec![q.clone()]));
+        }
+    }
+    let width = pool_width.max(
+        groups
+            .iter()
+            .map(|(g, _)| visible_width(g))
+            .max()
+            .unwrap_or(0),
+    );
+    let mut lines = Vec::with_capacity(groups.len());
+    for (idx, (group_name, group_quotas)) in groups.into_iter().enumerate() {
+        let padded = pad_visible(group_name.to_string(), width);
+        let group_styled = style(color, "2", &padded);
+        let parts = render_quota_parts(&group_quotas, quota_width, color);
+        let mut line = if width > 0 {
+            format!("{group_styled}  {parts}")
+        } else {
+            parts
+        };
+        if idx == 0 {
+            if let Some(tag) = stale_tag {
+                line.push_str("  ");
+                line.push_str(tag);
+            }
+        }
+        lines.push(line);
+    }
+    Some(lines)
 }
 
 pub fn account_name(awq: &AccountWithQuotas) -> String {
@@ -970,5 +1090,48 @@ mod tests {
     #[test]
     fn rendered_line_count_handles_wide_characters() {
         assert_eq!(rendered_line_count("账号账号账号\n", 5), 3);
+    }
+
+    #[test]
+    fn multi_pool_quotas_render_aligned_sub_rows_without_custom_dash() {
+        let mut ag = make_awq("zxooxv@gmail.com", true, QuotaFetchState::Ready);
+        ag.account.provider = "antigravity".into();
+        ag.quotas = vec![
+            Quota {
+                note: Some("Gemini · Five Hour Limit Remaining".into()),
+                ..quota(QuotaWindow::FiveHour, 30, 100, QuotaStatus::Ok)
+            },
+            Quota {
+                note: Some("Gemini · Weekly Limit Remaining".into()),
+                ..quota(QuotaWindow::SevenDay, 9, 100, QuotaStatus::Ok)
+            },
+            Quota {
+                note: Some("Claude/GPT · Five Hour Limit Remaining".into()),
+                ..quota(QuotaWindow::FiveHour, 0, 100, QuotaStatus::Ok)
+            },
+            Quota {
+                note: Some("Claude/GPT · Weekly Limit Remaining".into()),
+                ..quota(QuotaWindow::SevenDay, 0, 100, QuotaStatus::Ok)
+            },
+        ];
+        let snap = ProviderSnapshot {
+            provider: "antigravity".into(),
+            pool_semantics: QuotaPoolSemantics::Stacked,
+            accounts: vec![ag],
+        };
+        let text = render_to_string(&[snap], &[], false);
+        let lines: Vec<&str> = text.trim_end().lines().collect();
+        assert_eq!(lines.len(), 3, "{text}");
+        assert_eq!(rendered_line_count(&text, 200), 4, "{text}");
+        assert!(lines[1].contains("*  1 zxooxv@gmail.com"), "{text}");
+        assert!(lines[1].contains("Gemini      5h [ 70% left"), "{text}");
+        assert!(lines[1].contains("7d [ 91% left"), "{text}");
+        assert!(lines[2].contains("Claude/GPT  5h [100% left"), "{text}");
+        assert_eq!(
+            lines[1].find("5h ["),
+            lines[2].find("5h ["),
+            "pool sub-rows must align 5h column: {text}"
+        );
+        assert!(!text.contains("-- ["), "must never emit mystery `--`: {text}");
     }
 }

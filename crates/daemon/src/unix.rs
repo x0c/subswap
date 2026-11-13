@@ -324,19 +324,38 @@ async fn run_cycle(
             }
         };
     reconcile_file_blob_provider(commandcode, "commandcode").await;
-    // Antigravity capture-on-arrival（只 live→store，不刷新不写 live）。
-    {
+    // Antigravity 同理只有一份钥匙串 live 凭证：先把外部新登录入池，失败时本轮禁止自动覆盖。
+    let antigravity_sync_ready = {
         let a = antigravity.clone();
         match tokio::task::spawn_blocking(move || a.reconcile_active_from_live()).await {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => {
+                adaptive.clear_warning("antigravity-sync");
+                true
+            }
             Ok(Err(e)) => {
-                tracing::debug!(err = %e, provider = "antigravity", "live-credential reconcile skipped")
+                warn_sync_failure(
+                    adaptive,
+                    account_registry,
+                    "antigravity",
+                    "antigravity-sync",
+                    &e,
+                )
+                .await;
+                false
             }
             Err(e) => {
-                tracing::debug!(err = %e, provider = "antigravity", "live-credential reconcile join failed")
+                warn_sync_failure(
+                    adaptive,
+                    account_registry,
+                    "antigravity",
+                    "antigravity-sync",
+                    &e,
+                )
+                .await;
+                false
             }
         }
-    }
+    };
     // Cursor 只有一份 live 凭证。此处必须在读额度前先将外部新登录账号入池；失败时
     // 本轮禁止覆盖 Cursor，避免旧账号池把用户刚完成的原生登录写回去。
     let cursor_sync_ready = match cursor.reconcile_active_from_live().await {
@@ -371,6 +390,9 @@ async fn run_cycle(
         if snap.provider == "cursor" && !cursor_sync_ready {
             continue;
         }
+        if snap.provider == "antigravity" && !antigravity_sync_ready {
+            continue;
+        }
         if snap.provider == "opencode" && !console_sync_ready {
             continue;
         }
@@ -388,6 +410,21 @@ async fn run_cycle(
                     if let Err(e) = cursor.reconcile_active_from_live().await {
                         tracing::warn!(err = %e, "skip stale Cursor auto swap because live login did not sync");
                         continue;
+                    }
+                }
+                if snap.provider == "antigravity" {
+                    let a = antigravity.clone();
+                    match tokio::task::spawn_blocking(move || a.reconcile_active_from_live()).await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            tracing::warn!(err = %e, "skip stale Antigravity auto swap because live login did not sync");
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::warn!(err = %e, "skip stale Antigravity auto swap because live sync task failed");
+                            continue;
+                        }
                     }
                 }
 

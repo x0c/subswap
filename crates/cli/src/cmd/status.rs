@@ -18,7 +18,8 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use subswap_core::{
-    paths::AppPaths, request_metrics, settings, Account, AccountRegistry, Quota, QuotaCache,
+    paths::AppPaths, request_metrics, settings, Account, AccountId, AccountRegistry, Quota,
+    QuotaCache, QuotaStatus, QuotaWindow,
 };
 
 /// 只读快照 schema 版本。
@@ -78,7 +79,23 @@ struct StatusAccount {
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cached_at: Option<DateTime<Utc>>,
-    quotas: Vec<Quota>,
+    quotas: Vec<StatusQuota>,
+}
+
+#[derive(Serialize)]
+struct StatusQuota {
+    provider: String,
+    account_id: AccountId,
+    window: String,
+    used: u64,
+    limit: u64,
+    reset_at: Option<DateTime<Utc>>,
+    status: QuotaStatus,
+    note: Option<String>,
+    #[serde(skip)]
+    raw_window: QuotaWindow,
+    #[serde(skip)]
+    pool: Option<String>,
 }
 
 /// 额度缓存文件中只读需要的原始观测时间。
@@ -217,7 +234,87 @@ fn status_account(
         fetch_state,
         error,
         cached_at,
-        quotas,
+        quotas: to_status_quotas(quotas),
+    }
+}
+
+fn to_status_quotas(quotas: Vec<Quota>) -> Vec<StatusQuota> {
+    // 判定是否存在多子池共用同一窗口 token（如 Gemini 与 Claude/GPT 各自有 5h/7d）：
+    // 若存在，JSON 导出 `<pool>_<short>` 唯一键，避免 Apple 客户端 `provider/account/window` 主键冲突。
+    let mut seen_windows = std::collections::HashSet::new();
+    let has_duplicate_windows = quotas
+        .iter()
+        .any(|q| q.pool_group().is_some() && !seen_windows.insert(q.window.token()));
+
+    if !has_duplicate_windows {
+        return quotas
+            .into_iter()
+            .map(|q| {
+                let pool = q.pool_group().map(String::from);
+                let raw_window = q.window;
+                StatusQuota {
+                    provider: q.provider,
+                    account_id: q.account_id,
+                    window: raw_window.token(),
+                    used: q.used,
+                    limit: q.limit,
+                    reset_at: q.reset_at,
+                    status: q.status,
+                    note: q.note,
+                    raw_window,
+                    pool,
+                }
+            })
+            .collect();
+    }
+
+    let mut groups: Vec<(String, Vec<Quota>)> = Vec::new();
+    for q in quotas {
+        let group = q.pool_group().unwrap_or("quota").to_string();
+        if let Some((_, bucket)) = groups.iter_mut().find(|(g, _)| *g == group) {
+            bucket.push(q);
+        } else {
+            groups.push((group, vec![q]));
+        }
+    }
+    let mut out = Vec::new();
+    for (group, mut bucket) in groups {
+        bucket.sort_by_key(|q| crate::render::window_display_order(q.window));
+        let slug = pool_slug(&group);
+        for q in bucket {
+            let raw_window = q.window;
+            let win_key = format!("{slug}_{}", short_window_slug(raw_window));
+            out.push(StatusQuota {
+                provider: q.provider,
+                account_id: q.account_id,
+                window: win_key,
+                used: q.used,
+                limit: q.limit,
+                reset_at: q.reset_at,
+                status: q.status,
+                note: q.note,
+                raw_window,
+                pool: Some(group.clone()),
+            });
+        }
+    }
+    out
+}
+
+fn pool_slug(group: &str) -> String {
+    group
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .find(|s| !s.is_empty())
+        .unwrap_or("pool")
+        .to_ascii_lowercase()
+}
+
+fn short_window_slug(window: QuotaWindow) -> String {
+    match window {
+        QuotaWindow::FiveHour => "5h".into(),
+        QuotaWindow::SevenDay => "7d".into(),
+        QuotaWindow::Month => "30d".into(),
+        other => other.token(),
     }
 }
 
@@ -254,7 +351,7 @@ fn provider_display_name(provider: &str) -> String {
         "opencode" => "OpenCode",
         "opencode-api-key" => "OpenCode API Key",
         "commandcode" => "Command Code",
-        "antigravity" => "Antigravity",
+        "antigravity" => "Antigravity / Gemini",
         "volcengine" => "Volcengine Ark Coding Plan",
         "pi" => "Pi",
         other => other,
@@ -451,9 +548,36 @@ fn print_human(snapshot: &StatusSnapshot) {
                 "missing" => "no quota data".to_string(),
                 other => other.to_string(),
             }
+        } else if account.quotas.iter().any(|q| q.pool.is_some()) {
+            let mut grouped: Vec<(&str, Vec<String>)> = Vec::new();
+            for q in &account.quotas {
+                let pool = q.pool.as_deref().unwrap_or("");
+                let used = if q.limit == 0 {
+                    format!("{}", q.used)
+                } else {
+                    format!("{:.0}%", q.used as f64 / q.limit as f64 * 100.0)
+                };
+                let cell = format!("{} {}", short_window_slug(q.raw_window), used);
+                if let Some((_, items)) = grouped.iter_mut().find(|(g, _)| *g == pool) {
+                    items.push(cell);
+                } else {
+                    grouped.push((pool, vec![cell]));
+                }
+            }
+            grouped
+                .into_iter()
+                .map(|(pool, items)| {
+                    if pool.is_empty() {
+                        items.join(" · ")
+                    } else {
+                        format!("{pool} {}", items.join(" · "))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" | ")
         } else {
-            let mut quotas: Vec<&Quota> = account.quotas.iter().collect();
-            quotas.sort_by_key(|q| crate::render::window_display_order(q.window));
+            let mut quotas: Vec<&StatusQuota> = account.quotas.iter().collect();
+            quotas.sort_by_key(|q| crate::render::window_display_order(q.raw_window));
             quotas
                 .into_iter()
                 .map(|q| {
@@ -462,7 +586,7 @@ fn print_human(snapshot: &StatusSnapshot) {
                     } else {
                         format!("{:.0}%", q.used as f64 / q.limit as f64 * 100.0)
                     };
-                    format!("{} {}", q.window.token(), used)
+                    format!("{} {}", q.window, used)
                 })
                 .collect::<Vec<_>>()
                 .join(" · ")
@@ -484,5 +608,51 @@ fn print_human(snapshot: &StatusSnapshot) {
     }
     if snapshot.accounts.is_empty() {
         println!("No accounts. Run `subswap login <provider>` first.");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use subswap_core::{AccountId, QuotaStatus};
+
+    fn make_quota(window: QuotaWindow, used: u64, note: Option<&str>) -> Quota {
+        Quota {
+            provider: "antigravity".into(),
+            account_id: AccountId("u@gmail.com".into()),
+            window,
+            used,
+            limit: 100,
+            reset_at: None,
+            status: QuotaStatus::Ok,
+            note: note.map(String::from),
+        }
+    }
+
+    #[test]
+    fn single_pool_preserves_canonical_json_windows() {
+        let out = to_status_quotas(vec![
+            make_quota(QuotaWindow::FiveHour, 10, None),
+            make_quota(QuotaWindow::SevenDay, 20, None),
+        ]);
+        let json = serde_json::to_value(&out).unwrap();
+        assert_eq!(json[0]["window"], "five_hour");
+        assert_eq!(json[1]["window"], "seven_day");
+    }
+
+    #[test]
+    fn multi_pool_disambiguates_duplicate_windows_for_apple_snapshot() {
+        let out = to_status_quotas(vec![
+            make_quota(QuotaWindow::FiveHour, 30, Some("Gemini · 5h")),
+            make_quota(QuotaWindow::SevenDay, 9, Some("Gemini · 7d")),
+            make_quota(QuotaWindow::FiveHour, 0, Some("Claude/GPT · 5h")),
+            make_quota(QuotaWindow::SevenDay, 0, Some("Claude/GPT · 7d")),
+        ]);
+        let json = serde_json::to_value(&out).unwrap();
+        assert_eq!(json[0]["window"], "gemini_5h");
+        assert_eq!(json[1]["window"], "gemini_7d");
+        assert_eq!(json[2]["window"], "claude_5h");
+        assert_eq!(json[3]["window"], "claude_7d");
+        assert_eq!(provider_display_name("antigravity"), "Antigravity / Gemini");
     }
 }

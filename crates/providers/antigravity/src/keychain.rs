@@ -133,25 +133,38 @@ pub fn delete_password() -> Result<()> {
     Ok(())
 }
 
-/// 由 OauthBlob 合成 keychain 明文（`go-keyring-base64:` + base64）。
+/// 由 OauthBlob 合成 keychain 明文（`go-keyring-base64:` + base64），保留原生 `auth_method` 与扩展字段。
 #[cfg(any(target_os = "macos", test))]
 pub fn compose_keychain_value(blob: &OauthBlob) -> String {
     let expiry = blob
         .expires_at
         .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, false))
         .unwrap_or_default();
-    let v = serde_json::json!({
-        "token": {
+    let mut map = blob.native_extra.clone();
+    map.insert(
+        "token".into(),
+        serde_json::json!({
             "access_token": blob.access_token,
             "token_type": "Bearer",
             "refresh_token": blob.refresh_token,
             "expiry": expiry,
             "expires_in": 3599,
-        },
-        "auth_method": "consumer",
-        "id_token_email": blob.email.clone().unwrap_or_default(),
-    });
-    let raw = serde_json::to_string(&v).unwrap_or_default();
+        }),
+    );
+    map.insert(
+        "auth_method".into(),
+        serde_json::Value::String(
+            blob.auth_method
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "consumer".into()),
+        ),
+    );
+    map.insert(
+        "id_token_email".into(),
+        serde_json::Value::String(blob.email.clone().unwrap_or_default()),
+    );
+    let raw = serde_json::to_string(&serde_json::Value::Object(map)).unwrap_or_default();
     format!(
         "{PREFIX}{}",
         base64::engine::general_purpose::STANDARD.encode(raw)
@@ -180,7 +193,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compose_parse_roundtrip() {
+    fn compose_parse_roundtrip_preserves_auth_method_and_extras() {
+        let mut extra = serde_json::Map::new();
+        extra.insert("quota_project".into(), serde_json::json!("qp-test"));
         let blob = OauthBlob {
             refresh_token: "1//test-refresh".into(),
             access_token: "ya29.test".into(),
@@ -190,8 +205,10 @@ mod tests {
                     .unwrap(),
             ),
             email: Some("a@gmail.com".into()),
+            auth_method: Some("enterprise".into()),
             project_id: None,
             managed_project_id: None,
+            native_extra: extra,
         };
         let raw = compose_keychain_value(&blob);
         assert!(raw.starts_with(PREFIX));
@@ -199,6 +216,13 @@ mod tests {
         assert_eq!(back.refresh_token, "1//test-refresh");
         assert_eq!(back.access_token, "ya29.test");
         assert_eq!(back.email.as_deref(), Some("a@gmail.com"));
+        assert_eq!(back.auth_method.as_deref(), Some("enterprise"));
+        assert_eq!(
+            back.native_extra
+                .get("quota_project")
+                .and_then(|v| v.as_str()),
+            Some("qp-test")
+        );
     }
 
     #[test]

@@ -8,9 +8,10 @@
 //! - service: `subswap`
 //! - key:     `{provider_id}:{account_id}:{field}`，例如 `claude:alice@example.com:access_token`
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use fs2::FileExt;
 
@@ -89,12 +90,18 @@ impl CredentialStore for KeyringStore {
 pub struct FileStore {
     path: PathBuf,
     legacy: Option<KeyringStore>,
+    /// 进程内负缓存：已确认旧钥匙串中不存在（`NoEntry`）或已删除的键，后续不再重复触发系统钥匙串 IPC。
+    legacy_misses: Mutex<HashSet<String>>,
 }
 
 impl FileStore {
     /// 纯文件实现，不带迁移回退。
     pub fn new(path: PathBuf) -> Self {
-        Self { path, legacy: None }
+        Self {
+            path,
+            legacy: None,
+            legacy_misses: Mutex::new(HashSet::new()),
+        }
     }
 
     /// 带旧 keyring 回退：文件未命中时从钥匙串取出并落盘迁移。
@@ -102,6 +109,7 @@ impl FileStore {
         Self {
             path,
             legacy: Some(legacy),
+            legacy_misses: Mutex::new(HashSet::new()),
         }
     }
 
@@ -165,15 +173,21 @@ fn restrict_permissions(_path: &Path) -> Result<()> {
 
 impl CredentialStore for FileStore {
     fn set(&self, provider: &str, account: &str, field: &str, value: &str) -> Result<()> {
+        let key = compose_key(provider, account, field);
         let lock = self.open_lock()?;
         FileExt::lock_exclusive(&lock)
             .map_err(|e| Error::Credential(format!("lock credentials failed: {e}")))?;
         let result = (|| {
             let mut map = self.read_map()?;
-            map.insert(compose_key(provider, account, field), value.to_string());
+            map.insert(key.clone(), value.to_string());
             self.write_map(&map)
         })();
         let _ = FileExt::unlock(&lock);
+        if result.is_ok() {
+            if let Ok(mut misses) = self.legacy_misses.lock() {
+                misses.remove(&key);
+            }
+        }
         result
     }
 
@@ -192,16 +206,28 @@ impl CredentialStore for FileStore {
             return Ok(Some(v));
         }
         // 文件未命中 → 旧 keyring 回退（best-effort 迁移）；命中即落盘，下次不再读钥匙串。
+        // 已确认旧钥匙串不存在的键在进程内负缓存，避免 daemon/CLI 同进程反复探测系统钥匙串。
         // 读失败（钥匙串报错 / 用户拒绝授权）一律当作「没有」，不让迁移源的故障污染查询。
         if let Some(legacy) = &self.legacy {
-            match legacy.get(provider, account, field) {
-                Ok(Some(v)) => {
-                    self.set(provider, account, field, &v)?;
-                    return Ok(Some(v));
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::debug!(err = %e, "legacy keyring fallback failed; treating as missing");
+            let known_miss = self
+                .legacy_misses
+                .lock()
+                .map(|misses| misses.contains(&key))
+                .unwrap_or(false);
+            if !known_miss {
+                match legacy.get(provider, account, field) {
+                    Ok(Some(v)) => {
+                        self.set(provider, account, field, &v)?;
+                        return Ok(Some(v));
+                    }
+                    Ok(None) => {
+                        if let Ok(mut misses) = self.legacy_misses.lock() {
+                            misses.insert(key);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!(err = %e, "legacy keyring fallback failed; treating as missing");
+                    }
                 }
             }
         }
@@ -209,18 +235,29 @@ impl CredentialStore for FileStore {
     }
 
     fn delete(&self, provider: &str, account: &str, field: &str) -> Result<()> {
+        let key = compose_key(provider, account, field);
         let lock = self.open_lock()?;
         FileExt::lock_exclusive(&lock)
             .map_err(|e| Error::Credential(format!("lock credentials failed: {e}")))?;
         let result = (|| {
             let mut map = self.read_map()?;
-            map.remove(&compose_key(provider, account, field));
+            map.remove(&key);
             self.write_map(&map)
         })();
         let _ = FileExt::unlock(&lock);
-        // 同步清掉钥匙串旧副本，否则下次 get 会把已删项又迁回来。
+        // 同步清掉钥匙串旧副本，否则下次 get 会把已删项又迁回来；已确认无旧副本时跳过 IPC。
         if let Some(legacy) = &self.legacy {
-            let _ = legacy.delete(provider, account, field);
+            let known_miss = self
+                .legacy_misses
+                .lock()
+                .map(|misses| misses.contains(&key))
+                .unwrap_or(false);
+            if !known_miss {
+                let _ = legacy.delete(provider, account, field);
+                if let Ok(mut misses) = self.legacy_misses.lock() {
+                    misses.insert(key);
+                }
+            }
         }
         result
     }
@@ -303,5 +340,43 @@ mod tests {
         store.set("claude", "a@x.com", "f", "secret").unwrap();
         let mode = std::fs::metadata(&store.path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600, "credentials file must be 0600");
+    }
+
+    #[test]
+    fn legacy_miss_cache_clears_on_set_and_tracks_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            FileStore::with_legacy_keyring(dir.path().join("credentials.json"), KeyringStore::new());
+        let key = compose_key("test-no-legacy", "nobody-63c3c24d", "missing_field");
+        store.legacy_misses.lock().unwrap().insert(key.clone());
+        // 负缓存命中时直接返回 None，不触碰系统钥匙串。
+        assert_eq!(
+            store
+                .get("test-no-legacy", "nobody-63c3c24d", "missing_field")
+                .unwrap(),
+            None
+        );
+        // set 写入文件后清除负缓存标记。
+        store
+            .set("test-no-legacy", "nobody-63c3c24d", "missing_field", "val")
+            .unwrap();
+        assert!(!store.legacy_misses.lock().unwrap().contains(&key));
+        assert_eq!(
+            store
+                .get("test-no-legacy", "nobody-63c3c24d", "missing_field")
+                .unwrap(),
+            Some("val".to_string())
+        );
+        // 预置负缓存后 delete 同样跳过系统钥匙串 IPC，并从文件删除。
+        store.legacy_misses.lock().unwrap().insert(key.clone());
+        store
+            .delete("test-no-legacy", "nobody-63c3c24d", "missing_field")
+            .unwrap();
+        assert_eq!(
+            store
+                .get("test-no-legacy", "nobody-63c3c24d", "missing_field")
+                .unwrap(),
+            None
+        );
     }
 }

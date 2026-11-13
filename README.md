@@ -11,7 +11,7 @@
 
 <p align="center"><strong>Check remaining quota and switch AI coding accounts.</strong></p>
 
-<p align="center">Manage saved logins for Claude Code, Codex, Kimi Code, Cursor, OpenCode, and Command Code. See which account has quota left, then switch with one command.</p>
+<p align="center">Manage saved logins for Claude Code, Codex, Kimi Code, Cursor, OpenCode, Command Code, and Antigravity. See which account has quota left, then switch with one command.</p>
 
 <p align="center">
   <a href="https://github.com/x0c/subswap/actions/workflows/ci.yml"><img src="https://github.com/x0c/subswap/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -80,7 +80,7 @@ subswap login codex    # sign in to another Codex account; use claude for Claude
 subswap swap 2         # replace 2 with a number shown in your account list
 ```
 
-For Kimi Code, Cursor, and Command Code, sign in to the other account in the native client, then run `subswap login kimi`, `subswap login cursor`, or `subswap login commandcode` to save it. `subswap login opencode` imports official Console accounts and starts the official sign-in flow if needed; `subswap login opencode-api-key` imports Go API keys into a separate list.
+For Kimi Code, Cursor, Command Code, and Antigravity (macOS), sign in to the other account in the native client, then run `subswap login kimi`, `subswap login cursor`, `subswap login commandcode`, or `subswap login antigravity` to save it. `subswap login opencode` imports official Console accounts and starts the official sign-in flow if needed; `subswap login opencode-api-key` imports Go API keys into a separate list.
 
 After a Codex swap, restart an already-running Codex CLI session, or reload the IDE window and open a new session. Existing processes can retain the previous account. A Cursor desktop swap closes and reopens the app if it was running.
 
@@ -124,6 +124,7 @@ eval "$(subswap env codex/bob@example.com)"
 | OpenCode Console | Yes | Yes | Yes | No | Automatic switching stays within official Console accounts. |
 | OpenCode Go API key | Yes | Yes | No | V1 only | V2 key selection uses the official client. |
 | Command Code | Yes | Yes | Yes | Yes | Sign in with the native client, then import. |
+| Antigravity (`agy`) | macOS | Yes | macOS | No | Sign in with `agy` on macOS, then import; restart running `agy` sessions after a swap. |
 
 The CLI is tested in CI on macOS, Linux, and Windows. Install the native clients you want to use. Using the same account in multiple sessions can require signing in again if the sessions refresh its credentials at the same time; use different saved accounts for parallel work where possible.
 

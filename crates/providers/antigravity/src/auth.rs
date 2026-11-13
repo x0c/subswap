@@ -7,11 +7,12 @@
 //!   "access_token": "ya29....",
 //!   "expires_at": "2026-10-31T16:51:10+08:00",
 //!   "email": "user@gmail.com",
+//!   "auth_method": "consumer",
 //!   "project_id": "",
 //!   "managed_project_id": ""
 //! }
 //! ```
-//! `project_id` / `managed_project_id` 为空时省略（serde skip），避免 TOML null。
+//! 可选字段为空时省略（serde skip），避免污染 JSON / TOML。
 
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
@@ -29,10 +30,16 @@ pub struct OauthBlob {
     pub expires_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    /// 原生钥匙串 `auth_method`（如 `"consumer"` / 企业认证方式），切换写回时原样保留。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_method: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub managed_project_id: Option<String>,
+    /// 原生钥匙串 JSON 顶层未知扩展字段透传，避免切换时丢字段。
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub native_extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl OauthBlob {
@@ -121,13 +128,29 @@ pub fn from_native_keychain_json(v: &serde_json::Value) -> Option<OauthBlob> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(String::from);
+    let auth_method = v
+        .get("auth_method")
+        .and_then(|s| s.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    let mut native_extra = serde_json::Map::new();
+    if let Some(obj) = v.as_object() {
+        for (k, val) in obj {
+            if !matches!(k.as_str(), "token" | "auth_method" | "id_token_email") {
+                native_extra.insert(k.clone(), val.clone());
+            }
+        }
+    }
     Some(OauthBlob {
         refresh_token: refresh.to_string(),
         access_token: access,
         expires_at,
         email,
+        auth_method,
         project_id: None,
         managed_project_id: None,
+        native_extra,
     })
 }
 
@@ -136,15 +159,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_json_parses() {
+    fn native_json_parses_and_preserves_auth_method_and_extras() {
         let v: serde_json::Value = serde_json::from_str(
-            r#"{"token":{"access_token":"ya29.x","token_type":"Bearer","refresh_token":"1//abc","expiry":"2026-10-31T16:51:10.020985+08:00","expires_in":3599},"auth_method":"consumer","id_token_email":"a@gmail.com"}"#,
+            r#"{"token":{"access_token":"ya29.x","token_type":"Bearer","refresh_token":"1//abc","expiry":"2026-10-31T16:51:10.020985+08:00","expires_in":3599},"auth_method":"enterprise","id_token_email":"a@gmail.com","quota_project":"qp-1"}"#,
         )
         .unwrap();
         let b = from_native_keychain_json(&v).unwrap();
         assert_eq!(b.refresh_token, "1//abc");
         assert_eq!(b.access_token, "ya29.x");
         assert_eq!(b.email.as_deref(), Some("a@gmail.com"));
+        assert_eq!(b.auth_method.as_deref(), Some("enterprise"));
+        assert_eq!(
+            b.native_extra.get("quota_project").and_then(|x| x.as_str()),
+            Some("qp-1")
+        );
         assert_eq!(b.primary_id().as_deref(), Some("a@gmail.com"));
         assert!(b.expires_at.is_some());
     }
@@ -163,8 +191,10 @@ mod tests {
             access_token: "".into(),
             expires_at: None,
             email: None,
+            auth_method: None,
             project_id: None,
             managed_project_id: None,
+            native_extra: Default::default(),
         };
         assert!(b.label().starts_with("ag-…"));
         assert!(b.primary_id().unwrap().starts_with("ag-"));

@@ -11,7 +11,7 @@
 
 <p align="center"><strong>查看剩余额度，切换 AI 编程工具账号。</strong></p>
 
-<p align="center">管理 Claude Code、Codex、Kimi Code、Cursor、OpenCode 和 Command Code 的已保存账号与登录状态。查看哪个账号还有额度，再用一条命令切换。</p>
+<p align="center">管理 Claude Code、Codex、Kimi Code、Cursor、OpenCode、Command Code 和 Antigravity 的已保存账号与登录状态。查看哪个账号还有额度，再用一条命令切换。</p>
 
 <p align="center">
   <a href="https://github.com/x0c/subswap/actions/workflows/ci.yml"><img src="https://github.com/x0c/subswap/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -80,7 +80,7 @@ subswap login codex    # 登录另一个 Codex 账号；Claude Code 使用 claud
 subswap swap 2         # 将 2 替换为账号列表中显示的编号
 ```
 
-Kimi Code、Cursor 和 Command Code 需要先在原生客户端登录另一个账号，再用 `subswap login kimi`、`subswap login cursor` 或 `subswap login commandcode` 保存。`subswap login opencode` 导入官方 Console 账号，必要时启动官方登录流程；`subswap login opencode-api-key` 将 Go API Key 导入独立列表。
+Kimi Code、Cursor、Command Code 和 Antigravity（macOS）需要先在原生客户端登录另一个账号，再用 `subswap login kimi`、`subswap login cursor`、`subswap login commandcode` 或 `subswap login antigravity` 保存。`subswap login opencode` 导入官方 Console 账号，必要时启动官方登录流程；`subswap login opencode-api-key` 将 Go API Key 导入独立列表。
 
 切换 Codex 后，请重启已运行的 Codex CLI 会话，或重载 IDE 窗口后打开新会话。已有进程可能仍使用原来的账号。切换 Cursor 桌面版时，若应用正在运行，subswap 会关闭并重新打开它。
 
@@ -124,6 +124,7 @@ eval "$(subswap env codex/bob@example.com)"
 | OpenCode Console | 是 | 是 | 是 | 否 | 自动换号仅在官方 Console 账号之间进行。 |
 | OpenCode Go API Key | 是 | 是 | 否 | 仅 V1 | V2 版本的 Key 请通过官方客户端选择。 |
 | Command Code | 是 | 是 | 是 | 是 | 先在原生客户端登录，再导入。 |
+| Antigravity（`agy`） | macOS | 是 | macOS | 否 | 在 macOS 用 `agy` 登录后导入；切换后需重启已运行的 `agy` 会话。 |
 
 CLI 已在 macOS、Linux 和 Windows CI 中测试。请安装需要使用的原生客户端。同一账号若被多个会话同时刷新凭证，可能需要重新登录；并行使用时尽量选择不同的已保存账号。
 

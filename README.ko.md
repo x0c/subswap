@@ -80,7 +80,7 @@ subswap login codex    # 다른 Codex 계정으로 로그인. Claude Code는 cla
 subswap swap 2         # 2를 계정 목록에 표시된 번호로 변경
 ```
 
-Kimi Code, Cursor, Command Code는 네이티브 클라이언트에서 다른 계정으로 로그인한 뒤 `subswap login kimi`, `subswap login cursor`, `subswap login commandcode`로 저장합니다. `subswap login opencode`는 공식 Console 계정을 가져오며 필요하면 공식 로그인을 시작합니다. `subswap login opencode-api-key`는 Go API key를 별도 목록으로 가져옵니다.
+Kimi Code, Cursor, Command Code, Antigravity(macOS)는 네이티브 클라이언트에서 다른 계정으로 로그인한 뒤 `subswap login kimi`, `subswap login cursor`, `subswap login commandcode`, `subswap login antigravity`로 저장합니다. `subswap login opencode`는 공식 Console 계정을 가져오며 필요하면 공식 로그인을 시작합니다. `subswap login opencode-api-key`는 Go API key를 별도 목록으로 가져옵니다.
 
 Codex 전환 후에는 실행 중인 Codex CLI 세션을 다시 시작하거나 IDE 창을 다시 로드하고 새 세션을 여세요. 기존 프로세스는 이전 계정을 유지할 수 있습니다. Cursor 데스크톱이 실행 중이면 계정 전환 시 앱을 닫고 다시 엽니다.
 
@@ -122,6 +122,7 @@ eval "$(subswap env codex/bob@example.com)"
 | OpenCode Console | 지원 | 지원 | 지원 | 미지원 | 공식 Console 계정 사이에서만 자동 전환. |
 | OpenCode Go API key | 지원 | 지원 | 미지원 | V1만 | V2 키 선택은 공식 클라이언트 이용. |
 | Command Code | 지원 | 지원 | 지원 | 지원 | 네이티브 클라이언트 로그인 후 가져오기. |
+| Antigravity(`agy`) | macOS | 지원 | macOS | 미지원 | macOS `agy` 로그인 후 가져오기. 전환 후 실행 중인 `agy` 세션 다시 시작. |
 
 CLI는 macOS, Linux, Windows CI에서 테스트됩니다. 사용할 네이티브 클라이언트를 설치하세요. 같은 계정의 자격 증명을 여러 세션에서 동시에 갱신하면 다시 로그인해야 할 수 있습니다. 병렬 작업에는 가능한 한 서로 다른 저장된 계정을 사용하세요.
 

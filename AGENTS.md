@@ -166,6 +166,7 @@ crates/providers/claude/  Claude / Anthropic Provider（keychain 特化，独立
 crates/providers/kimi/    Kimi / Moonshot Provider（adapter，跑在 common 引擎上）
 crates/providers/opencode/ OpenCode 官方账号与独立 API Key Provider（V2 官方数据库，V1 Go 文件引擎）
 crates/providers/commandcode/ Command Code Provider（adapter，跑在 common 引擎上；切 ~/.commandcode/auth.json）
+crates/providers/antigravity/ Antigravity / Gemini Provider（macOS 钥匙串 OAuth 特化，独立于 common 引擎）
 crates/providers/cursor/  Cursor Provider（SQLite + GUI 生命周期特化，独立于 common 引擎）
 integrations/pi/          Pi 账号池插件（复用 Subswap 账号与本机 auth 投影）
 docs/                     中文项目文档
@@ -177,7 +178,7 @@ docs/                     中文项目文档
 
 | 文档 | 用途 |
 |---|---|
-| [docs/PROVIDER_KNOWLEDGE_BASE.md](~/Codes/Subswap/docs/PROVIDER_KNOWLEDGE_BASE.md) | Provider 凭证、额度与切换边界：Claude/Codex/Kimi/Cursor、OpenCode 官方账号与独立 API Key、Command Code；含 Codex 客户端重启、OpenCode V1/V2 登录和 Key 切换、Cursor Credits、文件型共享引擎与刷新协调。涉及这些行为时必读 |
+| [docs/PROVIDER_KNOWLEDGE_BASE.md](~/Codes/Subswap/docs/PROVIDER_KNOWLEDGE_BASE.md) | Provider 凭证、额度与切换边界：Claude/Codex/Kimi/Cursor/Antigravity、OpenCode 官方账号与独立 API Key、Command Code；含 Codex 客户端重启、OpenCode V1/V2 登录和 Key 切换、Cursor Credits、Antigravity 双池额度与钥匙串同步、文件型共享引擎与刷新协调。涉及这些行为时必读 |
 | [docs/design/ARCHITECTURE.md](~/Codes/Subswap/docs/design/ARCHITECTURE.md) | 改、评审或分析 workspace 分层、Provider 抽象、核心数据流、凭证文件布局、新 Provider 接入前**必读**。不读会把新 Provider 塞错引擎（文件型 vs keychain/SQLite 特化）或改坏激活/回滚边界 |
 | [docs/design/AUTO_SWAP_DESIGN.md](~/Codes/Subswap/docs/design/AUTO_SWAP_DESIGN.md) | 改、评审或排查自动切换候选筛选、阈值、manual_only、防抖/振荡刹车、daemon token 保活，或排查「默认入口渐进式重判 / 一次 subswap 多次切换 / 连跑结果不同 / 卡在耗尽号 / **Codex 已自动切但客户端仍旧号 / macOS 未拉 daemon 像没自动切** / 自动切到 0% 号（Cursor 1st 还有余量却切到全空） / Cursor 全员 1st 见底却切到全空号放过 API 余量 / Cursor 1st·Credits·API 三池并行 / 账号间无限横跳(A→B→A 振荡)」前**必读**。不读会改错候选窗或阈值语义，把可切号切成卡死/横跳，或把 Codex 客户端不热读误判成自动切未实现 |
 | [docs/design/PREWARM_DESIGN.md](~/Codes/Subswap/docs/design/PREWARM_DESIGN.md) | 设计、评审或实现窗口预热、预热阈值、预热通知与自动切换协同时**必读**。不读会把预热做成高频打额度或与 AutoSwap 抢触发 |

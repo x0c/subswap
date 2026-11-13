@@ -705,10 +705,11 @@ Go 订阅 = API key（`{"type":"api","key":"sk-..."}`），无 refresh，不刷�
 |---|---|
 | CLI 家目录 | `~/.gemini/antigravity-cli`（`SUBSWAP_ANTIGRAVITY_HOME` 覆盖，测试隔离用） |
 | 当前激活凭证 | macOS 钥匙串 generic password：service `gemini` / account `antigravity`（Go keyring 固定值，与 agy 一致） |
-| 内容形态 | `go-keyring-base64:<base64 JSON>`；JSON = `{"token":{"access_token":..,"refresh_token":..,"expiry":RFC3339},"auth_method":"consumer","id_token_email":..}` |
+| 内容形态 | `go-keyring-base64:<base64 JSON>`；JSON = `{"token":{"access_token":..,"refresh_token":..,"expiry":RFC3339},"auth_method":"consumer","id_token_email":..}`（切换写回时保留 `auth_method` 等原生扩展字段） |
+| 客户端探针 | `~/.gemini/antigravity-cli` + `agy` 可执行文件（按 `PATH`、`~/.local/bin/agy`、`/opt/homebrew/bin/agy`、`/usr/local/bin/agy` 顺序探测） |
 | 读写约束 | macOS 经 `/usr/bin/security` fork 读写，禁止 `keyring` crate 写（ACL 中毒，见 Claude 节同理）；测试经 `SUBSWAP_ANTIGRAVITY_KEYCHAIN_PATH` 重定向到一次性 keychain |
 
-subswap 侧 blob（`CredentialStore` 字段 `oauth_json`）：`{refresh_token, access_token, expires_at(RFC3339), email, project_id?, managed_project_id?}`。主键 = 邮箱（缺失时 `ag-` + refresh SHA-256 前 16 hex）；label = 邮箱或 `ag-…末4`。
+subswap 侧 blob（`CredentialStore` 字段 `oauth_json`）：`{refresh_token, access_token, expires_at(RFC3339), email, auth_method?, project_id?, managed_project_id?}`。主键 = 邮箱（缺失时 `ag-` + refresh SHA-256 前 16 hex）；label = 邮箱或 `ag-…末4`。
 
 ### OAuth 刷新（复用非轮换）
 
@@ -717,31 +718,29 @@ subswap 侧 blob（`CredentialStore` 字段 `oauth_json`）：`{refresh_token, a
 | Token 刷新 | POST | `https://oauth2.googleapis.com/token`（`SUBSWAP_ANTIGRAVITY_TOKEN_URL` 覆盖，测试 mock 用） |
 
 - body `form-urlencoded`：`grant_type=refresh_token` + `refresh_token` + 官方 Antigravity OAuth 应用 `client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com` / `client_secret=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`（随公开客户端分发的公开值，与 agy 二进制 / opencode 插件一致，已实测与本机 keychain token 互通）。
-- Google refresh_token 长效复用（成功响应一般无新 refresh，无则保留旧值）；`invalid_grant` / 401 / 403 → `DeadToken`（进程内指纹守卫，不存 secret），透出 `needs re-login`。
-- active 只读不刷（由 agy 自己轮换）；parked 临近过期才刷；`activate` 预刷新 best-effort（失败只 warn，不断切换）；daemon 保活只对 parked。
+- Google refresh_token 长效复用（成功响应一般无新 refresh，无则保留旧值）；`invalid_grant` / 401 / 403 → `DeadToken`（进程内指纹守卫，不存 secret），透出 `needs re-login`；429 解析 `Retry-After` 返回 `Error::QuotaRateLimited`（不判死、不重试）。所有 token / quota HTTP 请求统一复用进程级 `reqwest::Client` 并记录 `request_metrics`（`http_start` / `http_complete`）。
+- active 只读不刷（由 agy 自己轮换）；parked 临近过期才刷；`activate` 预刷新 best-effort（失败只 warn，不断切换）；daemon 保活只对 parked。不实现 `Provider::request_credential`（Antigravity 服务条款禁止第三方客户端消费其 OAuth 凭证）。
 
 ### 额度（主 + 兜底）
 
 | 用途 | 方法 | URL |
 |---|---|---|
-| 配额总览（主） | POST | `{prod,daily,autopush}/v1internal:retrieveUserQuotaSummary`（`SUBSWAP_ANTIGRAVITY_BASE` 覆盖单个 base，测试用） |
-| 模型余量（兜底/补 Gemini 池） | POST | 同上三端点 `/v1internal:fetchAvailableModels` |
+| 配额总览（主） | POST | `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary`（按 `auth_method` 排序，失败或缺组时回退另一官方域名 `https://cloudcode-pa.googleapis.com`；`SUBSWAP_ANTIGRAVITY_BASE` 覆盖单个 base） |
+| 模型余量（兜底/补 Gemini 池） | POST | 同上 base `/v1internal:fetchAvailableModels` |
 
-- 主通道 body `{}`（无 project 时）或 `{"project": <managed/project id>}`；UA 必须为 Antigravity UA（否则 403），附 `X-Goog-Api-Client` + `Client-Metadata`。
-- 端点顺序 prod → daily → autopush，按 `displayName` 合并（daily 偶发只回 Claude/GPT 组缺 Gemini 组，见 Cli-Proxy-API #499）；`bucketId`/`window` 去重，首个非空胜出。
-- 桶映射：`5h` → `FiveHour`，`weekly` → `SevenDay`，`monthly` → `Month`，`daily` → `Timed(1d)`，其余 → `Custom`；`remainingFraction`（0~1 余量）→ 已用% = `(1-remaining)*100`（`limit` 固定 100）；`resetTime` RFC3339 → `reset_at`；note = `<group> · <bucket>`（如 `Claude and GPT models · Five Hour Limit Remaining`）。
-- proto3 省略 0 值：有 `resetTime` 且非 `disabled` 的缺字段桶按耗尽（0）计；`disabled` weekly 整桶跳过（5h disabled 保留为 0）。
-- 缺 Gemini 组时用 models 兜底补 `Antigravity Gemini` Custom 窗口（min 余量）；主通道完全无组时回落 models 全量（`Antigravity Gemini` + `Antigravity Claude` Custom）。Custom 只在明确耗尽时触发自动切换（阈值只看 FiveHour）。
+- **UA 版本门禁（关键坑）**：`retrieveUserQuotaSummary` 按客户端版本过滤返回分组——旧 `Antigravity/1.18.3` 或 `antigravity/hub/1.0.0` 会使 `daily` 与 `prod` **彻底省略 `Gemini Models` 组**、只返回 `Claude and GPT models`（导致误落 `fetchAvailableModels` 且丢失 Gemini 周窗）。必须发送现代 Hub UA：`antigravity/hub/2.24.0 (aidev_client; os_type=<platform>; arch=<arch>; cl=963137146)`，并附 `X-Goog-Api-Client` 与合法 proto3 枚举的 `Client-Metadata`（`platform: "PLATFORM_UNSPECIFIED"`，不可填非法枚举 `"MACOS"`）。
+- 请求体与域名优先级：仅在存在显式项目 ID（账号 `managed_project_id` / `project_id` / `<antigravity_home>/cache/default_project_id.txt`）时发送 `{"project": <id>}`，否则发 `{}`（不伪造占位项目名）。`auth_method == "business"` 优先 `prod` → `daily`，其余（默认 `consumer`）优先 `daily` → `prod`，不再打旧 `.sandbox` 域名与外部必返 403 的内部 `autopush` 端点；首个 base 同时拿到 `Gemini` 与 `Claude/GPT` 两组时立即返回。
+- 桶与多池分组展示：Antigravity 同一账号同时拥有 **Gemini**（Google 一方模型）、可选独立 **Gemini 4 Argon / Carbon** 池（`gemini-argon-*` / `gemini-carbon-*` 桶不混入普通 Gemini 池）与 **Claude/GPT**（第三方模型）独立额度池，每池各有 `5h`（`FiveHour`）与 `weekly`（`SevenDay`）窗口。Provider 将组名规范化写入 `Quota.note`（`"Gemini · ..."` / `"Claude/GPT · ..."`，`Gemini` 固定排前）：CLI 默认入口按池分行对齐展示（`Gemini  5h [...]  7d [...]` 与 `Claude/GPT  5h [...]  7d [...]`），消除含义不明的 `--`（`Custom`）与无池名歧义；`status --json` 对多池同窗自动导出唯一窗口键（`gemini_5h` / `gemini_7d` / `claude_5h` / `claude_7d` 等），保证 Apple 客户端 `QuotaSnapshot.id` 唯一且标签自解释。
+- 未动用滚动窗与 proto3 省略 0 值：`retrieveUserQuotaSummary` 对完全未动用（`remainingFraction == 1.0` 且无 `description`）的桶每次都会合成 `now + 5h/7d` 的假滚动 `resetTime`，解析时清空为 `reset_at = None`（CLI 渲染 `reset --`），避免误导成“再过 5h/7d 才重置”；有 `resetTime` 且非 `disabled` 的缺字段桶按耗尽（0）计；`disabled` weekly 整桶跳过（5h disabled 保留为 0）。主通道无组时回落 `fetchAvailableModels`（同时解析 `quotaInfo` → `FiveHour` 与 `weeklyQuotaInfo` → `SevenDay` 并带池名，绝不落 `Custom`）。
 - `retrieveUserQuota`（Gemini CLI 池）对 consumer 号常回 403 `SUBSCRIPTION_REQUIRED`，不作为额度源。
-- `401`/`403` → `needs re-login`（鉴权失败）；**不得**把 `429` 当死号（走统一失败退避，不重试）。
-- 自动切换：叠加语义（默认）；`5h` 超默认阈值切走，任一窗口明确耗尽切走；切换后须重启已开的 agy 会话（`post_swap_notice`）。
+- `401`/`403` → `needs re-login`（鉴权失败）；**不得**把 `429` 当死号（保留 `Retry-After` 走统一限流退避，不重试、不切备用域名）。
+- 自动切换：叠加语义（默认）；任一池 `5h` 超默认阈值或任一窗口明确耗尽即切走；切换后须重启已开的 agy 会话（`post_swap_notice`）。
 
-### 切换 (activate)
+### 切换与新登录同步
 
-1. capture-on-leave：读 live → 找 owner → 回写 store（缺 access 的快照不覆盖完整副本）。
-2. 快照 keychain 原值；`compose` 新值经 `/usr/bin/security -U` 原地写（失败则删除重建，ACL 复位）。
-3. `registry.set_active`；失败回滚 keychain。
-4. 重复切当前号：只回灌，不覆写 live。
+1. **新登录优先入池**：与 Cursor 同理，Antigravity 只有一份 live 钥匙串凭证。默认入口与 daemon（`reconcile_active_from_live`）观察到未入库的 live 登录时，先将其导入并标为 active，再采额度与决策；自动切换执行前再次复核 live，防止刚在 `agy` 完成的新登录尚未入池就被旧决策覆盖（未登录时静默跳过）。
+2. `activate` 全程持有 `<antigravity_home>/.subswap.lock` 跨进程排他锁（自动创建父目录）：capture-on-leave（缺 access 的快照不覆盖完整副本）→ 快照 keychain 原值 → `compose` 新值经 `/usr/bin/security -U` 原地写（失败则删除重建）→ `registry.set_active`（失败回滚 keychain）。
+3. 重复切当前号：只回灌，不覆写 live。
 
 ### 登录 / 删除 / 隔离
 
@@ -908,6 +907,7 @@ active 查询 401 **绝不刷新**：只重读 live。Cursor 已自行轮换 →
 | `opencode/usage.rs`（Go key） | typed |
 | `opencode/console.rs`（Console status） | typed |
 | `commandcode/usage.rs` | typed |
+| `antigravity/quota.rs` / `antigravity/oauth.rs` | typed；429 立即返回限流错误，不再串行打备用 base，也不标记 dead token |
 | `cursor/lib.rs::fetch_usage` | `UsageError::RateLimited` → typed；不刷新 |
 | `cursor/lib.rs::refresh_parked` | typed；不标记 dead token |
 | `codex/reset_credits.rs` / Cursor Credits | 可选展示明细，失败仍只降级，不新增请求 |

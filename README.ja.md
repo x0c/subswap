@@ -80,7 +80,7 @@ subswap login codex    # 別の Codex アカウントでログイン。Claude Co
 subswap swap 2         # 2 をアカウント一覧の番号に置き換える
 ```
 
-Kimi Code、Cursor、Command Code は、ネイティブクライアントで別のアカウントにログインした後、`subswap login kimi`、`subswap login cursor`、`subswap login commandcode` で保存します。`subswap login opencode` は公式 Console アカウントを取り込み、必要に応じて公式のログインを開始します。`subswap login opencode-api-key` は Go API key を別の一覧に取り込みます。
+Kimi Code、Cursor、Command Code、Antigravity（macOS）は、ネイティブクライアントで別のアカウントにログインした後、`subswap login kimi`、`subswap login cursor`、`subswap login commandcode`、`subswap login antigravity` で保存します。`subswap login opencode` は公式 Console アカウントを取り込み、必要に応じて公式のログインを開始します。`subswap login opencode-api-key` は Go API key を別の一覧に取り込みます。
 
 Codex を切り替えた後は、実行中の Codex CLI セッションを再起動するか、IDE ウィンドウを再読み込みして新しいセッションを開いてください。既存のプロセスは以前のアカウントを保持する場合があります。Cursor デスクトップが実行中の場合は、切り替え時にアプリを終了して再起動します。
 
@@ -122,6 +122,7 @@ eval "$(subswap env codex/bob@example.com)"
 | OpenCode Console | 対応 | 対応 | 対応 | 非対応 | 自動切り替えは公式 Console アカウント間のみ。 |
 | OpenCode Go API key | 対応 | 対応 | 非対応 | V1 のみ | V2 のキー選択は公式クライアント経由。 |
 | Command Code | 対応 | 対応 | 対応 | 対応 | ネイティブクライアントでログイン後に取り込み。 |
+| Antigravity（`agy`） | macOS | 対応 | macOS | 非対応 | macOS の `agy` でログイン後に取り込み。切り替え後は実行中の `agy` セッションを再起動。 |
 
 CLI は macOS、Linux、Windows の CI でテストされています。利用するネイティブクライアントをインストールしてください。同じアカウントを複数のセッションで使い、認証情報の更新が重なると、再ログインが必要になる場合があります。並列利用では可能な限り別々の保存済みアカウントを選んでください。
 

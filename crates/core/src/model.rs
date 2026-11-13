@@ -326,6 +326,22 @@ impl Quota {
     pub fn is_above(&self, threshold: f64) -> bool {
         self.usage_ratio().map(|r| r >= threshold).unwrap_or(false)
     }
+
+    /// 提取可选子池名称（当 Provider 在同一账号下返回多套独立模型额度池并写入
+    /// `note` = `"<池名> · <桶说明>"` 时）。普通单池窗口、未知占位与重置道具返回 `None`。
+    pub fn pool_group(&self) -> Option<&str> {
+        if matches!(self.window, QuotaWindow::ResetCredits)
+            || matches!(self.status, QuotaStatus::Unknown)
+        {
+            return None;
+        }
+        let note = self.note.as_deref()?.trim();
+        if note.is_empty() {
+            return None;
+        }
+        let group = note.split_once(" · ").map_or(note, |(g, _)| g.trim());
+        (!group.is_empty()).then_some(group)
+    }
 }
 
 /// `rm` 断开原生凭证的结果。`Err` 表示原生没断掉，调用方必须直接报错退出、
