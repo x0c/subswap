@@ -2,6 +2,7 @@
 
 | 文档 | 何时该读 |
 |---|---|
+| [Antigravity missing Gemini `7d` or unlabeled `--` pools](2026-11-14-antigravity-missing-gemini-weekly-and-unlabeled-pools.md) | Antigravity prints unlabeled `100%` + `--` windows, omits `Gemini 7d` while showing `Claude/GPT`, or shows rolling `reset in 5h/7d` on untouched 100% buckets; read before changing `retrieveUserQuotaSummary` headers/UA, `Client-Metadata`, or multi-pool rendering. |
 | [Pi Codex usage-limit failover](../design/PI_EXTENSION_DESIGN.md#codex-stream-quota-refusals-2026-11-12) | Pi reports `Codex error: The usage limit has been reached` while a sibling account has quota; normalized stream error text, HTTP 200/WebSocket classification, native-adapter regression and real installed failover evidence. |
 | [OpenCode 同账号重复 Console 凭证导致 quota 401](2026-10-31-opencode-duplicate-console-credential-quota-401.md) | OpenCode 号显示 `needs re-login` 但官方客户端能正常聊天，或切号瞬间当前号报 401 而发一句话就好；改 Console 额度归属、active/parked 文案或自助续期前必读 |
 | [Subswap Apple 客户端额度停留在旧数据（`status --json` 管道死锁）](2026-10-25-client-frozen-quota-pipe-deadlock.md) | 终端数据正确但 Mac/iOS 客户端、菜单栏或小组件冻结在旧额度；或客户端残留长期不退出的 `subswap status --json` 子进程；改 CLI 快照输出体积 / GUI 读取方式前。 |

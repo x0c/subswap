@@ -82,6 +82,7 @@ GUI/小组件按秒级重绘轮询时应加 `--no-metrics`：计数器会随 60 
 - 非标准时长用**时长 token** 表示：`<n>d` / `<n>h` / `<n>m` / `<n>s`（例如厂商新增 20 天窗口 → `20d`）。这些 token 在 JSON 的 `window` 字段里同样稳定，客户端自行解析秒数；token 本身就是列标签，不再需要逐个补枚举。
 - 非时间池（`first_party_models` / `api` / `credits` / `reset_credits`）排在所有时间窗口之后，按各自固定顺序展示；无法识别时长的窗口保留源顺序，排在最后。
 - Provider 只要知道上游窗口长度，就必须走 `QuotaWindow::from_seconds` 映射（5h/7d/28–31 天自动归入标准 token，其余落到时长 token），**不要**再落到 `QuotaWindow::Custom`（`custom` 无时长，客户端只能把它排在最后且显示 `--`）。
+- **多池同窗分组**：同一账号拥有多个独立额度池且含同名时间窗口时（如 Antigravity 的 `Gemini`、可选 `Gemini 4 Argon` 与 `Claude/GPT` 各有 `5h`/`7d`），Provider 在 `Quota.note` 写入 `<池名> · <桶说明>`（`Quota::pool_group()` 提取前缀）：默认入口按池分行对齐渲染，`status` 人读视图以 `|` 分隔各池，`status --json` 将同名窗口自动消歧为 `<pool_slug>_<window>`（如 `gemini_5h`、`gemini_7d`、`claude_5h`、`claude_7d`），单池 Provider 键名保持 `five_hour` / `seven_day` 不变。
 
 后台采集节奏由默认入口与 `subswapd` 执行，普通 `status` 不参与：激活账号约每 3 分钟、停放/已确认耗尽账号约每 15 分钟；同账号真实请求仍受 90 秒最小间隔与 Provider 更严下限约束。调度只增加最多 10% 的正向抖动，不会提前；已知 reset 后延迟约 2 秒再显式采集。数据超过 5 分钟（`decision_max_age_ms`）只用于展示，不能作为自动切换依据。具体默认值以 [CONFIG.md](CONFIG.md) 为准。
 
@@ -168,6 +169,10 @@ Code，不改全局 active；`shell` / `env` 同样支持。
 ## Command Code
 
 `subswap login commandcode` 不驱动官方登录：先 `command-code login`，或把 API key 写在 `--` 后面直接导入（别名 `command-code` / `cmd`）。切换覆盖 `~/.commandcode/auth.json`。额度走 undocumented `GET /alpha/billing/credits`（与官方 CLI `/usage` 同源，Bearer API key，**不用** Web Cookie 的 `/internal/usage`）：5h / weekly 百分比窗口 + `$` 余量（monthly+purchased+free）。5 小时滚动窗口走自动换号阈值；周 / Credits 只在明确耗尽时触发。隔离运行设 `HOME`（物化 `.commandcode/auth.json`）并注入 `COMMANDCODE_API_KEY`。
+
+## Antigravity
+
+`subswap login antigravity`（别名 `agy` / `gemini`）不驱动浏览器登录：先在官方 `agy` TUI 完成 Google 登录，再导入当前 macOS 钥匙串（service `gemini` / account `antigravity`）凭证；无参 `subswap` 与 `subswapd` 在采额度及自动换号前也会自动把钥匙串里外部新登录的账号入池，防止旧自动换号决策覆盖刚登录的账号。默认入口按独立额度池分行展示 `Gemini`（及独立 `Gemini 4 Argon`/`Carbon` 桶）与 `Claude/GPT` 的 `5h` / `7d` 余量；任一池 `5h` 超阈值或任一窗口明确耗尽时触发自动切换，切换后须重启已打开的 `agy` 会话。不支持 `run` / `shell` / `env` 隔离运行，也不支持 `subswap auth` 凭证投影（仅官方 `agy` 消费 OAuth 令牌）。详见 [PROVIDER_KNOWLEDGE_BASE.md](PROVIDER_KNOWLEDGE_BASE.md)「Antigravity / Gemini」。
 
 ## Cursor
 

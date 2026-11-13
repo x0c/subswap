@@ -33,7 +33,7 @@
   切回 OAuth 时必须恢复进入 API 模式前的 `settings.json.env` 受管字段。
 - `subswap rm` **永不因 active / `manual_only` /「请先 swap」拒绝**：删当前 Claude 自定义 API 须先退出 API 模式（恢复受管 env、清 `.subswap-api.json`）再清本地；原生客户端登出失败只警告，仍删本地记录（客户端仍登录时下次入口可能再导入）。
 - Linux Release 预编译包用 `cargo zigbuild` 钉 **GLIBC 2.28** 地板（见 `release.yml` 的 `objdump` 守卫）；禁止在较新 Ubuntu runner 上直接 `cargo build` 发布 Linux 产物，否则会在 22.04 类主机出现 `GLIBC_2.39` 警告/起不来。
-- macOS 上读写 Claude Code 的 `Claude Code-credentials`、以及 Cursor 命令行的
+- macOS 上读写 Claude Code 的 `Claude Code-credentials`、Antigravity 的 `gemini`/`antigravity`、以及 Cursor 命令行的
   `cursor-access-token` / `cursor-refresh-token` keychain item **只能 fork `/usr/bin/security`**，
   禁止用 `keyring` crate（security-framework 原生 API）：keyring 写会把 item ACL 重置成「仅 subswap」，
   导致官方客户端（也用 `security` 读）每次切换后反复弹授权框。详见
@@ -41,9 +41,9 @@
   Cursor 官方钥匙串**已有条目只改内容、禁止 delete 后再 add**：删建会把解密权限收成「仅 security」，
   桌面版界面邮箱对了、请求却报未登录。新建时才把 `/usr/bin/security` 和 Cursor.app 写入信任名单。
   - 测试隔离：集成测试**禁止触碰真实登录钥匙串**（否则 `cargo test` 在 macOS 弹授权框并改写本机凭证）。
-    Claude 认 `SUBSWAP_CLAUDE_KEYCHAIN_PATH`，Cursor 命令行认 `SUBSWAP_CURSOR_KEYCHAIN_PATH`；
-    `cli_surface.rs::isolated_subswap` 已把两者都指到同一份一次性 keychain。
-    新写的会激活 Claude OAuth 或 Cursor 命令行钥匙串的集成测试也必须经它隔离。
+    Claude 认 `SUBSWAP_CLAUDE_KEYCHAIN_PATH`，Antigravity 认 `SUBSWAP_ANTIGRAVITY_KEYCHAIN_PATH`，Cursor 命令行认 `SUBSWAP_CURSOR_KEYCHAIN_PATH`；
+    `cli_surface.rs::isolated_subswap` 已把三者都指到同一份一次性 keychain。
+    新写的会激活 Claude OAuth、Antigravity 或 Cursor 命令行钥匙串的集成测试也必须经它隔离。
 - Cursor 命令行的令牌与身份必须成套读写：切换时同时写令牌后端和 `cli-config.json` 的 `authInfo`。
   live 主人只认令牌 JWT，不得用过期邮箱去对号；仓库里令牌 JWT 与账号身份不一致时显示 `needs re-login`，
   **禁止**拿这份令牌查额度或刷新（会把真正主人的一次性 refresh token 刷废）。
@@ -192,7 +192,7 @@ docs/                     中文项目文档
 | [CONTRIBUTING.md](~/Codes/Subswap/CONTRIBUTING.md) | 开始、评审或合并外部贡献前**必读**。不读会让凭证安全边界、测试隔离或公开文档同步在贡献中被遗漏 |
 | [SECURITY.md](~/Codes/Subswap/SECURITY.md) | 处理安全漏洞、凭证泄露、安装完整性或私密披露前**必读**。不读会把应私下处理的敏感问题暴露到公开 issue |
 | [docs/ROADMAP.md](~/Codes/Subswap/docs/ROADMAP.md) | 规划、评审或同步里程碑范围、已完成能力和后续功能优先级前**必读**。不读会把已完成能力当待办，或把未打磨半成品写进对外承诺 |
-| [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](~/Codes/Subswap/docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（含 **Codex 切号后仍用旧号 / 误以为没自动切**、Codex 两个 `7d`/附加 gpt-reserve、**Codex 只有当前号有额度停用号全 401**、keychain ACL 中毒、Cursor 命令行钥匙串登录查不到额度、Cursor 多个账号额度完全一样、Cursor 自动切到 1st 0% 号、access/refresh token 覆写、429 vs invalid_grant、TOML null、Claude/Codex 用量 401 但客户端能正常用等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
+| [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](~/Codes/Subswap/docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（含 **Antigravity 缺 Gemini `7d` 或出现 `--` 未标池窗口**、**Codex 切号后仍用旧号 / 误以为没自动切**、Codex 两个 `7d`/附加 gpt-reserve、**Codex 只有当前号有额度停用号全 401**、keychain ACL 中毒、Cursor 命令行钥匙串登录查不到额度、Cursor 多个账号额度完全一样、Cursor 自动切到 1st 0% 号、access/refresh token 覆写、429 vs invalid_grant、TOML null、Claude/Codex 用量 401 但客户端能正常用等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
 | [docs/superpowers/specs/2026-07-17-kimi-provider-and-shared-engine-design.md](~/Codes/Subswap/docs/superpowers/specs/2026-07-17-kimi-provider-and-shared-engine-design.md) | 追溯 2026-07-17 Kimi Provider / 文件型共享引擎**历史设计决策**时可读；日常改代码以 PROVIDER_KB 与 ARCHITECTURE 为准。不读历史稿不会挡日常开发 |
 | [docs/superpowers/plans/2026-07-17-kimi-provider-and-shared-engine.md](~/Codes/Subswap/docs/superpowers/plans/2026-07-17-kimi-provider-and-shared-engine.md) | 仅追溯同日实现清单 / 验收步骤时可读；日常无需翻阅。权威行为与现状以 PROVIDER_KB、ARCHITECTURE、源码为准 |
 
