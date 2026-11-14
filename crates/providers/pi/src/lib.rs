@@ -37,6 +37,8 @@ pub const API_KEY_FIELD: &str = "api_key";
 const DEEPSEEK_ENV_VAR: &str = "DEEPSEEK_API_KEY";
 /// `kimi-coding` slot 的进程 env 映射。
 const KIMI_ENV_VAR: &str = "KIMI_API_KEY";
+/// OpenCode Go / Zen 密钥在独立子进程里的 env 映射。
+const OPENCODE_ENV_VAR: &str = "OPENCODE_API_KEY";
 
 /// Pi Provider：凭证与选择状态的双写主。
 #[derive(Clone)]
@@ -76,7 +78,7 @@ pub struct PiPreset {
     pub env_var: Option<&'static str>,
 }
 
-/// `add-api pi` 支持的预设：deepseek / volcengine / custom。
+/// `add-api pi` 支持的预设：deepseek / volcengine / opencode-go / opencode-zen / custom。
 /// custom 无固定端点与模型，调用方必须显式传入。
 pub fn preset(name: &str) -> Option<PiPreset> {
     match name.trim().to_ascii_lowercase().as_str() {
@@ -95,6 +97,22 @@ pub fn preset(name: &str) -> Option<PiPreset> {
             model: auth::PI_VOLCENGINE_MODEL,
             billing: BillingKind::Flat,
             env_var: None,
+        }),
+        "opencode-go" | "opencode_go" => Some(PiPreset {
+            slot: "opencode-go",
+            native_provider: "opencode-go",
+            endpoint: auth::PI_OPENCODE_GO_BASE_URL,
+            model: auth::PI_OPENCODE_GO_MODEL,
+            billing: BillingKind::Flat,
+            env_var: Some(OPENCODE_ENV_VAR),
+        }),
+        "opencode" | "opencode-zen" | "opencode_zen" => Some(PiPreset {
+            slot: "opencode-zen",
+            native_provider: "opencode",
+            endpoint: auth::PI_OPENCODE_ZEN_BASE_URL,
+            model: auth::PI_OPENCODE_ZEN_MODEL,
+            billing: BillingKind::Metered,
+            env_var: Some(OPENCODE_ENV_VAR),
         }),
         "custom" => Some(PiPreset {
             slot: "",
@@ -265,11 +283,7 @@ impl PiProvider {
             return Ok(existing);
         }
         let known = preset(slot).filter(|p| !p.slot.is_empty());
-        let preset_channel = match &known {
-            Some(p) if p.slot == "volcengine" => auth::volcengine_channel(),
-            Some(p) => p.slot.to_string(),
-            None => slot.to_string(),
-        };
+        let preset_channel = auth::channel_for_slot(known.as_ref().map_or(slot, |p| p.slot));
         let (base_url, model, billing) = match &known {
             Some(p) => (p.endpoint.to_string(), p.model.to_string(), p.billing),
             None => (String::new(), String::new(), BillingKind::Flat),
@@ -436,6 +450,7 @@ impl EnvIsolatedProvider for PiProvider {
             let var = match slot.as_str() {
                 "deepseek" => Some(DEEPSEEK_ENV_VAR),
                 "kimi-coding" | "kimi" => Some(KIMI_ENV_VAR),
+                "opencode" | "opencode-go" | "opencode-zen" => Some(OPENCODE_ENV_VAR),
                 _ => None,
             };
             Ok(var.map(|var| vec![(var.to_string(), api_key)]))
@@ -620,5 +635,57 @@ mod tests {
             )
             .unwrap();
         assert!(rt.block_on(fixture.provider.isolation_env(&volcengine.id)).unwrap().is_none());
+    }
+
+    #[test]
+    fn opencode_presets_and_isolation_env_match_expected_channels() {
+        let fixture = Fixture::new();
+        let go_preset = preset("opencode-go").expect("opencode-go preset");
+        assert_eq!(go_preset.slot, "opencode-go");
+        assert_eq!(go_preset.native_provider, "opencode-go");
+        assert_eq!(go_preset.endpoint, auth::PI_OPENCODE_GO_BASE_URL);
+        assert_eq!(go_preset.billing, BillingKind::Flat);
+        assert_eq!(go_preset.env_var, Some("OPENCODE_API_KEY"));
+
+        let zen_preset = preset("opencode-zen").expect("opencode-zen preset");
+        assert_eq!(zen_preset.slot, "opencode-zen");
+        assert_eq!(zen_preset.native_provider, "opencode");
+        assert_eq!(zen_preset.endpoint, auth::PI_OPENCODE_ZEN_BASE_URL);
+        assert_eq!(zen_preset.billing, BillingKind::Metered);
+        assert_eq!(zen_preset.env_var, Some("OPENCODE_API_KEY"));
+        assert_eq!(preset("opencode").unwrap().slot, "opencode-zen");
+
+        let imported = fixture
+            .provider
+            .import_key(
+                NewPiAccount {
+                    slot: go_preset.slot.to_string(),
+                    native_provider: go_preset.native_provider.to_string(),
+                    base_url: go_preset.endpoint.to_string(),
+                    model: go_preset.model.to_string(),
+                    channel: auth::channel_for_slot(go_preset.slot),
+                    ..Fixture::deepseek_params()
+                },
+                "oc_sk_000000000000_test8888",
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            imported.extra.get("channel").and_then(|v| v.as_str()),
+            Some("opencode-go")
+        );
+
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let env = rt
+            .block_on(fixture.provider.isolation_env(&imported.id))
+            .unwrap()
+            .expect("opencode-go should support process isolation");
+        assert_eq!(
+            env,
+            vec![(
+                "OPENCODE_API_KEY".to_string(),
+                "oc_sk_000000000000_test8888".to_string()
+            )]
+        );
     }
 }

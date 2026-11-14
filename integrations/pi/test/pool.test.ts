@@ -453,3 +453,30 @@ test("HTTP rejection after a setup failure surfaces the provider event", async (
 	assert.equal(run.result.errorMessage, "usage_limit_reached");
 	assert.equal(run.events.filter((event) => event.type === "start").length, 1);
 });
+
+test("classifyAccountFailure matches OpenCode Go and Console refusals and skips non-account errors", () => {
+	const opencodeAccountErrors: Array<[string, number | undefined]> = [
+		["Go usage limit exceeded (GoUsageLimitError)", 429],
+		["GoUsageLimitError: Go usage limit exceeded", undefined],
+		["A budget policy for this model has been reached. BudgetLimitError", 429],
+		["RESOURCE_EXHAUSTED: A budget policy for this model has been reached (reason=BudgetLimitError)", undefined],
+		["FreeUsageLimitError: Free usage limit exceeded", undefined],
+		["CreditLimitExceeded", 402],
+		["Insufficient account funds", undefined],
+		["Account invoice is overdue", undefined],
+		["Account budget exceeded", undefined],
+		["Forbidden: Go usage limit exceeded", 403],
+	];
+	for (const [msg, status] of opencodeAccountErrors) {
+		assert.equal(classifyAccountFailure(msg, status), true, `expected failover for status=${status} msg=${msg}`);
+	}
+
+	assert.equal(
+		classifyAccountFailure("Free-tier chat models can only be used inside OpenCode", 403),
+		false,
+	);
+	assert.equal(
+		classifyAccountFailure("encrypted_content validation failed", 400),
+		false,
+	);
+});

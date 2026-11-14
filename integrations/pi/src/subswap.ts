@@ -84,6 +84,18 @@ function parseJsonPayload(stdout: string): Record<string, unknown> {
 /** Default channel for Codex OAuth accounts; keeps the `subswap-codex` Pi provider id. */
 export const DEFAULT_CODEX_CHANNEL = "codex";
 
+/** Default channel for OpenCode Go subscription API keys in the `pi` drawer. */
+export const DEFAULT_OPENCODE_GO_CHANNEL = "opencode-go";
+
+/** Default channel for OpenCode Zen metered API keys in the `pi` drawer. */
+export const DEFAULT_OPENCODE_ZEN_CHANNEL = "opencode-zen";
+
+/** OpenCode Go default inference root URL. */
+export const OPENCODE_GO_BASE_URL = "https://opencode.ai/inference/go";
+
+/** OpenCode Zen default inference root URL. */
+export const OPENCODE_ZEN_BASE_URL = "https://opencode.ai/inference";
+
 /** Volcengine OpenAI-compatible base URL used by the Pi provider (old-JSON fallback). */
 export const VOLCENGINE_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
 

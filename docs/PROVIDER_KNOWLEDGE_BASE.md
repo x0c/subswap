@@ -666,15 +666,15 @@ Go 订阅 = API key（`{"type":"api","key":"sk-..."}`），无 refresh，不刷�
 |---|---|
 | 家目录 | `~/.pi/agent/`（`SUBSWAP_PI_HOME` > `PI_CODING_AGENT_DIR` > `~/.pi/agent`；前者测试/便携优先） |
 | live 格式 | `auth.json` = `{slot: {"type": "api_key", "key": "..."}}`；`settings.json` 只读写 `defaultProvider` / `defaultModel` |
-| 预设 | `deepseek`（`https://api.deepseek.com/anthropic` / `deepseek-chat` / `DEEPSEEK_API_KEY`）、`volcengine`（`.../api/coding/v3` / `kimi-k3.1-pro`，无 env 映射）、`custom`（ endpoint+key+model 显式传入） |
-| 账号 id / label | `pi-` + slot+Key SHA-256 前 12 hex / `<slot> …末4`，不展示完整 Key |
+| 预设 | `deepseek`（`https://api.deepseek.com/anthropic` / `deepseek-chat` / `DEEPSEEK_API_KEY`）、`volcengine`（`.../api/coding/v3` / `kimi-k3.1-pro`，无 env 映射）、`opencode-go`（`https://opencode.ai/inference/go` / `kimi-k3.1-pro` / `OPENCODE_API_KEY`，`channel = opencode-go`）、`opencode-zen`（别名 `opencode`；`https://opencode.ai/inference` / `kimi-k3.1-pro` / `OPENCODE_API_KEY`，`channel = opencode-zen`，避免与顶层 Console OAuth `opencode` 回退渠道重名）、`custom`（endpoint+key+model 显式传入） |
+| 账号 id / label | `pi-` + slot+Key SHA-256 前 12 hex / `<slot> …末4`，不展示完整 Key（含 `oc_sk_` 脱敏前缀保护） |
 | 计费与自动切换 | 全部 `manual_only`，不参与自动换号；`query_quota` 恒为空（Pi 不暴露额度） |
-| 凭证投影 | `request_credential` 长效 key（`expires_at_ms=None`），永不刷新，不返回 refresh token；有 env 映射的 slot（`deepseek`→`DEEPSEEK_API_KEY`、`kimi-coding`/`kimi`→`KIMI_API_KEY`）支持 `run` / `shell` / `env` 进程隔离，其余 slot 只走文件切换 |
+| 凭证投影 | `request_credential` 长效 key（`expires_at_ms=None`），永不刷新，不返回 refresh token；有 env 映射的 slot（`deepseek`→`DEEPSEEK_API_KEY`、`kimi-coding`/`kimi`→`KIMI_API_KEY`、`opencode-go`/`opencode-zen`/`opencode`→`OPENCODE_API_KEY`）支持 `run` / `shell` / `env` 进程隔离，其余 slot 只走文件切换 |
 | 切换语义 | `swap pi/<id>` 改写 slot + 更新默认选择；`swap --no-default` 只写 slot、不碰 `settings.json`（经 `Provider::activate_with_default`，共享逻辑不按名分发） |
 | 并发安全 | 写经 tmp+rename（`auth.json` 0600），成功后回读校验（Pi JS 用 proper-lockfile 目录锁，Rust fs2 锁与它互不可见，回读是最后一道网）；`swap_with_snapshot` 回滚 |
 
-`subswap add-api pi [--preset deepseek|volcengine|custom]` 只入库、不激活；`subswap login pi` 同步全部 live slot（active 对齐默认 slot）；
-`subswap login volcengine -- <key>`（别名 `ark`）把火山 key 导入 Pi `volcengine` slot 并激活。
+`subswap add-api pi [--preset deepseek|volcengine|opencode-go|opencode-zen|custom]` 只入库、不激活；`subswap login pi` 同步全部 live slot（active 对齐默认 slot）；
+`subswap login volcengine -- <key>`（别名 `ark`）把火山 key 导入 Pi `volcengine` slot 并激活。OpenCode Go/Zen key（`oc_sk_...`）通过 `subswap add-api pi --preset opencode-go` / `--preset opencode-zen` 入库，只在 Subswap CredentialStore 保存、不写入 `~/.pi/agent/auth.json`，由 Pi 扩展通过 `subswap auth pi/<id>` 按请求读取并暴露为 `subswap-opencode-go` / `subswap-opencode-zen` 池；顶层 `opencode-api-key` 仍留给 OpenCode V2 客户端数据库，互不干扰。
 
 ## 火山方舟 Coding Plan（顶层只读兼容）
 

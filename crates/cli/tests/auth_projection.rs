@@ -467,3 +467,89 @@ fn auth_renew_stale_parked_degrades_without_refresh_leak() {
     assert!(!stdout.contains("never-export-this-refresh-secret"));
     assert!(!stdout.contains("refresh_token"));
 }
+
+/// Pi 抽屉导入 OpenCode Go 密钥时只写 Subswap store/registry，不写 `<SUBSWAP_PI_HOME>/auth.json`，
+/// 且 `status --json` 标签脱敏、`subswap auth pi/<id>` 可投影密钥。
+#[test]
+fn opencode_go_pi_drawer_projects_without_touching_pi_auth_json() {
+    let tmp = tempfile::tempdir().unwrap();
+    let synthetic_key = "oc_sk_test00000000_synthetic1234";
+
+    let add_out = isolated_subswap(&tmp)
+        .args([
+            "add-api",
+            "pi",
+            "--preset",
+            "opencode-go",
+            "--api-key",
+            synthetic_key,
+            "--yes",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        add_out.status.success(),
+        "add-api failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&add_out.stdout),
+        String::from_utf8_lossy(&add_out.stderr)
+    );
+
+    assert!(
+        !tmp.path().join("pi-home").join("auth.json").exists(),
+        "add-api pi opencode-go should not write Pi auth.json"
+    );
+    assert!(
+        !tmp.path().join("pi-home").join("models.json").exists(),
+        "add-api pi opencode-go should not write Pi models.json"
+    );
+
+    let status_out = isolated_subswap(&tmp)
+        .args(["status", "--json", "--no-metrics"])
+        .output()
+        .unwrap();
+    let status_stdout = String::from_utf8(status_out.stdout).unwrap();
+    assert!(
+        status_out.status.success(),
+        "status failed:\n{status_stdout}\n{}",
+        String::from_utf8_lossy(&status_out.stderr)
+    );
+    assert!(
+        !status_stdout.contains(synthetic_key),
+        "status --json must never expose raw oc_sk_ key"
+    );
+    let status_json: serde_json::Value = serde_json::from_str(&status_stdout).unwrap();
+    let pi_accounts = status_json["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["provider"] == "pi")
+        .collect::<Vec<_>>();
+    assert_eq!(pi_accounts.len(), 1);
+    let account_id = pi_accounts[0]["id"].as_str().unwrap();
+    assert_eq!(pi_accounts[0]["channel"], "opencode-go");
+    assert_eq!(
+        pi_accounts[0]["endpoint"],
+        "https://opencode.ai/inference/go"
+    );
+    assert_eq!(pi_accounts[0]["model"], "kimi-k3.1-pro");
+    assert!(
+        pi_accounts[0]["display_label"]
+            .as_str()
+            .unwrap()
+            .ends_with("1234")
+    );
+
+    let auth_out = isolated_subswap(&tmp)
+        .args(["auth", &format!("pi/{account_id}")])
+        .output()
+        .unwrap();
+    assert!(
+        auth_out.status.success(),
+        "auth failed:\n{}\n{}",
+        String::from_utf8_lossy(&auth_out.stdout),
+        String::from_utf8_lossy(&auth_out.stderr)
+    );
+    let auth_json: serde_json::Value = serde_json::from_slice(&auth_out.stdout).unwrap();
+    assert_eq!(auth_json["kind"], "credential");
+    assert_eq!(auth_json["secret"], synthetic_key);
+}

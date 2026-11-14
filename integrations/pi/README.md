@@ -8,10 +8,12 @@ Supported in this version:
 |---|---|---|
 | `codex` (Codex OAuth) | `subswap-codex` | Pi's native Codex catalog |
 | default Volcengine key (`volcengine:<base>#<model>`) | `subswap-volcengine` | `kimi-k3.1-pro` (or status model) |
+| OpenCode Go key (`opencode-go` / `opencode-go:<base>#<model>`) | `subswap-opencode-go` | Pi's native `opencode-go` catalog (`withOpenCodeSessionHeader`) |
+| OpenCode Zen key (`opencode-zen` / `opencode-zen:<base>#<model>`) | `subswap-opencode-zen` | Pi's native `opencode` catalog (`withOpenCodeSessionHeader`) |
 | Codex custom API channel (`codex:<id>`) | `subswap-codex-<id>` slug | custom endpoint model via `openai-responses` |
 | Volcengine custom endpoint/model (`volcengine:<base>#<model>`) | `subswap-volcengine-…` slug | status model id via `openai-completions` |
 
-Channel identity comes from the Subswap status `channel` field when present, otherwise from local metadata (Codex custom per account, Volcengine by endpoint plus model). Other providers (Claude, OpenCode, Cursor, Kimi, Command Code) are discovered but have no Pi adapter in this version and are skipped.
+Channel identity comes from the Subswap status `channel` field when present, otherwise from local metadata (Codex custom per account, Volcengine by endpoint plus model). Top-level OpenCode Console OAuth accounts (`provider: "opencode"` without `opencode-go` / `opencode-zen` channel) and other providers (Claude, Cursor, Kimi, Command Code) have no Pi adapter in this version and are skipped.
 
 ## Behavior
 
@@ -72,8 +74,8 @@ Do not run another account-failover extension for the same providers. This exten
 
 The extension asks Subswap for one account's current request credential through `subswap auth <provider>/<id>`. That command returns only an access token or API key:
 
-- `kind: "credential"` for Codex access tokens, with optional expiry.
-- `kind: "environment"` for Volcengine, containing `ANTHROPIC_AUTH_TOKEN` and model configuration.
+- `kind: "credential"` for Codex access tokens (with optional expiry) and Pi drawer API keys (`opencode-go`, `opencode-zen`, `volcengine`).
+- `kind: "environment"` for legacy top-level Volcengine, containing `ANTHROPIC_AUTH_TOKEN` and model configuration.
 
 It never returns a refresh token and never changes the native active account. A near-expiry credential is renewed with `subswap auth <provider>/<id> --renew`, which only renews that one account (parked accounts via the existing direct OAuth path, active Codex accounts only via official app-server coordination) and never runs quota queries, the default entry, AutoSwap, or the daemon. Renewal requests are deduplicated per account while in flight and throttled to one attempt per account per 90 seconds; unreadable command output surfaces as a generic error without secret content.
 
@@ -100,8 +102,8 @@ If every account in the group is genuinely exhausted, Pi reports the upstream qu
 
 ## Limitations
 
-- Cross-channel fallback is not implemented. A Codex OAuth pool stays on `codex`; a Codex custom channel stays on its own `codex:<id>`; a Volcengine pool stays on its own endpoint/model channel. A mixed-channel pool is a wiring bug and refuses to stream before resolving any credential.
-- Cursor, OpenCode, Claude OAuth, Kimi, and Command Code are not exposed by this version. They either use a different credential shape, a SQLite/GUI lifecycle, or a protocol that needs a separate adapter.
+- Cross-channel fallback is not implemented. A Codex OAuth pool stays on `codex`; a Codex custom channel stays on its own `codex:<id>`; an OpenCode Go/Zen pool stays on its own `opencode-go` / `opencode-zen` channel; a Volcengine pool stays on its own endpoint/model channel. A mixed-channel pool is a wiring bug and refuses to stream before resolving any credential.
+- Cursor, OpenCode Console OAuth (`provider: "opencode"`), OpenCode V2 SQLite (`opencode-api-key`), Claude OAuth, Kimi, and Command Code are not exposed by this version. They either store no exportable secret, use a SQLite/GUI lifecycle, or need a separate adapter. OpenCode keys for Pi must live in Subswap's `pi` drawer (`subswap add-api pi --preset opencode-go` or `--preset opencode-zen`).
 - Codex custom channels from old status JSON without endpoint/model metadata stay discovered but unlisted: Pi cannot route HTTP without an endpoint, so no provider is registered until Subswap emits endpoint metadata. Volcengine old JSON falls back to `https://ark.cn-beijing.volces.com/api/coding/v3` and `kimi-k3.1-pro`.
 - Volcengine per-attempt endpoint may refresh from the live secret (normalized to the OpenAI-compatible `/v3` path); the Pi model id follows status metadata only, never the Anthropic-namespace `ANTHROPIC_MODEL`, so an old status JSON keeps serving the verified `kimi-k3.1-pro` id. Codex custom per-attempt endpoint/model follow account metadata, then the live secret.
 - Accounts added or removed while Pi is running are picked up after `/reload` or a new session. A removed account fails its next setup gracefully through the per-account cooldown path; it never crashes the request stream.

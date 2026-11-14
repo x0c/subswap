@@ -220,18 +220,25 @@ async fn run_pi(
     let preset_name = match options.preset {
         Some(value) => value.trim().to_ascii_lowercase(),
         None if interactive => {
-            let choices = ["DeepSeek", "Volcengine", "Custom"];
+            let choices = [
+                ("DeepSeek", "deepseek"),
+                ("Volcengine", "volcengine"),
+                ("OpenCode Go", "opencode-go"),
+                ("OpenCode Zen", "opencode-zen"),
+                ("Custom", "custom"),
+            ];
+            let labels: Vec<&str> = choices.iter().map(|(label, _)| *label).collect();
             let selected = Select::new()
                 .with_prompt("Pi preset")
-                .items(&choices)
+                .items(&labels)
                 .default(0)
                 .interact()?;
-            choices[selected].to_ascii_lowercase()
+            choices[selected].1.to_string()
         }
-        None => bail!("--preset is required without an interactive terminal (expected deepseek, volcengine or custom)"),
+        None => bail!("--preset is required without an interactive terminal (expected deepseek, volcengine, opencode-go, opencode-zen or custom)"),
     };
     let preset = subswap_provider_pi::preset(&preset_name)
-        .ok_or_else(|| anyhow::anyhow!("unknown Pi preset: {preset_name} (expected deepseek, volcengine or custom)"))?;
+        .ok_or_else(|| anyhow::anyhow!("unknown Pi preset: {preset_name} (expected deepseek, volcengine, opencode-go, opencode-zen or custom)"))?;
 
     // custom 无固定 slot：用 --id 作为 slot 名（回退交互输入）。
     let slot = if preset.slot.is_empty() {
@@ -285,11 +292,7 @@ async fn run_pi(
         println!("Cancelled.");
         return Ok(());
     }
-    let channel = if slot == "volcengine" {
-        subswap_provider_pi::auth::volcengine_channel()
-    } else {
-        slot.clone()
-    };
+    let channel = subswap_provider_pi::auth::channel_for_slot(&slot);
     let account = ctx
         .pi
         .import_key(

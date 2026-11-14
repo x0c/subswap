@@ -61,11 +61,11 @@ export function newPoolState(): PoolState {
 export function classifyAccountFailure(message: string, status?: number): boolean {
 	if (status === 401 || status === 402 || status === 429) return true;
 	if (status === 403) {
-		return /quota|credit|billing|balance|rate.?limit|unauthorized|forbidden|invalid.*(?:key|token)|authentication/i.test(message);
+		return /quota|credit|billing|balance|budget|funds|overdue|rate.?limit|unauthorized|forbidden|invalid.*(?:key|token)|authentication|go.?usage.?limit|free.?usage.?limit|budget.?limit/i.test(message);
 	}
 	// 2xx 只表示流已建立，额度拒绝仍可能来自流内；明确的其它 HTTP 错误不按文字误切。
 	if (status !== undefined && (status < 200 || status >= 300)) return false;
-	return /\b(?:401|402|429)\b|\busage[ _]limit[ _](?:has[ _]been[ _])?(?:reached|exceeded)\b|accountquotaexceeded|quota.?exceed|insufficient.*(?:credit|quota|balance)|rate.?limit|invalid.*(?:api.?key|token)|authentication_error|unauthorized/i.test(message);
+	return /\b(?:401|402|429)\b|\busage[ _]limit[ _](?:has[ _]been[ _])?(?:reached|exceeded)\b|(?:go|free)[ _]usage[ _]limit(?:error|[ _](?:has[ _]been[ _])?(?:reached|exceeded))|budget.?limit|budget policy.*reached|accountquotaexceeded|quota.?exceed|creditlimitexceeded|insufficient.*(?:credit|quota|balance|funds)|account.?budget.?exceeded|invoice.*overdue|resource_exhausted|rate.?limit|invalid.*(?:api.?key|token)|authentication_error|unauthorized/i.test(message);
 }
 
 export function cooldownFor(message: string, status: number | undefined, headers: Record<string, string> | undefined, now: number): number {

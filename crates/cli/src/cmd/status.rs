@@ -442,10 +442,11 @@ fn contains_secret_token(label: &str) -> bool {
 }
 
 fn looks_like_secret(text: &str) -> bool {
-    const PREFIXES: [&str; 8] = [
+    const PREFIXES: [&str; 9] = [
         "sk-",
         "pk-",
         "rk-",
+        "oc_sk_",
         "ghp_",
         "github_pat_",
         "xoxb-",
@@ -654,5 +655,13 @@ mod tests {
         assert_eq!(json[2]["window"], "claude_5h");
         assert_eq!(json[3]["window"], "claude_7d");
         assert_eq!(provider_display_name("antigravity"), "Antigravity / Gemini");
+    }
+
+    #[test]
+    fn looks_like_secret_catches_opencode_keys_not_redacted_labels() {
+        assert!(looks_like_secret("oc_sk_short"));
+        assert!(looks_like_secret("oc_sk_000000000000_test9999"));
+        assert!(!looks_like_secret("opencode-go …9999"));
+        assert!(!looks_like_secret("opencode-zen …9999"));
     }
 }

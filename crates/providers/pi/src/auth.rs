@@ -11,9 +11,32 @@ use subswap_core::error::{Error, Result};
 pub const PI_VOLCENGINE_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/coding/v3";
 /// 火山方舟 Coding Plan 在 Pi 池里的默认模型。
 pub const PI_VOLCENGINE_MODEL: &str = "kimi-k3.1-pro";
+/// OpenCode Go 订阅池在 Pi 池里的默认推理基址。
+pub const PI_OPENCODE_GO_BASE_URL: &str = "https://opencode.ai/inference/go";
+/// OpenCode Go 在 Pi 池里的默认模型。
+pub const PI_OPENCODE_GO_MODEL: &str = "kimi-k3.1-pro";
+/// OpenCode Zen 按量池在 Pi 池里的默认推理基址。
+pub const PI_OPENCODE_ZEN_BASE_URL: &str = "https://opencode.ai/inference";
+/// OpenCode Zen 在 Pi 池里的默认模型。
+pub const PI_OPENCODE_ZEN_MODEL: &str = "kimi-k3.1-pro";
+/// OpenCode Go 密钥池在 Pi 扩展里的 channel 标识（与 `DEFAULT_OPENCODE_GO_CHANNEL` 同名）。
+pub const OPENCODE_GO_CHANNEL: &str = "opencode-go";
+/// OpenCode Zen 密钥池在 Pi 扩展里的 channel 标识（与 `DEFAULT_OPENCODE_ZEN_CHANNEL` 同名）。
+pub const OPENCODE_ZEN_CHANNEL: &str = "opencode-zen";
+
 /// 标准火山 key 的 Pi channel（与 Pi 扩展 `DEFAULT_VOLCENGINE_CHANNEL` 同形）。
 pub fn volcengine_channel() -> String {
     format!("volcengine:{PI_VOLCENGINE_BASE_URL}#{PI_VOLCENGINE_MODEL}")
+}
+
+/// 根据 slot 名称生成 Pi 账号池规范 channel（内置 preset 映射到各自的标准 channel）。
+pub fn channel_for_slot(slot: &str) -> String {
+    match slot.trim() {
+        "volcengine" => volcengine_channel(),
+        "opencode-go" => OPENCODE_GO_CHANNEL.to_string(),
+        "opencode" | "opencode-zen" => OPENCODE_ZEN_CHANNEL.to_string(),
+        other => other.to_string(),
+    }
 }
 
 /// 由 slot + key 生成稳定账号 id：`pi-` + SHA-256 前 12 hex。
@@ -293,5 +316,22 @@ mod tests {
         assert_ne!(account_id_for("deepseek", "k"), account_id_for("deepseek", "k2"));
         assert_ne!(account_id_for("deepseek", "k"), account_id_for("volcengine", "k"));
         assert!(account_id_for("deepseek", "k").starts_with("pi-"));
+    }
+
+    #[test]
+    fn channel_for_slot_maps_opencode_presets_and_keeps_others() {
+        assert_eq!(channel_for_slot("opencode-go"), OPENCODE_GO_CHANNEL);
+        assert_eq!(channel_for_slot("opencode-zen"), OPENCODE_ZEN_CHANNEL);
+        assert_eq!(channel_for_slot("opencode"), OPENCODE_ZEN_CHANNEL);
+        assert_eq!(channel_for_slot("volcengine"), volcengine_channel());
+        assert_eq!(channel_for_slot("deepseek"), "deepseek");
+    }
+
+    #[test]
+    fn label_for_redacts_opencode_key() {
+        let label = label_for("opencode-go", "oc_sk_000000000000_test9999");
+        assert!(label.starts_with("opencode-go"));
+        assert!(label.ends_with("9999"));
+        assert!(!label.contains("oc_sk_"));
     }
 }

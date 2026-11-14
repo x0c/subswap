@@ -68,6 +68,8 @@
 
 Pi 集成（`integrations/pi/`）是外部消费者，不是新的 Provider：它通过 `subswap status --json --no-metrics` 读取账号分组，通过 `subswap auth <provider>/<id>` 取得单次请求所需的 access token / API key，再复用 Pi 的原生 provider 流做同组补位。凭证所有权仍在 Subswap；`auth` 不返回 refresh token，也不切 active。详见 [PI_EXTENSION_DESIGN.md](PI_EXTENSION_DESIGN.md)。
 
+Pi 抽屉的 OpenCode Go / Zen Key（`subswap add-api pi --preset opencode-go|opencode-zen`）走 `OPENCODE_API_KEY` 进程隔离映射，channel 分别写为 `opencode-go` 与 `opencode-zen`（避免与顶层 `opencode` Console OAuth 的回退 channel 冲突）；Pi 扩展将其包装成 `subswap-opencode-go` / `subswap-opencode-zen` 复用 Pi 原生多协议适配器，与顶层 OpenCode CLI V2 数据库（`opencode` / `opencode-api-key`）互不干扰。
+
 Codex / Kimi / OpenCode API Key / Command Code 使用 `providers/common` 的文件型凭证能力；OpenCode API Key 在 V2 上另由官方客户端数据库和切号命令决定当前 Key，V1 才通过 `auth.json` 的 `opencode-go` 项切换。OpenCode Console 官方账号单独实现 `Provider`，只从官方数据库读取凭证、通过官方命令切换；它与 API Key 是两个独立 Provider。Claude（Keychain + 自定义 API）、Antigravity（macOS Keychain `gemini/antigravity` + OAuth 双池额度，不支持隔离运行或 `subswap auth` 投影）、Cursor（SQLite + GUI 生命周期）、Pi（`~/.pi/agent/` 多 slot API Key + `settings.json` 默认选择）也独立实现，不接文件型引擎。火山方舟 Coding Plan 历史上是独立的顶层 `volcengine` Provider（机主裁定 2026-11-07）；Pi Runtime 落地后顶层 `volcengine` 只读保留，账号已迁移进 `pi` 抽屉（同 id，`auth_slot=volcengine`），新 Key 走 `subswap add-api pi --preset volcengine` 或 `subswap login volcengine -- <key>`。Pi 账号全部 `manual_only`，`query_quota` 恒为空，`request_credential` 投影长效 key 永不刷新；`swap pi[/<id>]` 默认同步 `settings.json`（`--no-default` 跳过）；`models.json` 与 `sessions/` 永不触碰。
 
 ## 2. 设计模式

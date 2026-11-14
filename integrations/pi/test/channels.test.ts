@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer, type IncomingHttpHeaders } from "node:http";
 import { test } from "node:test";
 import {
 	createAssistantMessageEventStream,
@@ -15,8 +16,12 @@ import {
 import {
 	channelOf,
 	DEFAULT_CODEX_CHANNEL,
+	DEFAULT_OPENCODE_GO_CHANNEL,
+	DEFAULT_OPENCODE_ZEN_CHANNEL,
 	DEFAULT_VOLCENGINE_CHANNEL,
 	fallbackChannel,
+	OPENCODE_GO_BASE_URL,
+	OPENCODE_ZEN_BASE_URL,
 	parseAuth,
 	parseStatus,
 	VOLCENGINE_BASE_URL,
@@ -275,4 +280,151 @@ test("pools group by channel, keep default ids, and skip unsupported channels", 
 	assert.equal(channelKind(VOLCENGINE_BASE_URL), "unsupported");
 	assert.equal(providerIdForChannel(DEFAULT_VOLCENGINE_CHANNEL), "subswap-volcengine");
 	assert.equal(VOLCENGINE_MODEL, "kimi-k3.1-pro");
+});
+
+test("opencode-go and opencode-zen build native catalog pools while console oauth stays unsupported", () => {
+	assert.equal(channelKind(DEFAULT_OPENCODE_GO_CHANNEL), "opencode-go");
+	assert.equal(channelKind("opencode-go:team-a"), "opencode-go");
+	assert.equal(channelKind(DEFAULT_OPENCODE_ZEN_CHANNEL), "opencode-zen");
+	assert.equal(channelKind("opencode-zen:team-b"), "opencode-zen");
+	assert.equal(channelKind("opencode"), "unsupported");
+	assert.equal(providerIdForChannel(DEFAULT_OPENCODE_GO_CHANNEL), "subswap-opencode-go");
+	assert.equal(providerIdForChannel(DEFAULT_OPENCODE_ZEN_CHANNEL), "subswap-opencode-zen");
+
+	const consoleOauth = account({ id: "console-oauth", provider: "opencode", displayLabel: "oauth" });
+	assert.equal(channelOf(consoleOauth), "opencode");
+
+	const accounts: SubswapAccount[] = [
+		consoleOauth,
+		account({
+			id: "go-1",
+			provider: "pi",
+			displayLabel: "opencode-go …1111",
+			channel: DEFAULT_OPENCODE_GO_CHANNEL,
+			endpoint: OPENCODE_GO_BASE_URL,
+			model: "kimi-k3.1-pro",
+		}),
+		account({
+			id: "zen-1",
+			provider: "pi",
+			displayLabel: "opencode-zen …2222",
+			channel: DEFAULT_OPENCODE_ZEN_CHANNEL,
+			endpoint: OPENCODE_ZEN_BASE_URL,
+			model: "kimi-k3.1-pro",
+		}),
+	];
+	const states = new Map([
+		["opencode", newPoolState()],
+		[DEFAULT_OPENCODE_GO_CHANNEL, newPoolState()],
+		[DEFAULT_OPENCODE_ZEN_CHANNEL, newPoolState()],
+	]);
+	const pools = buildPools(accounts, states, async () => ({ apiKey: "oc_sk_test" }));
+	const byProviderId = new Map(pools.map((entry) => [entry.provider.id, entry.provider]));
+	assert.equal(byProviderId.has("subswap-opencode"), false);
+
+	const goProvider = byProviderId.get("subswap-opencode-go");
+	assert.ok(goProvider, "expected subswap-opencode-go provider");
+	const goModelIds = new Set(goProvider.getModels().map((m) => m.id));
+	for (const required of ["kimi-k3.1-pro", "deepseek-v4-pro", "glm-5.3", "gemini-4-argon", "gpt-6-luna"]) {
+		assert.ok(goModelIds.has(required), `missing opencode-go model ${required}`);
+	}
+
+	const zenProvider = byProviderId.get("subswap-opencode-zen");
+	assert.ok(zenProvider, "expected subswap-opencode-zen provider");
+	assert.ok(zenProvider.getModels().length > 0);
+});
+
+test("subswap-opencode-go fails over across accounts over HTTP with bearer auth and session header", async () => {
+	const seen: Array<{ url: string | undefined; headers: IncomingHttpHeaders }> = [];
+	const server = createServer((req, res) => {
+		const chunks: Buffer[] = [];
+		req.on("data", (chunk: Buffer) => chunks.push(chunk));
+		req.on("end", () => {
+			seen.push({ url: req.url, headers: req.headers });
+			const authHeader = req.headers.authorization;
+			if (authHeader === "Bearer oc_sk_test_first") {
+				res.writeHead(429, { "content-type": "application/json" });
+				res.end(JSON.stringify({
+					error: {
+						message: "Go usage limit exceeded",
+						type: "rate_limit_error",
+						code: "GoUsageLimitError",
+					},
+				}));
+				return;
+			}
+			res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8" });
+			res.write(
+				'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{"role":"assistant","content":"recovered-from-go-pool"},"finish_reason":null}]}\n\n',
+			);
+			res.write(
+				'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}\n\n',
+			);
+			res.end("data: [DONE]\n\n");
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	if (!address || typeof address === "string") throw new Error("unexpected server address");
+	const mockRoot = `http://127.0.0.1:${address.port}`;
+
+	try {
+		const accounts: SubswapAccount[] = [
+			account({
+				id: "go-1",
+				provider: "pi",
+				displayLabel: "opencode-go …0001",
+				active: true,
+				channel: DEFAULT_OPENCODE_GO_CHANNEL,
+				endpoint: mockRoot,
+				model: "kimi-k3.1-pro",
+			}),
+			account({
+				id: "go-2",
+				provider: "pi",
+				displayLabel: "opencode-go …0002",
+				active: false,
+				channel: DEFAULT_OPENCODE_GO_CHANNEL,
+				endpoint: mockRoot,
+				model: "kimi-k3.1-pro",
+			}),
+		];
+		const failovers: Array<{ from: string; to: string }> = [];
+		const failed: string[] = [];
+		const pool = buildPool({
+			channel: DEFAULT_OPENCODE_GO_CHANNEL,
+			accounts,
+			state: newPoolState(),
+			resolveSecret: async (acct) => ({
+				apiKey: acct.id === "go-1" ? "oc_sk_test_first" : "oc_sk_test_second",
+			}),
+			onFailover: (notice) => failovers.push({ from: notice.from, to: notice.to }),
+			onAccountFailure: (acct) => failed.push(acct.id),
+		});
+		const kimiModel = pool.getModels().find((m) => m.id === "kimi-k3.1-pro");
+		assert.ok(kimiModel, "expected kimi-k3.1-pro in subswap-opencode-go");
+
+		const context = normalizeContext({
+			messages: [{ role: "user", content: "Reply with recovered-from-go-pool", timestamp: Date.now() }],
+		});
+		const stream = pool.streamSimple(kimiModel, context, { sessionId: "sess-oc-1" });
+		const result = await stream.result();
+		assert.equal(result.stopReason, "stop", `unexpected error: ${result.errorMessage}`);
+		const text = result.content
+			.filter((part): part is { type: "text"; text: string } => part.type === "text")
+			.map((part) => part.text)
+			.join("");
+		assert.equal(text, "recovered-from-go-pool");
+		assert.deepEqual(failed, ["go-1"]);
+		assert.deepEqual(failovers, [{ from: "opencode-go …0001", to: "opencode-go …0002" }]);
+		assert.equal(seen.length, 2);
+		assert.equal(seen[0]?.url, "/openai/v1/chat/completions");
+		assert.equal(seen[0]?.headers.authorization, "Bearer oc_sk_test_first");
+		assert.equal(seen[0]?.headers["x-opencode-session"], "sess-oc-1");
+		assert.equal(seen[1]?.url, "/openai/v1/chat/completions");
+		assert.equal(seen[1]?.headers.authorization, "Bearer oc_sk_test_second");
+		assert.equal(seen[1]?.headers["x-opencode-session"], "sess-oc-1");
+	} finally {
+		await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+	}
 });

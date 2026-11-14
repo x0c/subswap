@@ -10,14 +10,27 @@ import { poolProvider, type FailoverNotice, type PoolState } from "./pool.ts";
 import {
 	channelOf,
 	DEFAULT_CODEX_CHANNEL,
+	DEFAULT_OPENCODE_GO_CHANNEL,
+	DEFAULT_OPENCODE_ZEN_CHANNEL,
 	DEFAULT_VOLCENGINE_CHANNEL,
+	OPENCODE_GO_BASE_URL,
+	OPENCODE_ZEN_BASE_URL,
 	VOLCENGINE_BASE_URL,
 	VOLCENGINE_MODEL,
 	type RequestSecret,
 	type SubswapAccount,
 } from "./subswap.ts";
 
-export { DEFAULT_CODEX_CHANNEL, DEFAULT_VOLCENGINE_CHANNEL, VOLCENGINE_BASE_URL, VOLCENGINE_MODEL };
+export {
+	DEFAULT_CODEX_CHANNEL,
+	DEFAULT_OPENCODE_GO_CHANNEL,
+	DEFAULT_OPENCODE_ZEN_CHANNEL,
+	DEFAULT_VOLCENGINE_CHANNEL,
+	OPENCODE_GO_BASE_URL,
+	OPENCODE_ZEN_BASE_URL,
+	VOLCENGINE_BASE_URL,
+	VOLCENGINE_MODEL,
+};
 
 export interface PoolRuntime {
 	channel: string;
@@ -36,11 +49,19 @@ export interface PoolBuildOptions {
 }
 
 /** Pi-servable channel families. Anything else is discovered but has no Pi adapter. */
-export type ChannelKind = "codex-oauth" | "codex-custom" | "volcengine" | "unsupported";
+export type ChannelKind =
+	| "codex-oauth"
+	| "codex-custom"
+	| "volcengine"
+	| "opencode-go"
+	| "opencode-zen"
+	| "unsupported";
 
 export function channelKind(channel: string): ChannelKind {
 	if (channel === DEFAULT_CODEX_CHANNEL) return "codex-oauth";
 	if (channel === DEFAULT_VOLCENGINE_CHANNEL || channel.startsWith("volcengine:")) return "volcengine";
+	if (channel === DEFAULT_OPENCODE_GO_CHANNEL || channel.startsWith("opencode-go:")) return "opencode-go";
+	if (channel === DEFAULT_OPENCODE_ZEN_CHANNEL || channel.startsWith("opencode-zen:")) return "opencode-zen";
 	if (channel.startsWith("codex:")) return "codex-custom";
 	return "unsupported";
 }
@@ -49,6 +70,8 @@ export function channelKind(channel: string): ChannelKind {
 export function providerIdForChannel(channel: string): string {
 	if (channel === DEFAULT_CODEX_CHANNEL) return "subswap-codex";
 	if (channel === DEFAULT_VOLCENGINE_CHANNEL) return "subswap-volcengine";
+	if (channel === DEFAULT_OPENCODE_GO_CHANNEL) return "subswap-opencode-go";
+	if (channel === DEFAULT_OPENCODE_ZEN_CHANNEL) return "subswap-opencode-zen";
 	return `subswap-${slugifyChannel(channel)}`;
 }
 
@@ -130,6 +153,44 @@ function resolveCodexCustomModel(account: SubswapAccount, secret: RequestSecret,
 	return { ...model, baseUrl: endpoint, id };
 }
 
+/**
+ * OpenCode per-attempt model: keeps per-model protocol path suffixes (`/anthropic`,
+ * `/google/v1beta`, `/openai/v1`) intact when `account.endpoint` equals the default root,
+ * and swaps only the root prefix if a custom mirror/override endpoint is configured.
+ */
+function resolveOpenCodeModel(defaultRootUrl: string) {
+	return (account: SubswapAccount, secret: RequestSecret, model: Model<Api>): Model<Api> => {
+		const root = (account.endpoint ?? secret.endpoint ?? "").trim().replace(/\/+$/, "");
+		if (!root || root === defaultRootUrl) return model;
+		const nextBaseUrl = model.baseUrl.startsWith(defaultRootUrl)
+			? `${root}${model.baseUrl.slice(defaultRootUrl.length)}`
+			: root;
+		if (nextBaseUrl === model.baseUrl) return model;
+		return { ...model, baseUrl: nextBaseUrl };
+	};
+}
+
+function buildWrappedOpenCodePool(
+	options: PoolBuildOptions,
+	providerId: string,
+	nativeId: string,
+	displayName: string,
+	defaultRootUrl: string,
+	hooks: { onFailover?: PoolBuildOptions["onFailover"]; onAccountFailure?: PoolBuildOptions["onAccountFailure"] },
+): Provider<Api> {
+	const native = builtinProviders().find((provider) => provider.id === nativeId);
+	if (!native) throw new Error(`This Pi version does not include the native ${nativeId} provider`);
+	return poolProvider(
+		native as Provider<Api>,
+		providerId,
+		displayName,
+		options.accounts,
+		options.state,
+		options.resolveSecret,
+		{ ...hooks, resolveModel: resolveOpenCodeModel(defaultRootUrl) },
+	);
+}
+
 export function buildPool(options: PoolBuildOptions): Provider<Api> {
 	const first = options.accounts[0];
 	if (!first) throw new Error(`Subswap ${options.channel} pool is empty`);
@@ -148,6 +209,26 @@ export function buildPool(options: PoolBuildOptions): Provider<Api> {
 			options.accounts,
 			options.state,
 			options.resolveSecret,
+			hooks,
+		);
+	}
+	if (channelKind(options.channel) === "opencode-go") {
+		return buildWrappedOpenCodePool(
+			options,
+			providerId,
+			"opencode-go",
+			"OpenCode Go accounts (Subswap)",
+			OPENCODE_GO_BASE_URL,
+			hooks,
+		);
+	}
+	if (channelKind(options.channel) === "opencode-zen") {
+		return buildWrappedOpenCodePool(
+			options,
+			providerId,
+			"opencode",
+			"OpenCode Zen accounts (Subswap)",
+			OPENCODE_ZEN_BASE_URL,
 			hooks,
 		);
 	}
