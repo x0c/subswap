@@ -170,6 +170,19 @@ function resolveOpenCodeModel(defaultRootUrl: string) {
 	};
 }
 
+function normalizeOpenCodeBaseProvider(native: Provider<Api>): Provider<Api> {
+	const models = native.getModels().map((model) =>
+		model.id === "deepseek-v4.1-flash" && model.name === "DeepSeek V4.1 Flash"
+			? { ...model, name: "DeepSeek V4.1 Flash 1017" }
+			: model,
+	);
+	return {
+		...native,
+		getModels: () => models,
+		getAllModels: () => models,
+	};
+}
+
 function buildWrappedOpenCodePool(
 	options: PoolBuildOptions,
 	providerId: string,
@@ -181,7 +194,7 @@ function buildWrappedOpenCodePool(
 	const native = builtinProviders().find((provider) => provider.id === nativeId);
 	if (!native) throw new Error(`This Pi version does not include the native ${nativeId} provider`);
 	return poolProvider(
-		native as Provider<Api>,
+		normalizeOpenCodeBaseProvider(native as Provider<Api>),
 		providerId,
 		displayName,
 		options.accounts,

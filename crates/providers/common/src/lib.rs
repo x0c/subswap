@@ -5,6 +5,7 @@ pub mod engine;
 pub mod env_isolated;
 pub mod isolated;
 pub mod json;
+pub mod opencode_go_usage;
 pub mod proper_lock;
 pub mod runtime;
 

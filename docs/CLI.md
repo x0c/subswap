@@ -272,7 +272,7 @@ subswap add-api pi --preset opencode-zen --api-key "$OPENCODE_API_KEY" --yes
 subswap add-api pi --preset deepseek --api-key "$DEEPSEEK_API_KEY" --yes
 ```
 
-- 支持预设：`deepseek`、`volcengine`、`opencode-go`（Go 订阅，`channel=opencode-go`，Pi 侧暴露为 `subswap-opencode-go` 池）、`opencode-zen`（别名 `opencode`，Console 按量余额，`channel=opencode-zen`，Pi 侧暴露为 `subswap-opencode-zen` 池；与顶层 Console OAuth `opencode` 及 OpenCode CLI V2 的 `opencode-api-key` 互不冲突）、`custom`（须显式传 `--id`/`--endpoint`/`--model`）。
+- 支持预设：`deepseek`、`volcengine`、`opencode-go`（Go 订阅，`channel=opencode-go`，支持 `/zen/go/v1/usage` 查 `5h`/`7d`/`mo` 余量，Pi 侧暴露为 `subswap-opencode-go` 池）、`opencode-zen`（别名 `opencode`，Console 按量余额，`channel=opencode-zen`，无订阅余量显示 `custom`，Pi 侧暴露为 `subswap-opencode-zen` 池；与顶层 Console OAuth `opencode` 及 OpenCode CLI V2 的 `opencode-api-key` 互不冲突）、`custom`（须显式传 `--id`/`--endpoint`/`--model`）。
 - 进程隔离映射：`deepseek` → `DEEPSEEK_API_KEY`、`kimi-coding`/`kimi` → `KIMI_API_KEY`、`opencode-go`/`opencode-zen`/`opencode` → `OPENCODE_API_KEY`，支持 `subswap run/shell/env pi/<id>`。
 - 需要切 Pi 原生单槽 `auth.json` 与 `settings.json` 默认项时仍用 `subswap swap pi/<id>`（加 `--no-default` 跳过写 `settings.json`）。若仅给 Pi 扩展号池复用，无需手动 `swap`。
 

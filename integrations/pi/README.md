@@ -8,7 +8,7 @@ Supported in this version:
 |---|---|---|
 | `codex` (Codex OAuth) | `subswap-codex` | Pi's native Codex catalog |
 | default Volcengine key (`volcengine:<base>#<model>`) | `subswap-volcengine` | `kimi-k3.1-pro` (or status model) |
-| OpenCode Go key (`opencode-go` / `opencode-go:<base>#<model>`) | `subswap-opencode-go` | Pi's native `opencode-go` catalog (`withOpenCodeSessionHeader`) |
+| OpenCode Go key (`opencode-go` / `opencode-go:<base>#<model>`) | `subswap-opencode-go` | Pi's native `opencode-go` catalog (`withOpenCodeSessionHeader`, `DeepSeek V4.1 Flash 1017` normalized); Subswap queries `/zen/go/v1/usage` for `5h`/`7d`/`mo` quota |
 | OpenCode Zen key (`opencode-zen` / `opencode-zen:<base>#<model>`) | `subswap-opencode-zen` | Pi's native `opencode` catalog (`withOpenCodeSessionHeader`) |
 | Codex custom API channel (`codex:<id>`) | `subswap-codex-<id>` slug | custom endpoint model via `openai-responses` |
 | Volcengine custom endpoint/model (`volcengine:<base>#<model>`) | `subswap-volcengine-…` slug | status model id via `openai-completions` |

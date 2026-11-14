@@ -668,7 +668,7 @@ Go 订阅 = API key（`{"type":"api","key":"sk-..."}`），无 refresh，不刷�
 | live 格式 | `auth.json` = `{slot: {"type": "api_key", "key": "..."}}`；`settings.json` 只读写 `defaultProvider` / `defaultModel` |
 | 预设 | `deepseek`（`https://api.deepseek.com/anthropic` / `deepseek-chat` / `DEEPSEEK_API_KEY`）、`volcengine`（`.../api/coding/v3` / `kimi-k3.1-pro`，无 env 映射）、`opencode-go`（`https://opencode.ai/inference/go` / `kimi-k3.1-pro` / `OPENCODE_API_KEY`，`channel = opencode-go`）、`opencode-zen`（别名 `opencode`；`https://opencode.ai/inference` / `kimi-k3.1-pro` / `OPENCODE_API_KEY`，`channel = opencode-zen`，避免与顶层 Console OAuth `opencode` 回退渠道重名）、`custom`（endpoint+key+model 显式传入） |
 | 账号 id / label | `pi-` + slot+Key SHA-256 前 12 hex / `<slot> …末4`，不展示完整 Key（含 `oc_sk_` 脱敏前缀保护） |
-| 计费与自动切换 | 全部 `manual_only`，不参与自动换号；`query_quota` 恒为空（Pi 不暴露额度） |
+| 计费与自动切换 | 全部 `manual_only`，不参与自动换号；`query_quota` 对 `opencode-go` channel 复用 `common::opencode_go_usage`（`GET /zen/go/v1/usage`）查 `5h`/`7d`/`mo` 余量，其余按量/Pi 推理 channel（`deepseek` / `opencode-zen` / `volcengine`）恒为空 |
 | 凭证投影 | `request_credential` 长效 key（`expires_at_ms=None`），永不刷新，不返回 refresh token；有 env 映射的 slot（`deepseek`→`DEEPSEEK_API_KEY`、`kimi-coding`/`kimi`→`KIMI_API_KEY`、`opencode-go`/`opencode-zen`/`opencode`→`OPENCODE_API_KEY`）支持 `run` / `shell` / `env` 进程隔离，其余 slot 只走文件切换 |
 | 切换语义 | `swap pi/<id>` 改写 slot + 更新默认选择；`swap --no-default` 只写 slot、不碰 `settings.json`（经 `Provider::activate_with_default`，共享逻辑不按名分发） |
 | 并发安全 | 写经 tmp+rename（`auth.json` 0600），成功后回读校验（Pi JS 用 proper-lockfile 目录锁，Rust fs2 锁与它互不可见，回读是最后一道网）；`swap_with_snapshot` 回滚 |
@@ -904,7 +904,7 @@ active 查询 401 **绝不刷新**：只重读 live。Cursor 已自行轮换 →
 | `codex/oauth.rs::refresh_parked_blob_at` | typed；替代原 `Unsupported`，避免刷新 429 后继续用旧 token 打 usage |
 | `kimi/kimi_usage.rs::fetch_quota_at` | typed；429 不触发 active 401 recovery |
 | `kimi/oauth.rs::refresh_blob_at` | typed；不标记 dead token |
-| `opencode/usage.rs`（Go key） | typed |
+| `common/opencode_go_usage.rs` / `opencode/usage.rs`（Go key，含顶层与 Pi `opencode-go`） | typed |
 | `opencode/console.rs`（Console status） | typed |
 | `commandcode/usage.rs` | typed |
 | `antigravity/quota.rs` / `antigravity/oauth.rs` | typed；429 立即返回限流错误，不再串行打备用 base，也不标记 dead token |

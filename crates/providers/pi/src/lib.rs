@@ -2,7 +2,9 @@
 //!
 //! - 每个账号占 Pi `auth.json` 里一个 slot（`auth_slot`，如 `deepseek`）；
 //!   切换 = 原子改写该 slot（保留其他 slot）+ 可选更新 `settings.json` 默认选择。
-//! - 账号全部 `manual_only`（不参与自动换号）；`query_quota` 恒为空（Pi 不暴露额度）；
+//! - 账号全部 `manual_only`（不参与自动换号）；`query_quota` 按 `channel` 分发：
+//!   OpenCode Go channel（`opencode-go` / `opencode-go:*`）复用
+//!   `common::opencode_go_usage` 查询 `5h`/`7d`/`mo`；其余按量 channel 恒为空；
 //!   `request_credential` 投影长效 key（`expires_at_ms=None`），永不刷新。
 //! - 顶层 `volcengine` provider 只读保留：历史账号由 [`migration`] 搬进本抽屉，
 //!   新 key 走 `subswap add-api pi --preset volcengine` 或 `subswap login volcengine -- <key>`。
@@ -24,7 +26,7 @@ use subswap_core::{
     Account, AccountId, AccountRegistry, BillingKind, ClientTarget, CredentialStore,
     OfficialDisconnect, Provider, Quota, RequestCredential,
 };
-use subswap_provider_common::EnvIsolatedProvider;
+use subswap_provider_common::{opencode_go_usage, EnvIsolatedProvider};
 
 pub use migration::migrate_legacy_volcengine_to_pi;
 
@@ -188,6 +190,18 @@ impl PiProvider {
         };
         self.registry.upsert(account.clone())?;
         Ok(account)
+    }
+
+    /// 是否 OpenCode Go 订阅 channel（支持 GET `/zen/go/v1/usage` 查 5h/7d/mo 余量）。
+    fn is_opencode_go_channel(account: &Account) -> bool {
+        account
+            .extra
+            .get("channel")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .is_some_and(|channel| {
+                channel == auth::OPENCODE_GO_CHANNEL || channel.starts_with("opencode-go:")
+            })
     }
 
     fn require_account(&self, id: &AccountId) -> Result<Account> {
@@ -356,9 +370,9 @@ impl Provider for PiProvider {
             .map_err(|e| Error::Provider(format!("Pi activation join failed: {e}")))?
     }
 
-    /// Pi 不暴露额度接口：恒返回空（调用方显示缺额度，不触发自动切换）。
-    async fn query_quota(&self, _id: &AccountId) -> Result<Vec<Quota>> {
-        Ok(Vec::new())
+    /// OpenCode Go channel 走 `/zen/go/v1/usage` 直查余量；其余按量 channel 恒为空。
+    async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>> {
+        self.query_quota_with_opencode_go_base(id, None).await
     }
 
     /// 投影长效 API key（`expires_at_ms=None`）；永不刷新，不返回 refresh token。
@@ -393,6 +407,34 @@ impl Provider for PiProvider {
 }
 
 impl PiProvider {
+    /// 可注入 OpenCode Go base URL 的额度查询实现（测试注入 mock，生产传 `None`）。
+    async fn query_quota_with_opencode_go_base(
+        &self,
+        id: &AccountId,
+        opencode_go_base: Option<&str>,
+    ) -> Result<Vec<Quota>> {
+        let provider = self.clone();
+        let id_for_lookup = id.clone();
+        let api_key = tokio::task::spawn_blocking(move || -> Result<Option<String>> {
+            let account = provider.require_account(&id_for_lookup)?;
+            if !Self::is_opencode_go_channel(&account) {
+                return Ok(None);
+            }
+            let (api_key, _, _) = provider.account_key(&account)?;
+            Ok(Some(api_key))
+        })
+        .await
+        .map_err(|e| Error::Provider(format!("Pi quota lookup join failed: {e}")))??;
+
+        let Some(api_key) = api_key else {
+            return Ok(Vec::new());
+        };
+        match opencode_go_base {
+            Some(base) => opencode_go_usage::fetch_quota_at(&api_key, PROVIDER_ID, id, base).await,
+            None => opencode_go_usage::fetch_quota(&api_key, PROVIDER_ID, id).await,
+        }
+    }
+
     /// 阻塞式切换本体（调用方已在 `spawn_blocking` 内或另行包一层）。
     fn activate_blocking(&self, id: &AccountId, update_default: bool) -> Result<()> {
         let account = self.require_account(id)?;
@@ -687,5 +729,116 @@ mod tests {
                 "oc_sk_000000000000_test8888".to_string()
             )]
         );
+    }
+
+    #[tokio::test]
+    async fn opencode_go_channel_queries_usage_while_zen_stays_empty() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use subswap_core::QuotaWindow;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen_bg = std::sync::Arc::clone(&seen);
+        let handle = std::thread::spawn(move || {
+            let responses = [
+                (
+                    "200 OK",
+                    r#"{"usage":{"rolling":{"status":"ok","percent":12,"resetsAt":"2026-11-15T05:00:00Z"},"weekly":{"status":"ok","percent":8,"resetsAt":"2026-11-20T00:00:00Z"},"monthly":{"status":"ok","percent":2,"resetsAt":"2026-12-01T00:00:00Z"}}}"#,
+                ),
+                ("429 Too Many Requests", r#"{"error":"rate_limited"}"#),
+            ];
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0_u8; 4096];
+                let n = stream.read(&mut buf).unwrap();
+                seen_bg
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buf[..n]).to_string());
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+
+        let fixture = Fixture::new();
+        let go_preset = preset("opencode-go").unwrap();
+        let go_account = fixture
+            .provider
+            .import_key(
+                NewPiAccount {
+                    slot: go_preset.slot.to_string(),
+                    native_provider: go_preset.native_provider.to_string(),
+                    base_url: go_preset.endpoint.to_string(),
+                    model: go_preset.model.to_string(),
+                    channel: auth::channel_for_slot(go_preset.slot),
+                    billing: go_preset.billing,
+                },
+                "oc_sk_000000000000_testgo11",
+                None,
+            )
+            .unwrap();
+
+        let zen_preset = preset("opencode-zen").unwrap();
+        let zen_account = fixture
+            .provider
+            .import_key(
+                NewPiAccount {
+                    slot: zen_preset.slot.to_string(),
+                    native_provider: zen_preset.native_provider.to_string(),
+                    base_url: zen_preset.endpoint.to_string(),
+                    model: zen_preset.model.to_string(),
+                    channel: auth::channel_for_slot(zen_preset.slot),
+                    billing: zen_preset.billing,
+                },
+                "oc_sk_000000000000_testzen2",
+                None,
+            )
+            .unwrap();
+
+        // opencode-zen 按量无 Go 订阅额度，不发 HTTP 请求直接返回空。
+        let zen_quotas = fixture
+            .provider
+            .query_quota_with_opencode_go_base(&zen_account.id, Some(&base_url))
+            .await
+            .unwrap();
+        assert!(zen_quotas.is_empty());
+
+        // opencode-go 返回 rolling / weekly / monthly 三个窗口。
+        let go_quotas = fixture
+            .provider
+            .query_quota_with_opencode_go_base(&go_account.id, Some(&base_url))
+            .await
+            .unwrap();
+        assert_eq!(go_quotas.len(), 3);
+        assert_eq!(go_quotas[0].provider, "pi");
+        assert_eq!(go_quotas[0].window, QuotaWindow::FiveHour);
+        assert_eq!(go_quotas[0].used, 12);
+        assert_eq!(go_quotas[1].window, QuotaWindow::SevenDay);
+        assert_eq!(go_quotas[1].used, 8);
+        assert_eq!(go_quotas[2].window, QuotaWindow::Month);
+        assert_eq!(go_quotas[2].used, 2);
+
+        // 429 保持 typed RateLimited，不当成身份失效。
+        let err = fixture
+            .provider
+            .query_quota_with_opencode_go_base(&go_account.id, Some(&base_url))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::QuotaRateLimited { .. }), "got {err}");
+        assert!(!subswap_core::is_authentication_failure(&err.to_string()));
+
+        handle.join().unwrap();
+        let captured = seen.lock().unwrap();
+        assert_eq!(captured.len(), 2);
+        assert!(captured[0].starts_with("GET /usage HTTP/1.1"));
+        assert!(captured[0]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer oc_sk_000000000000_testgo11"));
     }
 }

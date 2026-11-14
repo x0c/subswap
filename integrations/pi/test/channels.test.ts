@@ -325,9 +325,11 @@ test("opencode-go and opencode-zen build native catalog pools while console oaut
 	const goProvider = byProviderId.get("subswap-opencode-go");
 	assert.ok(goProvider, "expected subswap-opencode-go provider");
 	const goModelIds = new Set(goProvider.getModels().map((m) => m.id));
-	for (const required of ["kimi-k3.1-pro", "deepseek-v4-pro", "glm-5.3", "gemini-4-argon", "gpt-6-luna"]) {
+	for (const required of ["kimi-k3.1-pro", "deepseek-v4.1-flash", "deepseek-v4-pro", "glm-5.3", "gemini-4-argon", "gpt-6-luna"]) {
 		assert.ok(goModelIds.has(required), `missing opencode-go model ${required}`);
 	}
+	const deepseekFlash = goProvider.getModels().find((m) => m.id === "deepseek-v4.1-flash");
+	assert.equal(deepseekFlash?.name, "DeepSeek V4.1 Flash 1017 (Subswap)");
 
 	const zenProvider = byProviderId.get("subswap-opencode-zen");
 	assert.ok(zenProvider, "expected subswap-opencode-zen provider");
