@@ -241,6 +241,8 @@ impl AntigravityProvider {
     }
 
     /// capture-on-leave：覆盖 live 前把当前 live 凭证回灌进其归属账号 store。
+    /// 只被 macOS 激活边界调用；其他平台在 activate 入口即明确拒绝。
+    #[cfg(target_os = "macos")]
     fn capture_live_into_store(&self) -> Result<()> {
         let Some(live) = self.read_live_blob()? else {
             return Ok(());
