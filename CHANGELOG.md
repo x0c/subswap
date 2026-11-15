@@ -8,6 +8,18 @@ the named acceptance is done.
 
 ## Unreleased
 
+## v1.17.1
+
+### English
+
+- Re-release the v1.17.0 changes with the macOS release builds moved to the supported `macos-15` runner image. GitHub retired `macos-14`, which cancelled both macOS builds of the v1.17.0 draft; no source or behavior changed.
+
+### 简体中文
+
+- 重新发布 v1.17.0 的改动，macOS 发布构建改用仍受支持的 `macos-15` 运行器镜像。GitHub 已下线 `macos-14`，导致 v1.17.0 草稿的两个 macOS 构建被取消；本次没有源码或行为变化。
+
+Full release notes, verification and limits: [docs/releases/v1.17.1.md](docs/releases/v1.17.1.md).
+
 ## v1.17.0
 
 ### English
