@@ -149,7 +149,12 @@ impl PiProvider {
 
     /// 导入一把 key 为 Pi 账号；registry 已有同 id 则保留其 active。
     /// 只写凭证仓库与 registry，不碰任何 live 文件、不改 active 选择。
-    pub fn import_key(&self, params: NewPiAccount, api_key: &str, active: Option<bool>) -> Result<Account> {
+    pub fn import_key(
+        &self,
+        params: NewPiAccount,
+        api_key: &str,
+        active: Option<bool>,
+    ) -> Result<Account> {
         let api_key = api_key.trim();
         if api_key.is_empty() {
             return Err(Error::Config("Pi API key cannot be empty".into()));
@@ -522,7 +527,11 @@ mod tests {
                 Arc::new(AccountRegistry::new(tmp.path().join("registry.toml"))),
                 agent.clone(),
             );
-            Self { _tmp: tmp, provider, agent }
+            Self {
+                _tmp: tmp,
+                provider,
+                agent,
+            }
         }
 
         fn deepseek_params() -> NewPiAccount {
@@ -557,7 +566,12 @@ mod tests {
         assert_eq!(credential.secret, "sk-long-lived");
         assert_eq!(credential.expires_at_ms, None);
 
-        assert!(fixture.provider.renew_credential(&account.id).await.unwrap().is_none());
+        assert!(fixture
+            .provider
+            .renew_credential(&account.id)
+            .await
+            .unwrap()
+            .is_none());
         // 再次投影仍是同一份长效 key（无续期副作用）。
         let again = fixture
             .provider
@@ -575,7 +589,12 @@ mod tests {
             .provider
             .import_key(Fixture::deepseek_params(), "sk-q", None)
             .unwrap();
-        assert!(fixture.provider.query_quota(&account.id).await.unwrap().is_empty());
+        assert!(fixture
+            .provider
+            .query_quota(&account.id)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -588,7 +607,9 @@ mod tests {
             .unwrap();
         fixture.provider.activate(&first.id).await.unwrap();
         assert_eq!(
-            auth::read_slot(&fixture.agent, "deepseek").unwrap().as_deref(),
+            auth::read_slot(&fixture.agent, "deepseek")
+                .unwrap()
+                .as_deref(),
             Some("sk-first")
         );
         assert_eq!(
@@ -607,7 +628,9 @@ mod tests {
             .unwrap();
         assert!(fixture.provider.activate(&second.id).await.is_err());
         assert_eq!(
-            auth::read_slot(&fixture.agent, "deepseek").unwrap().as_deref(),
+            auth::read_slot(&fixture.agent, "deepseek")
+                .unwrap()
+                .as_deref(),
             Some("sk-first")
         );
         assert_eq!(
@@ -629,7 +652,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            auth::read_slot(&fixture.agent, "deepseek").unwrap().as_deref(),
+            auth::read_slot(&fixture.agent, "deepseek")
+                .unwrap()
+                .as_deref(),
             Some("sk-nodefault")
         );
         assert!(!paths::settings_json_path(&fixture.agent).exists());
@@ -643,12 +668,22 @@ mod tests {
             .import_key(Fixture::deepseek_params(), "sk-rm", Some(true))
             .unwrap();
         fixture.provider.activate(&account.id).await.unwrap();
-        let out = fixture.provider.disconnect_official(&account.id).await.unwrap();
+        let out = fixture
+            .provider
+            .disconnect_official(&account.id)
+            .await
+            .unwrap();
         assert_eq!(out, OfficialDisconnect::Disconnected);
-        assert!(auth::read_slot(&fixture.agent, "deepseek").unwrap().is_none());
+        assert!(auth::read_slot(&fixture.agent, "deepseek")
+            .unwrap()
+            .is_none());
         // parked / 已不在 live：幂等 AlreadyGone。
         assert_eq!(
-            fixture.provider.disconnect_official(&account.id).await.unwrap(),
+            fixture
+                .provider
+                .disconnect_official(&account.id)
+                .await
+                .unwrap(),
             OfficialDisconnect::AlreadyGone
         );
     }
@@ -656,10 +691,22 @@ mod tests {
     #[test]
     fn env_isolation_maps_known_slots_only() {
         let fixture = Fixture::new();
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let deepseek = fixture.provider.import_key(Fixture::deepseek_params(), "sk-env", None).unwrap();
-        let vars = rt.block_on(fixture.provider.isolation_env(&deepseek.id)).unwrap().unwrap();
-        assert_eq!(vars, vec![("DEEPSEEK_API_KEY".to_string(), "sk-env".to_string())]);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let deepseek = fixture
+            .provider
+            .import_key(Fixture::deepseek_params(), "sk-env", None)
+            .unwrap();
+        let vars = rt
+            .block_on(fixture.provider.isolation_env(&deepseek.id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            vars,
+            vec![("DEEPSEEK_API_KEY".to_string(), "sk-env".to_string())]
+        );
 
         let volcengine = fixture
             .provider
@@ -676,7 +723,10 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert!(rt.block_on(fixture.provider.isolation_env(&volcengine.id)).unwrap().is_none());
+        assert!(rt
+            .block_on(fixture.provider.isolation_env(&volcengine.id))
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -717,7 +767,10 @@ mod tests {
             Some("opencode-go")
         );
 
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let env = rt
             .block_on(fixture.provider.isolation_env(&imported.id))
             .unwrap()

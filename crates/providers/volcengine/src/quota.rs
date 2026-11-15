@@ -97,9 +97,8 @@ fn sign(
         "content-type:{CONTENT_TYPE}\nhost:{}\nx-content-sha256:{body_hash}\nx-date:{x_date}\n",
         openapi_host(),
     );
-    let canonical_request = format!(
-        "POST\n/\n{canonical}\n{canonical_headers}\n{SIGNED_HEADERS}\n{body_hash}"
-    );
+    let canonical_request =
+        format!("POST\n/\n{canonical}\n{canonical_headers}\n{SIGNED_HEADERS}\n{body_hash}");
     let scope = format!("{short_date}/{region}/{SERVICE}/request");
     let string_to_sign = format!(
         "HMAC-SHA256\n{x_date}\n{scope}\n{}",
@@ -126,7 +125,10 @@ enum CallOutcome {
     Soft(String),
     /// 签名通过但账号无订阅：调用方视为“空”，再试另一通道（另一 Action / arkcli）。
     NotSubscribed(String),
-    RateLimited { message: String, retry_at: Option<DateTime<Utc>> },
+    RateLimited {
+        message: String,
+        retry_at: Option<DateTime<Utc>>,
+    },
     Transient(String),
 }
 
@@ -136,8 +138,14 @@ fn response_error(body: &serde_json::Value) -> Option<(String, String)> {
         .get("ResponseMetadata")
         .and_then(|meta| meta.get("Error"))
         .or_else(|| body.get("Error"))?;
-    let code = err.get("Code").and_then(|value| value.as_str()).unwrap_or_default();
-    let msg = err.get("Message").and_then(|value| value.as_str()).unwrap_or_default();
+    let code = err
+        .get("Code")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let msg = err
+        .get("Message")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
     if code.is_empty() && msg.is_empty() {
         None
     } else {
@@ -521,7 +529,15 @@ async fn query_via_aksk(
     }
 
     // 2) AFP 兜底：双订阅/单 Agent Plan 账号仍能看到绝对值。
-    match openapi_call(client, region, access_key_id, secret_access_key, "GetAFPUsage").await {
+    match openapi_call(
+        client,
+        region,
+        access_key_id,
+        secret_access_key,
+        "GetAFPUsage",
+    )
+    .await
+    {
         CallOutcome::Body(body) => {
             let result = body.get("Result").unwrap_or(&body);
             let tiers = parse_afp_tiers(id, result);
@@ -622,23 +638,23 @@ fn query_via_arkcli_blocking(id: &AccountId) -> Option<Vec<Quota>> {
     }
     let mut quotas = Vec::new();
     for period in periods {
-        let label = period.get("label").and_then(|value| value.as_str()).unwrap_or("");
+        let label = period
+            .get("label")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
         let Some(window) = coding_window(label) else {
             continue;
         };
         // CodingPlan 后端只返 Percent；兼容 used/total 形态（omitempty 缺省时兜底算百分比）。
-        let percent = period
-            .get("percent")
-            .and_then(parse_f64)
-            .or_else(|| {
-                let used = period.get("used").and_then(parse_f64)?;
-                let total = period.get("total").and_then(parse_f64)?;
-                if total > 0.0 {
-                    Some(used / total * 100.0)
-                } else {
-                    None
-                }
-            })?;
+        let percent = period.get("percent").and_then(parse_f64).or_else(|| {
+            let used = period.get("used").and_then(parse_f64)?;
+            let total = period.get("total").and_then(parse_f64)?;
+            if total > 0.0 {
+                Some(used / total * 100.0)
+            } else {
+                None
+            }
+        })?;
         let reset_at = period.get("reset_at").and_then(parse_reset);
         quotas.push(percent_quota(id, window, percent, reset_at));
     }
@@ -676,9 +692,7 @@ pub(super) async fn fetch_quota(
         tokio::task::spawn_blocking(move || query_via_arkcli_blocking(&id_for_cli)),
     )
     .await
-    .map_err(|_| {
-        subswap_core::error::Error::QuotaFetch("volcengine arkcli timed out".into())
-    })?
+    .map_err(|_| subswap_core::error::Error::QuotaFetch("volcengine arkcli timed out".into()))?
     .map_err(|err| {
         subswap_core::error::Error::Provider(format!("volcengine arkcli task failed: {err}"))
     })?;
@@ -726,8 +740,14 @@ mod tests {
             .unwrap()
             .with_timezone(&chrono::Utc);
         let canonical = canonical_query("GetCodingPlanUsage");
-        let (auth, x_date, body_hash) =
-            sign("EXAMPLEKEYID", "EXAMPLESECRET", "cn-beijing", &canonical, b"{}", now);
+        let (auth, x_date, body_hash) = sign(
+            "EXAMPLEKEYID",
+            "EXAMPLESECRET",
+            "cn-beijing",
+            &canonical,
+            b"{}",
+            now,
+        );
         assert_eq!(x_date, "20260101T000000Z");
         assert_eq!(
             body_hash,
@@ -814,9 +834,12 @@ mod tests {
         });
         // 复用与真实 arkcli 同形的解析路径（抽出 periods 映射）。
         let items = body.get("items").unwrap().as_array().unwrap();
-        let item = items.iter().find(|item| {
-            item.get("product").and_then(|value| value.as_str()) == Some("coding-plan")
-        }).unwrap();
+        let item = items
+            .iter()
+            .find(|item| {
+                item.get("product").and_then(|value| value.as_str()) == Some("coding-plan")
+            })
+            .unwrap();
         let mut quotas = Vec::new();
         for period in item.get("periods").unwrap().as_array().unwrap() {
             let window = coding_window(period.get("label").unwrap().as_str().unwrap()).unwrap();
@@ -902,9 +925,9 @@ mod tests {
                     .lines()
                     .find_map(|line| {
                         let lower = line.to_lowercase();
-                        lower.strip_prefix("content-length:").map(|v| {
-                            v.trim().parse::<usize>().unwrap_or(0)
-                        })
+                        lower
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().parse::<usize>().unwrap_or(0))
                     })
                     .unwrap_or(0);
                 let mut body_len = raw.len().saturating_sub(header_end);
@@ -965,15 +988,29 @@ mod tests {
         assert_eq!(quotas.len(), 1);
         assert_eq!(quotas[0].used, 11);
         let requests = seen.lock().unwrap();
-        assert_eq!(requests.len(), 1, "AFP must not be queried when CodingPlan hits");
+        assert_eq!(
+            requests.len(),
+            1,
+            "AFP must not be queried when CodingPlan hits"
+        );
         let req = &requests[0];
-        assert!(req.contains("Action=GetCodingPlanUsage"), "unexpected request: {req}");
+        assert!(
+            req.contains("Action=GetCodingPlanUsage"),
+            "unexpected request: {req}"
+        );
         assert!(
             req.contains("SignedHeaders=content-type;host;x-content-sha256;x-date"),
             "unexpected auth order: {req}"
         );
-        assert!(req.contains("content-type: application/json"), "unexpected ct: {req}");
-        assert!(req.ends_with("{}"), "body must be {{}}, got tail: {}", &req[req.len().saturating_sub(32)..]);
+        assert!(
+            req.contains("content-type: application/json"),
+            "unexpected ct: {req}"
+        );
+        assert!(
+            req.ends_with("{}"),
+            "body must be {{}}, got tail: {}",
+            &req[req.len().saturating_sub(32)..]
+        );
     }
 
     fn find_headers_end(raw: &[u8]) -> Option<usize> {

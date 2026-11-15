@@ -21,7 +21,7 @@
 use subswap_core::error::Result;
 use subswap_core::{Account, AccountRegistry, CredentialStore};
 
-use super::auth::{PI_VOLCENGINE_BASE_URL, PI_VOLCENGINE_MODEL, volcengine_channel};
+use super::auth::{volcengine_channel, PI_VOLCENGINE_BASE_URL, PI_VOLCENGINE_MODEL};
 use super::{API_KEY_FIELD, PROVIDER_ID};
 
 /// 旧顶层 provider id（只读兼容保留，见 lib 文档）。
@@ -59,8 +59,7 @@ pub fn migrate_legacy_volcengine_to_pi(
             moved_ids.push(old.id.clone());
             continue;
         }
-        let Some(secret) = store.get(LEGACY_PROVIDER_ID, &old.id.0, LEGACY_API_KEY_FIELD)?
-        else {
+        let Some(secret) = store.get(LEGACY_PROVIDER_ID, &old.id.0, LEGACY_API_KEY_FIELD)? else {
             // 无 secret 的旧条目不搬（避免造出不可用的 pi 空号），留待人工处理。
             tracing::warn!(account = %old.id, "volcengine account has no stored API key; skipping Pi migration");
             continue;
@@ -159,9 +158,15 @@ mod tests {
                 extra,
             })
             .unwrap();
-        store.set(LEGACY_PROVIDER_ID, id, LEGACY_API_KEY_FIELD, "sk-live-key").unwrap();
-        store.set(LEGACY_PROVIDER_ID, id, "access_key_id", "AK").unwrap();
-        store.set(LEGACY_PROVIDER_ID, id, "secret_access_key", "SK").unwrap();
+        store
+            .set(LEGACY_PROVIDER_ID, id, LEGACY_API_KEY_FIELD, "sk-live-key")
+            .unwrap();
+        store
+            .set(LEGACY_PROVIDER_ID, id, "access_key_id", "AK")
+            .unwrap();
+        store
+            .set(LEGACY_PROVIDER_ID, id, "secret_access_key", "SK")
+            .unwrap();
     }
 
     #[test]
@@ -172,13 +177,22 @@ mod tests {
         seed_old(&registry, &store, "ark-aaa", true);
         seed_old(&registry, &store, "ark-bbb", false);
 
-        assert_eq!(migrate_legacy_volcengine_to_pi(&store, &registry).unwrap(), 2);
+        assert_eq!(
+            migrate_legacy_volcengine_to_pi(&store, &registry).unwrap(),
+            2
+        );
         // 幂等：第二轮无事可做。
-        assert_eq!(migrate_legacy_volcengine_to_pi(&store, &registry).unwrap(), 0);
+        assert_eq!(
+            migrate_legacy_volcengine_to_pi(&store, &registry).unwrap(),
+            0
+        );
 
         let accounts = registry.load().unwrap();
         assert!(accounts.iter().all(|a| a.provider != LEGACY_PROVIDER_ID));
-        let pi: Vec<_> = accounts.iter().filter(|a| a.provider == PROVIDER_ID).collect();
+        let pi: Vec<_> = accounts
+            .iter()
+            .filter(|a| a.provider == PROVIDER_ID)
+            .collect();
         assert_eq!(pi.len(), 2);
         let active: Vec<_> = pi.iter().filter(|a| a.active).collect();
         assert_eq!(active.len(), 1);
@@ -189,10 +203,19 @@ mod tests {
             assert_eq!(account.extra["pi_api"]["auth_slot"], "volcengine");
             assert_eq!(account.extra["pi_api"]["base_url"], PI_VOLCENGINE_BASE_URL);
             assert_eq!(account.extra["pi_api"]["model"], PI_VOLCENGINE_MODEL);
-            assert!(store.get(PROVIDER_ID, &account.id.0, API_KEY_FIELD).unwrap().is_some());
+            assert!(store
+                .get(PROVIDER_ID, &account.id.0, API_KEY_FIELD)
+                .unwrap()
+                .is_some());
         }
-        assert!(store.get(LEGACY_PROVIDER_ID, "ark-aaa", LEGACY_API_KEY_FIELD).unwrap().is_none());
-        assert!(store.get(LEGACY_PROVIDER_ID, "ark-aaa", "access_key_id").unwrap().is_none());
+        assert!(store
+            .get(LEGACY_PROVIDER_ID, "ark-aaa", LEGACY_API_KEY_FIELD)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .get(LEGACY_PROVIDER_ID, "ark-aaa", "access_key_id")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -215,7 +238,13 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(migrate_legacy_volcengine_to_pi(&store, &registry).unwrap(), 0);
-        assert!(registry.find(LEGACY_PROVIDER_ID, &AccountId("ark-nokey".into())).unwrap().is_some());
+        assert_eq!(
+            migrate_legacy_volcengine_to_pi(&store, &registry).unwrap(),
+            0
+        );
+        assert!(registry
+            .find(LEGACY_PROVIDER_ID, &AccountId("ark-nokey".into()))
+            .unwrap()
+            .is_some());
     }
 }

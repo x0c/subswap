@@ -116,7 +116,10 @@ impl AntigravityProvider {
         self.store
             .set(PROVIDER_ID, &id.0, STORE_FIELD, &blob.to_blob())?;
         let existing = self.registry.find(PROVIDER_ID, &id)?;
-        let mut extra = existing.as_ref().map(|a| a.extra.clone()).unwrap_or_default();
+        let mut extra = existing
+            .as_ref()
+            .map(|a| a.extra.clone())
+            .unwrap_or_default();
         if let Some(email) = blob.email.clone() {
             extra.insert("email".into(), email.into());
         }
@@ -141,12 +144,13 @@ impl AntigravityProvider {
         if active_override == Some(true) {
             self.registry.upsert(account.clone())?;
             self.registry.set_active(PROVIDER_ID, &id)?;
-            return self.registry.find(PROVIDER_ID, &id)?.ok_or_else(|| {
-                Error::AccountNotFound {
+            return self
+                .registry
+                .find(PROVIDER_ID, &id)?
+                .ok_or_else(|| Error::AccountNotFound {
                     provider: PROVIDER_ID.into(),
                     id: id.to_string(),
-                }
-            });
+                });
         }
         self.registry.upsert(account.clone())?;
         Ok(account)
@@ -667,9 +671,7 @@ mod capture_guard_tests {
             managed_project_id: None,
             native_extra: Default::default(),
         };
-        provider
-            .capture_blob_into_owner(&acc.id, &partial)
-            .unwrap();
+        provider.capture_blob_into_owner(&acc.id, &partial).unwrap();
 
         let kept = OauthBlob::from_blob(
             &store

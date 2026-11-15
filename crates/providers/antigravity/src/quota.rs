@@ -503,8 +503,13 @@ async fn fetch_quota_at(
             None => serde_json::json!({}),
         };
         let requested_at = Utc::now();
-        subswap_core::request_metrics::record(crate::PROVIDER_ID, &account.id.0, "http_start", None)
-            .await;
+        subswap_core::request_metrics::record(
+            crate::PROVIDER_ID,
+            &account.id.0,
+            "http_start",
+            None,
+        )
+        .await;
         let sent = client
             .post(&url)
             .header("Authorization", format!("Bearer {access_token}"))
@@ -615,13 +620,9 @@ async fn fetch_quota_at(
     for (_, name) in &ordered_pools {
         if let Some(buckets) = merged.get(name) {
             for (req_at, b) in buckets {
-                if let Some(q) = quota_from_bucket_at(
-                    b,
-                    name,
-                    crate::PROVIDER_ID,
-                    &account.id,
-                    Some(*req_at),
-                ) {
+                if let Some(q) =
+                    quota_from_bucket_at(b, name, crate::PROVIDER_ID, &account.id, Some(*req_at))
+                {
                     out.push(q);
                 }
             }
@@ -817,7 +818,10 @@ mod tests {
     #[test]
     fn ua_uses_hub_2_24_0_identity() {
         let ua = antigravity_ua();
-        assert!(ua.starts_with("antigravity/hub/2.24.0 (aidev_client; os_type="), "{ua}");
+        assert!(
+            ua.starts_with("antigravity/hub/2.24.0 (aidev_client; os_type="),
+            "{ua}"
+        );
     }
 
     #[test]
@@ -883,8 +887,14 @@ mod tests {
             Some(req_at),
         );
         assert_eq!(q.len(), 2);
-        assert_eq!(q[0].reset_at, None, "untouched full window must hide rolling reset");
-        assert!(q[1].reset_at.is_some(), "consumed window must keep real reset");
+        assert_eq!(
+            q[0].reset_at, None,
+            "untouched full window must hide rolling reset"
+        );
+        assert!(
+            q[1].reset_at.is_some(),
+            "consumed window must keep real reset"
+        );
     }
 
     #[test]
@@ -949,7 +959,8 @@ mod tests {
             let n = s.read(&mut buf).unwrap_or(0);
             let req = String::from_utf8_lossy(&buf[..n]);
             assert!(
-                req.to_ascii_lowercase().contains("user-agent: antigravity/hub/2.24.0"),
+                req.to_ascii_lowercase()
+                    .contains("user-agent: antigravity/hub/2.24.0"),
                 "request must carry hub/2.24.0 UA, got: {req}"
             );
             write!(
@@ -963,14 +974,9 @@ mod tests {
         secondary.set_nonblocking(true).unwrap();
 
         let acc = dummy_account("u@gmail.com");
-        let quotas = fetch_quota_at(
-            "ya29.token",
-            None,
-            &acc,
-            &[primary_base, secondary_base],
-        )
-        .await
-        .unwrap();
+        let quotas = fetch_quota_at("ya29.token", None, &acc, &[primary_base, secondary_base])
+            .await
+            .unwrap();
         h1.join().unwrap();
         if secondary.accept().is_ok() {
             hits_clone.fetch_add(1, Ordering::SeqCst);
@@ -1010,14 +1016,9 @@ mod tests {
         secondary.set_nonblocking(true).unwrap();
 
         let acc = dummy_account("u@gmail.com");
-        let err = fetch_quota_at(
-            "ya29.token",
-            None,
-            &acc,
-            &[primary_base, secondary_base],
-        )
-        .await
-        .unwrap_err();
+        let err = fetch_quota_at("ya29.token", None, &acc, &[primary_base, secondary_base])
+            .await
+            .unwrap_err();
         h1.join().unwrap();
         assert!(
             secondary.accept().is_err(),

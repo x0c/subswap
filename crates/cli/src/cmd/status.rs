@@ -472,13 +472,7 @@ fn api_host(account: &Account) -> Option<String> {
         .get("pi_api")
         .and_then(|v| v.get("base_url"))
         .and_then(|v| v.as_str())
-        .or_else(|| {
-            account
-                .extra
-                .get("api_config")?
-                .get("base_url")?
-                .as_str()
-        })?
+        .or_else(|| account.extra.get("api_config")?.get("base_url")?.as_str())?
         .trim();
     let after_scheme = base_url
         .split_once("://")

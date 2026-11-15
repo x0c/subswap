@@ -14,7 +14,9 @@ pub fn antigravity_home() -> PathBuf {
 
 /// 读取 `<antigravity_home>/cache/default_project_id.txt`；缺失或空白时返回 `None`。
 pub fn default_project_id(antigravity_home: &Path) -> Option<String> {
-    let cache_file = antigravity_home.join("cache").join("default_project_id.txt");
+    let cache_file = antigravity_home
+        .join("cache")
+        .join("default_project_id.txt");
     if let Ok(raw) = std::fs::read_to_string(cache_file) {
         let trimmed = raw.trim();
         if !trimmed.is_empty() {

@@ -124,8 +124,7 @@ pub async fn run() -> Result<()> {
     let registry = Arc::new(AccountRegistry::from_default_paths()?);
     subswap_provider_opencode::migrate_legacy_api_keys(store.as_ref(), &registry)?;
     // 顶层 volcengine 一次性搬进 Pi 抽屉（幂等；与 CLI 同语义）。
-    if let Err(e) =
-        subswap_provider_pi::migrate_legacy_volcengine_to_pi(store.as_ref(), &registry)
+    if let Err(e) = subswap_provider_pi::migrate_legacy_volcengine_to_pi(store.as_ref(), &registry)
     {
         tracing::warn!(err = %e, "migrate volcengine to pi failed; continuing");
     }
