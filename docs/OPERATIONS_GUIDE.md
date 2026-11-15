@@ -255,6 +255,7 @@ Shared optional acceptance procedures now live in the agent-friendly-cli skill (
 
 ## Release notes
 
+- [v1.17.0](releases/v1.17.0.md): Pi provider and Pi extension with per-request failover, Volcengine keys moved into the Pi drawer, Antigravity dual pools, Claude/Codex custom API channels, `subswap auth`, `status --refresh`, structured swap receipts, and the formatting plus Linux/Windows build fixes that restored a green CI baseline.
 - [v1.16.6](releases/v1.16.6.md): quota windows ordered by real duration, duration tokens for non-standard lengths, and Codex/Kimi duration preservation. Includes five-target publication, anonymous download checks and published Mac installation evidence.
 - [v1.16.5](releases/v1.16.5.md): `status --json --no-metrics` for frequent GUI polling and the documented pipe-capacity contract; companion Subswap Apple client refresh deadlock fixed alongside it.
 - [v1.16.4](releases/v1.16.4.md): empty-success cadence correction, Linux quota-refresh lock safety, Windows test determinism, portable lock-contention classification, and the complete shared quota collection, adaptive scheduling, read-only snapshots and request metrics delivered across the v1.16.0–v1.16.3 drafts.
