@@ -144,19 +144,20 @@ A successful `subswap --json swap <target>` writes exactly one JSON object to st
 
 ## 火山方舟 Coding Plan
 
-`volcengine` 是与 `claude` / `codex` / `opencode` 同层级的独立 Provider，不是 Claude
-`add-api` 预设。用 `subswap login volcengine -- <api-key>` 导入并激活，账号 id 为
-`ark-<指纹>`；之后可用通用编号或 `volcengine/<id>` 执行 `swap` / `rm`。
+新 key 一律进 Pi 抽屉：`subswap login volcengine -- <api-key> [--ak-id <AK> --ak-secret <SK>]`（别名 `ark`）
+或 `subswap add-api pi --preset volcengine --ak-id <AK> --ak-secret <SK>`；账号 id 仍是 `ark-<指纹>`，
+引用形式为 `pi/<id>`（bare id 仍能解析）。顶层 `volcengine` provider 只读保留：既有账号早前已按同 id
+迁进 Pi，不再从 Claude `settings.json` 导入、不参与默认入口 live 对齐，也不再收新的推理 key；旧文档里的
+`volcengine/<id>` 引用已失效。
 
-切换写入 Claude Code 的 Anthropic 兼容配置：官方端点
-`https://ark.cn-beijing.volces.com/api/coding`、Bearer Key、三档统一的 `ark-code-latest`。
-这是原生 Claude 端点；Pi 扩展走同一站点的 OpenAI 兼容请求路径 `.../api/coding/v3`（见 Pi 集成文档），两者是不同协议路径，不要互相改写。
-与 Claude OAuth / 自定义 API 互切时保存并恢复受管 env；删除当前 Volcengine 账号也会退出
-其 API 模式。Key 按固定订阅 `flat` 展示，全部 `manual_only`；额度优先用 AK/SK 直查
-（`login -- <key> --ak-id <AK> --ak-secret <SK>` 或只补 AK/SK，先查 `GetCodingPlanUsage`
-百分比、空时再试 `GetAFPUsage` 绝对值），未订阅时试 `arkcli`（15s 超时）
-兜底，否则显示 `custom` 不伪造余量。`subswap run volcengine <id> -- <claude 参数>` 以进程级环境变量隔离启动 Claude
-Code，不改全局 active；`shell` / `env` 同样支持。
+Pi 火山账号写 Pi 的 `auth.json` slot 与 `settings.json` 默认选择，端点是 OpenAI 兼容路径
+`.../api/coding/v3`、模型 `kimi-k3.1-pro`；历史 Claude 路径 `.../api/coding` + `ark-code-latest` 只属于
+旧顶层实现，两者不要互相改写。全部 `manual_only`、固定订阅 `flat`，也不支持 `run` / `shell` / `env`
+隔离（无 env 映射，只走文件切换）。额度与顶层旧实现共用 AK/SK V4 签名直查：先 `GetCodingPlanUsage`
+百分比、空时再试 `GetAFPUsage` 绝对值，未订阅时试 `arkcli`（15s 超时）兜底，缺 AK/SK 或未订阅时显示
+`custom`、不伪造余量。余量查不出见
+[troubleshooting/2026-11-16](troubleshooting/2026-11-16-pi-ark-quota-shows-custom.md)，
+账号与迁移细节见 [PROVIDER_KNOWLEDGE_BASE.md](PROVIDER_KNOWLEDGE_BASE.md)「火山方舟 Coding Plan」。
 
 ## OpenCode
 
@@ -270,9 +271,10 @@ Pi 抽屉用预设登记多路复用 Key，只写入 Subswap 私有凭证仓库�
 subswap add-api pi --preset opencode-go --api-key "$OPENCODE_API_KEY" --yes
 subswap add-api pi --preset opencode-zen --api-key "$OPENCODE_API_KEY" --yes
 subswap add-api pi --preset deepseek --api-key "$DEEPSEEK_API_KEY" --yes
+subswap add-api pi --preset volcengine --api-key "$ARK_KEY" --ak-id "$ARK_AK" --ak-secret "$ARK_SK" --yes
 ```
 
-- 支持预设：`deepseek`、`volcengine`、`opencode-go`（Go 订阅，`channel=opencode-go`，支持 `/zen/go/v1/usage` 查 `5h`/`7d`/`mo` 余量，Pi 侧暴露为 `subswap-opencode-go` 池）、`opencode-zen`（别名 `opencode`，Console 按量余额，`channel=opencode-zen`，无订阅余量显示 `custom`，Pi 侧暴露为 `subswap-opencode-zen` 池；与顶层 Console OAuth `opencode` 及 OpenCode CLI V2 的 `opencode-api-key` 互不冲突）、`custom`（须显式传 `--id`/`--endpoint`/`--model`）。
+- 支持预设：`deepseek`、`volcengine`（`.../api/coding/v3` / `kimi-k3.1-pro`；可附 `--ak-id`/`--ak-secret`（成对）配额度直查）、`opencode-go`（Go 订阅，`channel=opencode-go`，支持 `/zen/go/v1/usage` 查 `5h`/`7d`/`mo` 余量，Pi 侧暴露为 `subswap-opencode-go` 池）、`opencode-zen`（别名 `opencode`，Console 按量余额，`channel=opencode-zen`，无订阅余量显示 `custom`，Pi 侧暴露为 `subswap-opencode-zen` 池；与顶层 Console OAuth `opencode` 及 OpenCode CLI V2 的 `opencode-api-key` 互不冲突）、`custom`（须显式传 `--id`/`--endpoint`/`--model`）。
 - 进程隔离映射：`deepseek` → `DEEPSEEK_API_KEY`、`kimi-coding`/`kimi` → `KIMI_API_KEY`、`opencode-go`/`opencode-zen`/`opencode` → `OPENCODE_API_KEY`，支持 `subswap run/shell/env pi/<id>`。
 - 需要切 Pi 原生单槽 `auth.json` 与 `settings.json` 默认项时仍用 `subswap swap pi/<id>`（加 `--no-default` 跳过写 `settings.json`）。若仅给 Pi 扩展号池复用，无需手动 `swap`。
 
