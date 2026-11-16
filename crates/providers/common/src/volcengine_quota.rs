@@ -1,4 +1,4 @@
-//! 火山方舟 Coding Plan 额度查询。
+//! 火山方舟 Coding Plan 额度查询（`volcengine` 与 `pi/volcengine` 共用）。
 //!
 //! 推理 Bearer Key 拿不到用量（实测无 `x-ratelimit-*` 头），必须走控制面 OpenAPI
 //! `GetCodingPlanUsage`（Coding Plan，回百分比，优先）与 `GetAFPUsage`（Agent Plan，回绝对值，兜底），
@@ -6,12 +6,12 @@
 //! 签名按官方 Java/Python/PHP demo 与 magpie 实现：空请求体按 `{}` 哈希，
 //! `Content-Type: application/json`，SignedHeaders 排序为
 //! `content-type;host;x-content-sha256;x-date`，query 仅 `Action`/`Version`。
+//!
+//! 调用方传自己的 provider id（配额归属），禁止各 Provider 重复实现签名。
 
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use subswap_core::{AccountId, Quota, QuotaStatus, QuotaWindow};
-
-use super::PROVIDER_ID;
 
 /// 控制面 OpenAPI 统一网关（区别于数据面推理域名）。
 const OPENAPI_HOST: &str = "open.volcengineapi.com";
@@ -369,6 +369,7 @@ fn parse_f64(value: &serde_json::Value) -> Option<f64> {
 
 /// 百分比窗口落盘形态：`used` 为已用百分比 0~100，`limit` 固定 100。
 fn percent_quota(
+    provider_id: &str,
     id: &AccountId,
     window: QuotaWindow,
     percent: f64,
@@ -376,7 +377,7 @@ fn percent_quota(
 ) -> Quota {
     let used = percent.clamp(0.0, 100.0).round() as u64;
     Quota {
-        provider: PROVIDER_ID.into(),
+        provider: provider_id.into(),
         account_id: id.clone(),
         window,
         used,
@@ -397,7 +398,11 @@ fn coding_window(label: &str) -> Option<QuotaWindow> {
 }
 
 /// 解析 `GetCodingPlanUsage` 的 `Result`（只给百分比）。
-fn parse_coding_plan_tiers(id: &AccountId, result: &serde_json::Value) -> Vec<Quota> {
+fn parse_coding_plan_tiers(
+    provider_id: &str,
+    id: &AccountId,
+    result: &serde_json::Value,
+) -> Vec<Quota> {
     let arr = result
         .get("QuotaUsage")
         .and_then(|value| value.as_array())
@@ -429,7 +434,7 @@ fn parse_coding_plan_tiers(id: &AccountId, result: &serde_json::Value) -> Vec<Qu
             .get("ResetTimestamp")
             .or_else(|| item.get("ResetTime"))
             .and_then(parse_reset);
-        quotas.push(percent_quota(id, window, percent, reset_at));
+        quotas.push(percent_quota(provider_id, id, window, percent, reset_at));
     }
     // 按真实时长排序，保证展示顺序稳定（session/5h → weekly/7d → monthly）。
     quotas.sort_by_key(|quota| quota.window.duration_seconds().unwrap_or(u64::MAX));
@@ -437,7 +442,7 @@ fn parse_coding_plan_tiers(id: &AccountId, result: &serde_json::Value) -> Vec<Qu
 }
 
 /// 解析 `GetAFPUsage` 的 `Result`（给绝对 `Quota`/`Used`）。
-fn parse_afp_tiers(id: &AccountId, result: &serde_json::Value) -> Vec<Quota> {
+fn parse_afp_tiers(provider_id: &str, id: &AccountId, result: &serde_json::Value) -> Vec<Quota> {
     let mut quotas = Vec::new();
     for (key, window) in [
         ("AFPFiveHour", QuotaWindow::FiveHour),
@@ -455,7 +460,7 @@ fn parse_afp_tiers(id: &AccountId, result: &serde_json::Value) -> Vec<Quota> {
         let pct = used / limit * 100.0;
         let reset_at = slot.get("ResetTime").and_then(parse_reset);
         quotas.push(Quota {
-            provider: PROVIDER_ID.into(),
+            provider: provider_id.into(),
             account_id: id.clone(),
             window,
             used: used.max(0.0).round() as u64,
@@ -474,6 +479,7 @@ fn parse_afp_tiers(id: &AccountId, result: &serde_json::Value) -> Vec<Quota> {
 /// 否则 Agent Plan 有数据会掩盖 Coding Plan，见 cc-switch#6499）。
 async fn query_via_aksk(
     client: &reqwest::Client,
+    provider_id: &str,
     id: &AccountId,
     access_key_id: &str,
     secret_access_key: &str,
@@ -498,7 +504,7 @@ async fn query_via_aksk(
     {
         CallOutcome::Body(body) => {
             let result = body.get("Result").unwrap_or(&body);
-            let tiers = parse_coding_plan_tiers(id, result);
+            let tiers = parse_coding_plan_tiers(provider_id, id, result);
             if !tiers.is_empty() {
                 return Ok(Some(tiers));
             }
@@ -524,7 +530,7 @@ async fn query_via_aksk(
     match openapi_call(client, region, access_key_id, secret_access_key, "GetAFPUsage").await {
         CallOutcome::Body(body) => {
             let result = body.get("Result").unwrap_or(&body);
-            let tiers = parse_afp_tiers(id, result);
+            let tiers = parse_afp_tiers(provider_id, id, result);
             if !tiers.is_empty() {
                 return Ok(Some(tiers));
             }
@@ -593,7 +599,7 @@ async fn query_via_aksk(
 /// arkcli 兜底：`arkcli usage plan --product coding-plan --format json`（SSO 登录态）。
 /// 返回 `None` 表示不可用（未安装/未登录/未订阅），调用方保持空额度。
 /// stdin 必须接 null，避免 arkcli 在未登录时阻塞等输入；调用方再包一层超时。
-fn query_via_arkcli_blocking(id: &AccountId) -> Option<Vec<Quota>> {
+fn query_via_arkcli_blocking(provider_id: &str, id: &AccountId) -> Option<Vec<Quota>> {
     use std::process::Stdio;
     let output = std::process::Command::new("arkcli")
         .args([
@@ -640,7 +646,7 @@ fn query_via_arkcli_blocking(id: &AccountId) -> Option<Vec<Quota>> {
                 }
             })?;
         let reset_at = period.get("reset_at").and_then(parse_reset);
-        quotas.push(percent_quota(id, window, percent, reset_at));
+        quotas.push(percent_quota(provider_id, id, window, percent, reset_at));
     }
     if quotas.is_empty() {
         return None;
@@ -650,7 +656,9 @@ fn query_via_arkcli_blocking(id: &AccountId) -> Option<Vec<Quota>> {
 }
 
 /// 额度查询入口：优先 AK/SK 直查，缺凭据或未订阅时试 arkcli，最后返回空额度。
-pub(super) async fn fetch_quota(
+/// `provider_id` 为调用方自己的 Provider 标识（配额归属）。
+pub async fn fetch_quota(
+    provider_id: &str,
     id: AccountId,
     access_key_id: Option<String>,
     secret_access_key: Option<String>,
@@ -661,7 +669,7 @@ pub(super) async fn fetch_quota(
         // 复用全局 Client（连接池），避免每次额度轮询重建 TLS/连接池。
         static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
         let client = CLIENT.get_or_init(reqwest::Client::new);
-        match query_via_aksk(client, &id, ak.trim(), sk.trim()).await {
+        match query_via_aksk(client, provider_id, &id, ak.trim(), sk.trim()).await {
             Ok(Some(quotas)) => return Ok(quotas),
             Ok(None) => {
                 // 已鉴权但无订阅：仍试 arkcli（可能是另一身份的订阅）。
@@ -670,10 +678,13 @@ pub(super) async fn fetch_quota(
         }
     }
     let id_for_cli = id.clone();
+    let provider_for_cli = provider_id.to_string();
     // arkcli 可能阻塞等输入/网络：15s 超时后按不可用处理，保持空额度。
     let fallback = tokio::time::timeout(
         std::time::Duration::from_secs(15),
-        tokio::task::spawn_blocking(move || query_via_arkcli_blocking(&id_for_cli)),
+        tokio::task::spawn_blocking(move || {
+            query_via_arkcli_blocking(&provider_for_cli, &id_for_cli)
+        }),
     )
     .await
     .map_err(|_| {
@@ -756,7 +767,7 @@ mod tests {
                 {"Level": "monthly", "Percent": 21.77, "ResetTimestamp": 1786723199},
             ]
         });
-        let quotas = parse_coding_plan_tiers(&id, &result);
+        let quotas = parse_coding_plan_tiers("volcengine", &id, &result);
         assert_eq!(quotas.len(), 3);
         assert_eq!(quotas[0].window, QuotaWindow::FiveHour);
         assert_eq!((quotas[0].used, quotas[0].limit), (41, 100));
@@ -773,7 +784,7 @@ mod tests {
             "AFPWeekly": {"Quota": 7000.0, "Used": 5359.78, "ResetTime": 1753536000000i64},
             "AFPDaily": {"Quota": 99999.0, "Used": 1.0, "ResetTime": 1753189560000i64},
         });
-        let quotas = parse_afp_tiers(&id, &result);
+        let quotas = parse_afp_tiers("volcengine", &id, &result);
         assert_eq!(quotas.len(), 2);
         assert_eq!(quotas[0].window, QuotaWindow::FiveHour);
         assert_eq!((quotas[0].used, quotas[0].limit), (1310, 2000));
@@ -821,6 +832,7 @@ mod tests {
         for period in item.get("periods").unwrap().as_array().unwrap() {
             let window = coding_window(period.get("label").unwrap().as_str().unwrap()).unwrap();
             quotas.push(percent_quota(
+                "volcengine",
                 &id,
                 window,
                 period.get("percent").and_then(parse_f64).unwrap(),
@@ -949,7 +961,7 @@ mod tests {
         }
         let id = AccountId("ark-test".into());
         let client = reqwest::Client::new();
-        let result = query_via_aksk(&client, &id, "AK", "SK").await;
+        let result = query_via_aksk(&client, "volcengine", &id, "AK", "SK").await;
         if let Some(value) = prev {
             unsafe {
                 std::env::set_var("SUBSWAP_VOLCENGINE_OPENAPI_BASE", value);
@@ -981,4 +993,5 @@ mod tests {
             .position(|w| w == b"\r\n\r\n")
             .map(|pos| pos + 4)
     }
+
 }

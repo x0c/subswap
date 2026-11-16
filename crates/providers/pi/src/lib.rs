@@ -3,8 +3,10 @@
 //! - 每个账号占 Pi `auth.json` 里一个 slot（`auth_slot`，如 `deepseek`）；
 //!   切换 = 原子改写该 slot（保留其他 slot）+ 可选更新 `settings.json` 默认选择。
 //! - 账号全部 `manual_only`（不参与自动换号）；`query_quota` 按 `channel` 分发：
-//!   OpenCode Go channel（`opencode-go` / `opencode-go:*`）复用
-//!   `common::opencode_go_usage` 查询 `5h`/`7d`/`mo`；其余按量 channel 恒为空；
+//!   标准火山 channel（`auth::volcengine_channel()`）的账号复用火山控制面 AK/SK
+//!   直查（`GetCodingPlanUsage` / AFP + `arkcli` 兜底，与旧顶层 provider 同一路径），
+//!   缺 AK/SK 时返回空不伪造；OpenCode Go channel（`opencode-go` / `opencode-go:*`）
+//!   复用 `common::opencode_go_usage` 查询 `5h`/`7d`/`mo`；其余按量 channel 恒为空。
 //!   `request_credential` 投影长效 key（`expires_at_ms=None`），永不刷新。
 //! - 顶层 `volcengine` provider 只读保留：历史账号由 [`migration`] 搬进本抽屉，
 //!   新 key 走 `subswap add-api pi --preset volcengine` 或 `subswap login volcengine -- <key>`。
@@ -26,14 +28,18 @@ use subswap_core::{
     Account, AccountId, AccountRegistry, BillingKind, ClientTarget, CredentialStore,
     OfficialDisconnect, Provider, Quota, RequestCredential,
 };
-use subswap_provider_common::{opencode_go_usage, EnvIsolatedProvider};
+use subswap_provider_common::{opencode_go_usage, volcengine_quota, EnvIsolatedProvider};
 
-pub use migration::migrate_legacy_volcengine_to_pi;
+pub use migration::{backfill_volcengine_quota_credentials, migrate_legacy_volcengine_to_pi};
 
 /// 独立 Provider 标识。
 pub const PROVIDER_ID: &str = "pi";
 /// 凭证仓库字段：API key。
 pub const API_KEY_FIELD: &str = "api_key";
+/// 凭证仓库字段：额度查询用的火山 AK（与推理 Key 分开存放）。
+pub const QUOTA_AK_FIELD: &str = "access_key_id";
+/// 凭证仓库字段：额度查询用的火山 SK（与推理 Key 分开存放）。
+pub const QUOTA_SK_FIELD: &str = "secret_access_key";
 
 /// `deepseek` slot 的进程 env 映射（Pi 原生同样认它）。
 const DEEPSEEK_ENV_VAR: &str = "DEEPSEEK_API_KEY";
@@ -67,6 +73,10 @@ pub struct NewPiAccount {
     pub model: String,
     pub channel: String,
     pub billing: BillingKind,
+    /// 火山 channel 的额度 AK/SK（与推理 Key 分开存放）；非火山 channel 忽略。
+    pub quota_ak: Option<String>,
+    /// 火山 channel 的额度 SK；与 `quota_ak` 必须成对出现。
+    pub quota_sk: Option<String>,
 }
 
 /// 预设默认值（CLI 交互默认与 `--preset` 解析共用）。
@@ -161,6 +171,26 @@ impl PiProvider {
         let id = AccountId(auth::account_id_for(slot, api_key));
         let existing = self.registry.find(PROVIDER_ID, &id)?;
         self.store.set(PROVIDER_ID, &id.0, API_KEY_FIELD, api_key)?;
+        // 火山 channel 的额度 AK/SK 与推理 Key 分开存放；成对出现才收（半边直接报错，不收半截）。
+        match (params.quota_ak, params.quota_sk) {
+            (None, None) => {}
+            (Some(ak), Some(sk)) => {
+                let ak = ak.trim().to_string();
+                let sk = sk.trim().to_string();
+                if ak.is_empty() || sk.is_empty() {
+                    return Err(Error::Config(
+                        "Volcengine AccessKey ID and Secret cannot be empty".into(),
+                    ));
+                }
+                self.store.set(PROVIDER_ID, &id.0, QUOTA_AK_FIELD, &ak)?;
+                self.store.set(PROVIDER_ID, &id.0, QUOTA_SK_FIELD, &sk)?;
+            }
+            _ => {
+                return Err(Error::Config(
+                    "quota_ak and quota_sk must be provided together".into(),
+                ))
+            }
+        }
         let mut extra = serde_json::Map::new();
         extra.insert("kind".into(), "api".into());
         extra.insert("channel".into(), params.channel.trim().to_string().into());
@@ -192,6 +222,35 @@ impl PiProvider {
         Ok(account)
     }
 
+    /// 设置火山 channel 账号的额度 AK/SK（与推理 Key 分开存放）。
+    pub fn set_quota_credentials(
+        &self,
+        id: &AccountId,
+        access_key_id: &str,
+        secret_access_key: &str,
+    ) -> Result<()> {
+        let access_key_id = access_key_id.trim();
+        let secret_access_key = secret_access_key.trim();
+        if access_key_id.is_empty() || secret_access_key.is_empty() {
+            return Err(Error::Config(
+                "Volcengine AccessKey ID and Secret cannot be empty".into(),
+            ));
+        }
+        self.require_account(id)?;
+        self.store.set(PROVIDER_ID, &id.0, QUOTA_AK_FIELD, access_key_id)?;
+        self.store.set(PROVIDER_ID, &id.0, QUOTA_SK_FIELD, secret_access_key)?;
+        Ok(())
+    }
+
+    /// 读取火山额度 AK/SK；缺失返回 `None` 项，调用方直接按无额度处理（不造假）。
+    fn quota_credentials(&self, id: &AccountId) -> Result<(Option<String>, Option<String>)> {
+        let ak = self.store.get(PROVIDER_ID, &id.0, QUOTA_AK_FIELD)?;
+        let sk = self.store.get(PROVIDER_ID, &id.0, QUOTA_SK_FIELD)?;
+        let ak = ak.map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+        let sk = sk.map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+        Ok((ak, sk))
+    }
+
     /// 是否 OpenCode Go 订阅 channel（支持 GET `/zen/go/v1/usage` 查 5h/7d/mo 余量）。
     fn is_opencode_go_channel(account: &Account) -> bool {
         account
@@ -202,6 +261,15 @@ impl PiProvider {
             .is_some_and(|channel| {
                 channel == auth::OPENCODE_GO_CHANNEL || channel.starts_with("opencode-go:")
             })
+    }
+
+    /// 是否标准火山 channel（额度 AK/SK 直查的唯一入口判据；按量 channel 永不查）。
+    fn is_volcengine_channel(account: &Account) -> bool {
+        account
+            .extra
+            .get("channel")
+            .and_then(|v| v.as_str())
+            .is_some_and(|channel| channel.trim() == auth::volcengine_channel())
     }
 
     fn require_account(&self, id: &AccountId) -> Result<Account> {
@@ -310,6 +378,8 @@ impl PiProvider {
                 model,
                 channel: preset_channel,
                 billing,
+                quota_ak: None,
+                quota_sk: None,
             },
             key,
             Some(false),
@@ -370,7 +440,7 @@ impl Provider for PiProvider {
             .map_err(|e| Error::Provider(format!("Pi activation join failed: {e}")))?
     }
 
-    /// OpenCode Go channel 走 `/zen/go/v1/usage` 直查余量；其余按量 channel 恒为空。
+    /// 标准火山与 OpenCode Go channel 各自直查余量；其余按量 channel 恒为空。
     async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>> {
         self.query_quota_with_opencode_go_base(id, None).await
     }
@@ -402,8 +472,15 @@ impl Provider for PiProvider {
     }
 
     fn credential_store_fields(&self) -> &'static [&'static str] {
-        &[API_KEY_FIELD]
+        &[API_KEY_FIELD, QUOTA_AK_FIELD, QUOTA_SK_FIELD]
     }
+}
+
+/// Pi 账号的额度查询来源分发（内部辅助）。
+enum PiQuotaSource {
+    Empty,
+    OpenCodeGo { api_key: String },
+    Volcengine { ak: String, sk: String },
 }
 
 impl PiProvider {
@@ -415,23 +492,32 @@ impl PiProvider {
     ) -> Result<Vec<Quota>> {
         let provider = self.clone();
         let id_for_lookup = id.clone();
-        let api_key = tokio::task::spawn_blocking(move || -> Result<Option<String>> {
+        let source = tokio::task::spawn_blocking(move || -> Result<PiQuotaSource> {
             let account = provider.require_account(&id_for_lookup)?;
-            if !Self::is_opencode_go_channel(&account) {
-                return Ok(None);
+            if Self::is_opencode_go_channel(&account) {
+                let (api_key, _, _) = provider.account_key(&account)?;
+                return Ok(PiQuotaSource::OpenCodeGo { api_key });
             }
-            let (api_key, _, _) = provider.account_key(&account)?;
-            Ok(Some(api_key))
+            if Self::is_volcengine_channel(&account) {
+                let (ak, sk) = provider.quota_credentials(&id_for_lookup)?;
+                if let (Some(ak), Some(sk)) = (ak, sk) {
+                    return Ok(PiQuotaSource::Volcengine { ak, sk });
+                }
+            }
+            Ok(PiQuotaSource::Empty)
         })
         .await
         .map_err(|e| Error::Provider(format!("Pi quota lookup join failed: {e}")))??;
 
-        let Some(api_key) = api_key else {
-            return Ok(Vec::new());
-        };
-        match opencode_go_base {
-            Some(base) => opencode_go_usage::fetch_quota_at(&api_key, PROVIDER_ID, id, base).await,
-            None => opencode_go_usage::fetch_quota(&api_key, PROVIDER_ID, id).await,
+        match source {
+            PiQuotaSource::Empty => Ok(Vec::new()),
+            PiQuotaSource::OpenCodeGo { api_key } => match opencode_go_base {
+                Some(base) => opencode_go_usage::fetch_quota_at(&api_key, PROVIDER_ID, id, base).await,
+                None => opencode_go_usage::fetch_quota(&api_key, PROVIDER_ID, id).await,
+            },
+            PiQuotaSource::Volcengine { ak, sk } => {
+                volcengine_quota::fetch_quota(PROVIDER_ID, id.clone(), Some(ak), Some(sk)).await
+            }
         }
     }
 
@@ -533,6 +619,8 @@ mod tests {
                 model: "deepseek-chat".into(),
                 channel: "deepseek".into(),
                 billing: BillingKind::Metered,
+                quota_ak: None,
+                quota_sk: None,
             }
         }
     }
@@ -576,6 +664,215 @@ mod tests {
             .import_key(Fixture::deepseek_params(), "sk-q", None)
             .unwrap();
         assert!(fixture.provider.query_quota(&account.id).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn volcengine_slot_without_aksk_returns_empty_without_network() {
+        let fixture = Fixture::new();
+        let account = fixture
+            .provider
+            .import_key(
+                NewPiAccount {
+                    slot: "volcengine".into(),
+                    native_provider: "volcengine".into(),
+                    base_url: auth::PI_VOLCENGINE_BASE_URL.into(),
+                    model: auth::PI_VOLCENGINE_MODEL.into(),
+                    channel: auth::volcengine_channel(),
+                    billing: BillingKind::Flat,
+                    quota_ak: None,
+                    quota_sk: None,
+                },
+                "sk-volc-noquota",
+                None,
+            )
+            .unwrap();
+        // 缺 AK/SK：不打网，直接空额度（不造假）。
+        assert!(fixture.provider.query_quota(&account.id).await.unwrap().is_empty());
+        // 配上 AK/SK 后走同一火山直查路径（此处不断言远端结果，只验字段落盘）。
+        fixture.provider.set_quota_credentials(&account.id, "AK", "SK").unwrap();
+        let store = fixture.provider.store.clone();
+        let id = account.id.clone();
+        let (ak, sk) = tokio::task::spawn_blocking(move || {
+            let ak = store.get("pi", &id.0, super::QUOTA_AK_FIELD).unwrap();
+            let sk = store.get("pi", &id.0, super::QUOTA_SK_FIELD).unwrap();
+            (ak, sk)
+        })
+        .await
+        .unwrap();
+        assert_eq!(ak.as_deref(), Some("AK"));
+        assert_eq!(sk.as_deref(), Some("SK"));
+    }
+
+    /// mock 网关测试共用：同一进程内串行改 `SUBSWAP_VOLCENGINE_OPENAPI_BASE`，防并行测试串台。
+    static MOCK_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn volcengine_params() -> NewPiAccount {
+        NewPiAccount {
+            slot: "volcengine".into(),
+            native_provider: "volcengine".into(),
+            base_url: auth::PI_VOLCENGINE_BASE_URL.into(),
+            model: auth::PI_VOLCENGINE_MODEL.into(),
+            channel: auth::volcengine_channel(),
+            billing: BillingKind::Flat,
+            quota_ak: Some("AK-TEST".into()),
+            quota_sk: Some("SK-TEST".into()),
+        }
+    }
+
+    /// 起最小 HTTP mock：按顺序返回给定 payload；返回 base url 与收到的请求原文。
+    fn spawn_json_mock(payloads: Vec<String>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for payload in payloads {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 4096];
+                let mut header_end = None;
+                while header_end.is_none() {
+                    match stream.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            raw.extend_from_slice(&buf[..n]);
+                            if let Some(pos) = find_mock_headers_end(&raw) {
+                                header_end = Some(pos);
+                                break;
+                            }
+                            if raw.len() > 32 * 1024 {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let header_end = header_end.unwrap_or(raw.len());
+                let header_text = String::from_utf8_lossy(&raw[..header_end]).to_string();
+                let content_len = header_text
+                    .lines()
+                    .find_map(|line| {
+                        line.to_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                    })
+                    .unwrap_or(0);
+                let mut body_len = raw.len().saturating_sub(header_end);
+                while body_len < content_len {
+                    match stream.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            raw.extend_from_slice(&buf[..n]);
+                            body_len += n;
+                        }
+                        Err(_) => break,
+                    }
+                }
+                seen.push(String::from_utf8_lossy(&raw).to_string());
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    payload.len(),
+                    payload
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+            seen
+        });
+        (format!("http://127.0.0.1:{port}"), handle)
+    }
+
+    fn find_mock_headers_end(raw: &[u8]) -> Option<usize> {
+        raw.windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map(|pos| pos + 4)
+    }
+
+    fn with_mock_base(base: &str) -> Option<String> {
+        let prev = std::env::var("SUBSWAP_VOLCENGINE_OPENAPI_BASE").ok();
+        unsafe {
+            std::env::set_var("SUBSWAP_VOLCENGINE_OPENAPI_BASE", base);
+        }
+        prev
+    }
+
+    fn restore_mock_base(prev: Option<String>) {
+        if let Some(value) = prev {
+            unsafe {
+                std::env::set_var("SUBSWAP_VOLCENGINE_OPENAPI_BASE", value);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("SUBSWAP_VOLCENGINE_OPENAPI_BASE");
+            }
+        }
+    }
+
+    /// 火山 channel + AK/SK：mock 网关返回 5h/7d/mo 三档百分比（CodingPlan 优先，只打一次）。
+    #[tokio::test]
+    async fn volcengine_channel_with_aksk_reports_three_windows() {
+        let _guard = MOCK_ENV_LOCK.lock().unwrap();
+        let payload = r#"{"ResponseMetadata":{},"Result":{"Status":"Running","QuotaUsage":[{"Level":"session","Percent":10.5,"ResetTimestamp":1784278625},{"Level":"weekly","Percent":43.5,"ResetTimestamp":1784217600},{"Level":"monthly","Percent":21.7,"ResetTimestamp":1786723199}]}}"#.to_string();
+        let (base, server) = spawn_json_mock(vec![payload]);
+        let prev = with_mock_base(&base);
+
+        let fixture = Fixture::new();
+        let account = fixture
+            .provider
+            .import_key(volcengine_params(), "sk-volc-quota", None)
+            .unwrap();
+        let quotas = fixture.provider.query_quota(&account.id).await.unwrap();
+
+        restore_mock_base(prev);
+        let seen = server.join().unwrap();
+
+        assert_eq!(quotas.len(), 3);
+        assert!(quotas.iter().all(|q| q.provider == "pi"));
+        assert_eq!(quotas[0].window, subswap_core::QuotaWindow::FiveHour);
+        assert_eq!((quotas[0].used, quotas[0].limit), (11, 100));
+        assert_eq!(quotas[1].window, subswap_core::QuotaWindow::SevenDay);
+        assert_eq!(quotas[2].window, subswap_core::QuotaWindow::Month);
+        // CodingPlan 命中后不再打 AFP。
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].contains("Action=GetCodingPlanUsage"));
+    }
+
+    /// 鉴权失败时错误与外发请求均不得携带 SK 原文（AK 只出现在签名 Credential 作用域，属协议行为）。
+    #[tokio::test]
+    async fn quota_auth_failure_never_echoes_secret() {
+        let _guard = MOCK_ENV_LOCK.lock().unwrap();
+        let secret = "SK-SECRET-MUST-NOT-LEAK-987654321";
+        let access_id = "AKID-MUST-NOT-LEAK-12345";
+        let payload = r#"{"ResponseMetadata":{"Error":{"Code":"InvalidAccessKeyId","Message":"ak is wrong"}},"Result":{}}"#.to_string();
+        // CodingPlan 与 AFP 各打一次，共两个连接。
+        let (base, server) = spawn_json_mock(vec![payload.clone(), payload]);
+        let prev = with_mock_base(&base);
+
+        let fixture = Fixture::new();
+        let account = fixture
+            .provider
+            .import_key(
+                NewPiAccount {
+                    quota_ak: Some(access_id.into()),
+                    quota_sk: Some(secret.into()),
+                    ..volcengine_params()
+                },
+                "sk-volc-badauth",
+                None,
+            )
+            .unwrap();
+        let err = fixture.provider.query_quota(&account.id).await.unwrap_err();
+
+        restore_mock_base(prev);
+        let seen = server.join().unwrap();
+
+        let message = err.to_string();
+        assert!(!message.contains(secret), "error leaks SK: {message}");
+        assert!(!message.contains(access_id), "error leaks AK: {message}");
+        assert_eq!(seen.len(), 2);
+        for req in &seen {
+            assert!(!req.contains(secret), "request leaks SK: {req}");
+        }
     }
 
     #[tokio::test]
@@ -671,6 +968,8 @@ mod tests {
                     model: auth::PI_VOLCENGINE_MODEL.into(),
                     channel: auth::volcengine_channel(),
                     billing: BillingKind::Flat,
+                    quota_ak: None,
+                    quota_sk: None,
                 },
                 "sk-volc",
                 None,
@@ -778,6 +1077,8 @@ mod tests {
                     model: go_preset.model.to_string(),
                     channel: auth::channel_for_slot(go_preset.slot),
                     billing: go_preset.billing,
+                    quota_ak: None,
+                    quota_sk: None,
                 },
                 "oc_sk_000000000000_testgo11",
                 None,
@@ -795,6 +1096,8 @@ mod tests {
                     model: zen_preset.model.to_string(),
                     channel: auth::channel_for_slot(zen_preset.slot),
                     billing: zen_preset.billing,
+                    quota_ak: None,
+                    quota_sk: None,
                 },
                 "oc_sk_000000000000_testzen2",
                 None,

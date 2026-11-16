@@ -118,6 +118,14 @@ enum Cmd {
         #[arg(long)]
         billing: Option<String>,
 
+        /// Volcengine quota AccessKey ID (only for `add-api pi --preset volcengine`; with --ak-secret).
+        #[arg(long)]
+        ak_id: Option<String>,
+
+        /// Volcengine quota AccessKey Secret (only for `add-api pi --preset volcengine`; with --ak-id).
+        #[arg(long)]
+        ak_secret: Option<String>,
+
         /// Skip the final confirmation.
         #[arg(long)]
         yes: bool,
@@ -280,6 +288,8 @@ async fn main() -> Result<()> {
             subagent_model,
             effort,
             billing,
+            ak_id,
+            ak_secret,
             yes,
         }) => {
             cmd::add_api::run(
@@ -299,6 +309,8 @@ async fn main() -> Result<()> {
                     subagent_model,
                     effort,
                     billing,
+                    ak_id,
+                    ak_secret,
                     yes,
                 },
                 cli.json,

@@ -288,40 +288,61 @@ pub async fn run(
             }
             let (inference_key, access_key_id, secret_access_key) =
                 parse_volcengine_login_args(&extra_args)?;
-            if access_key_id.is_some() || secret_access_key.is_some() {
-                bail!(
-                    "Volcengine quota AK/SK is retired with the top-level provider; Pi never queries quota. Pass only an inference key: `subswap login volcengine -- <key>`"
-                );
+            if let Some(key) = inference_key {
+                let account = ctx
+                    .pi
+                    .import_key(
+                        subswap_provider_pi::NewPiAccount {
+                            slot: "volcengine".into(),
+                            native_provider: "volcengine".into(),
+                            base_url: subswap_provider_pi::auth::PI_VOLCENGINE_BASE_URL.into(),
+                            model: subswap_provider_pi::auth::PI_VOLCENGINE_MODEL.into(),
+                            channel: subswap_provider_pi::auth::volcengine_channel(),
+                            billing: BillingKind::Flat,
+                            quota_ak: access_key_id,
+                            quota_sk: secret_access_key,
+                        },
+                        &key,
+                        None,
+                    )
+                    .context("import Volcengine key into Pi")?;
+                ctx.pi
+                    .activate(&account.id)
+                    .await
+                    .context("activate Pi volcengine slot")?;
+                ctx.audit.append(AuditEvent::ok(
+                    "login",
+                    "pi",
+                    Some(account.id.0.as_str()),
+                ));
+                println!("login → pi/{} (volcengine slot)", account_ref(&account.id.0));
+                println!("note: top-level `volcengine` is read-only; new keys live in the Pi drawer");
+                if let Err(e) = subswap_core::record_manual_swap("pi") {
+                    tracing::warn!(err = %e, provider = "pi", "record manual hold failed");
+                }
+                return finish(ctx, json).await;
             }
-            let key = inference_key.context(
-                "top-level `volcengine` login is retired; use `subswap login volcengine -- <key>` to import into Pi (`pi/volcengine` slot) or `subswap add-api pi --preset volcengine`",
+            // 只补 AK/SK：附到当前 active 的 Pi volcengine slot 账号（无 active 则用唯一的 slot 账号）。
+            let (Some(ak), Some(sk)) = (access_key_id, secret_access_key) else {
+                bail!(
+                    "top-level `volcengine` login is retired; use `subswap login volcengine -- <key>` to import into Pi (`pi/volcengine` slot) or `subswap add-api pi --preset volcengine`"
+                );
+            };
+            let target = find_volcengine_quota_target(ctx).context(
+                "no Pi volcengine account to attach quota AK/SK to; import a key first: `subswap login volcengine -- <key>`",
             )?;
-            let account = ctx
-                .pi
-                .import_key(
-                    subswap_provider_pi::NewPiAccount {
-                        slot: "volcengine".into(),
-                        native_provider: "volcengine".into(),
-                        base_url: subswap_provider_pi::auth::PI_VOLCENGINE_BASE_URL.into(),
-                        model: subswap_provider_pi::auth::PI_VOLCENGINE_MODEL.into(),
-                        channel: subswap_provider_pi::auth::volcengine_channel(),
-                        billing: BillingKind::Flat,
-                    },
-                    &key,
-                    None,
-                )
-                .context("import Volcengine key into Pi")?;
             ctx.pi
-                .activate(&account.id)
-                .await
-                .context("activate Pi volcengine slot")?;
+                .set_quota_credentials(&target.id, &ak, &sk)
+                .context("save Volcengine quota AK/SK")?;
             ctx.audit.append(AuditEvent::ok(
                 "login",
                 "pi",
-                Some(account.id.0.as_str()),
+                Some(target.id.0.as_str()),
             ));
-            println!("login → pi/{} (volcengine slot)", account_ref(&account.id.0));
-            println!("note: top-level `volcengine` is read-only; new keys live in the Pi drawer");
+            println!(
+                "quota AK/SK saved → pi/{} (volcengine slot)",
+                account_ref(&target.id.0)
+            );
             if let Err(e) = subswap_core::record_manual_swap("pi") {
                 tracing::warn!(err = %e, provider = "pi", "record manual hold failed");
             }
@@ -367,6 +388,35 @@ async fn finish(ctx: &AppContext, json: bool) -> Result<()> {
         print_status_overview(ctx).await?;
     }
     Ok(())
+}
+
+/// 只补 AK/SK 时的附着目标：优先 active 的 Pi `volcengine` slot 账号，
+/// 无 active 则在唯一的 slot 账号上补；多个非 active 账号时报错（避免贴错号）。
+fn find_volcengine_quota_target(ctx: &AppContext) -> Result<subswap_core::Account> {
+    let accounts = ctx
+        .registry
+        .list_by_provider("pi")
+        .context("list Pi accounts")?;
+    let mut slots: Vec<subswap_core::Account> = accounts
+        .into_iter()
+        .filter(|a| {
+            a.extra
+                .get("pi_api")
+                .and_then(|v| v.get("auth_slot"))
+                .and_then(|v| v.as_str())
+                .is_some_and(|slot| slot.trim() == "volcengine")
+        })
+        .collect();
+    if slots.is_empty() {
+        anyhow::bail!("no Pi volcengine account found");
+    }
+    if let Some(active) = slots.iter().find(|a| a.active).cloned() {
+        return Ok(active);
+    }
+    if slots.len() == 1 {
+        return Ok(slots.remove(0));
+    }
+    anyhow::bail!("multiple Pi volcengine accounts; activate one first (`subswap swap pi/<id>`) then retry");
 }
 
 /// 解析 volcengine 登录参数：至多一个位置参数（推理 Key）+ 可选 AK/SK flags。

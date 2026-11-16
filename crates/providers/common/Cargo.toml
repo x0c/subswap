@@ -16,6 +16,7 @@ reqwest = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
+sha2 = { workspace = true }
 filetime = "0.2"
 
 [dev-dependencies]

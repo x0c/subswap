@@ -8,6 +8,7 @@ pub mod json;
 pub mod opencode_go_usage;
 pub mod proper_lock;
 pub mod runtime;
+pub mod volcengine_quota;
 
 pub use engine::FileBlobProvider;
 pub use env_isolated::EnvIsolatedProvider;

@@ -21,8 +21,7 @@ use subswap_provider_claude::{
     settings_path, write_api_env_into_settings, write_api_state, ApiState, ClaudeApiConfig,
 };
 use subswap_provider_common::EnvIsolatedProvider;
-
-mod quota;
+use subswap_provider_common::volcengine_quota;
 
 /// 独立 Provider 标识。
 pub const PROVIDER_ID: &str = "volcengine";
@@ -434,7 +433,7 @@ impl Provider for VolcengineProvider {
         .await
         .map_err(|e| Error::Provider(format!("read Volcengine quota credentials failed: {e}")))??
         ;
-        quota::fetch_quota(id.clone(), access_key_id, secret_access_key).await
+        volcengine_quota::fetch_quota(PROVIDER_ID, id.clone(), access_key_id, secret_access_key).await
     }
 
     fn credential_store_fields(&self) -> &'static [&'static str] {

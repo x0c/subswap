@@ -53,11 +53,17 @@ impl AppContext {
         ));
         let registry = Arc::new(AccountRegistry::from_default_paths()?);
         subswap_provider_opencode::migrate_legacy_api_keys(store.as_ref(), &registry)?;
-        // 顶层 volcengine 一次性搬进 Pi 抽屉（幂等；无 volcengine 账号时 no-op）。
+        // 顶层 volcengine 一次性搬进 Pi 抽屉（幂等；无 volcengine 账号时 no-op），
+        // 再为旧版迁移误删 AK/SK 的 pi 账号从残留恢复（无残留则 warn，不管）。
         if let Err(e) =
             subswap_provider_pi::migrate_legacy_volcengine_to_pi(store.as_ref(), &registry)
         {
             tracing::warn!(err = %e, "migrate volcengine to pi failed; continuing");
+        }
+        if let Err(e) =
+            subswap_provider_pi::backfill_volcengine_quota_credentials(store.as_ref(), &registry)
+        {
+            tracing::warn!(err = %e, "backfill pi volcengine quota AK/SK failed; continuing");
         }
 
         let claude = Arc::new(ClaudeProvider::new(store.clone(), registry.clone()));

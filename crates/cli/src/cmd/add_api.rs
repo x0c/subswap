@@ -26,6 +26,10 @@ pub struct AddApiOptions {
     /// 计费方式：flat（订阅固定费率）| metered（按量）| unlimited（不限量）。
     /// 决定 OpenConductor 等下游消费者按权重自动切换时的优先级。
     pub billing: Option<String>,
+    /// 火山额度 AK（仅 `pi --preset volcengine`；须与 `ak_secret` 成对出现）。
+    pub ak_id: Option<String>,
+    /// 火山额度 SK（仅 `pi --preset volcengine`；须与 `ak_id` 成对出现）。
+    pub ak_secret: Option<String>,
     pub yes: bool,
 }
 
@@ -200,8 +204,9 @@ fn validate_endpoint(endpoint: &str) -> Result<()> {
     Ok(())
 }
 
-/// `subswap add-api pi [--preset deepseek|volcengine|custom] [--endpoint] [--api-key] [--model]`
+/// `subswap add-api pi [--preset deepseek|volcengine|custom] [--endpoint] [--api-key] [--model] [--ak-id] [--ak-secret]`
 /// 只写凭证仓库与 registry，不改 live、不激活（用 `subswap swap pi/<id>` 生效）。
+/// `--ak-id` / `--ak-secret` 仅 `volcengine` 预设可用（成对出现），配火山额度查询凭据。
 async fn run_pi(
     ctx: &AppContext,
     options: AddApiOptions,
@@ -288,6 +293,16 @@ async fn run_pi(
         Some(value) => normalize_billing(&value)?,
         None => preset.billing,
     };
+    let (ak_id, ak_secret) = match (options.ak_id, options.ak_secret) {
+        (None, None) => (None, None),
+        (Some(ak), Some(sk)) if !ak.trim().is_empty() && !sk.trim().is_empty() => {
+            if preset_name != "volcengine" {
+                bail!("--ak-id/--ak-secret only applies to `add-api pi --preset volcengine`");
+            }
+            (Some(ak.trim().to_string()), Some(sk.trim().to_string()))
+        }
+        _ => bail!("--ak-id and --ak-secret must be provided together"),
+    };
     if !confirm_add(interactive, options.yes, &slot)? {
         println!("Cancelled.");
         return Ok(());
@@ -303,6 +318,8 @@ async fn run_pi(
                 model: model.trim().to_string(),
                 channel,
                 billing,
+                quota_ak: ak_id,
+                quota_sk: ak_secret,
             },
             &api_key,
             Some(false),
@@ -751,6 +768,8 @@ mod tests {
                 subagent_model: None,
                 effort: Some("max".into()),
                 billing: Some("metered".into()),
+                ak_id: None,
+                ak_secret: None,
                 yes: true,
             },
             false,
@@ -779,6 +798,8 @@ mod tests {
                 subagent_model: Some("legacy-subagent".into()),
                 effort: Some("max".into()),
                 billing: Some("metered".into()),
+                ak_id: None,
+                ak_secret: None,
                 yes: true,
             },
             false,
@@ -807,6 +828,8 @@ mod tests {
                 subagent_model: Some("legacy-subagent".into()),
                 effort: Some("max".into()),
                 billing: Some("metered".into()),
+                ak_id: None,
+                ak_secret: None,
                 yes: true,
             },
             false,

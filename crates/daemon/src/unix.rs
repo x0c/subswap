@@ -123,11 +123,16 @@ pub async fn run() -> Result<()> {
     ));
     let registry = Arc::new(AccountRegistry::from_default_paths()?);
     subswap_provider_opencode::migrate_legacy_api_keys(store.as_ref(), &registry)?;
-    // 顶层 volcengine 一次性搬进 Pi 抽屉（幂等；与 CLI 同语义）。
+    // 顶层 volcengine 一次性搬进 Pi 抽屉（幂等；与 CLI 同语义），再补回旧版误删的 AK/SK。
     if let Err(e) =
         subswap_provider_pi::migrate_legacy_volcengine_to_pi(store.as_ref(), &registry)
     {
         tracing::warn!(err = %e, "migrate volcengine to pi failed; continuing");
+    }
+    if let Err(e) =
+        subswap_provider_pi::backfill_volcengine_quota_credentials(store.as_ref(), &registry)
+    {
+        tracing::warn!(err = %e, "backfill pi volcengine quota AK/SK failed; continuing");
     }
     let audit = AuditLog::from_default_paths()?;
 
@@ -153,7 +158,8 @@ pub async fn run() -> Result<()> {
         registry.clone(),
     ));
     let pi = Arc::new(subswap_provider_pi::new(store.clone(), registry.clone()));
-    // daemon 不直接持有 pi 句柄：Pi 无额度、无保活，注册进表仅为统一快照/决策面。
+    // daemon 不直接持有 pi 句柄：Pi 全 manual_only、无保活，注册进表仅为统一快照/决策面
+    //（volcengine slot 账号的额度经 AK/SK 直查，同样只读展示）。
     let mut providers = ProviderRegistry::new();
     providers.register(claude.clone());
     providers.register(codex.clone());
