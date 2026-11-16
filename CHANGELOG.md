@@ -8,6 +8,14 @@ the named acceptance is done.
 
 ## Unreleased
 
+### English
+
+- Restore Volcengine (火山方舟) Coding Plan quota for the Pi drawer: V4 signing and the `GetCodingPlanUsage` / `GetAFPUsage` calls now live in `providers/common` and are shared with the read-only top-level provider, the per-account quota AK/SK survives the legacy migration (with backfill), and `add-api pi --preset volcengine` / `login volcengine` accept `--ak-id` / `--ak-secret`. Accounts without the pair still show no windows instead of fabricated numbers.
+
+### 简体中文
+
+- 恢复 Pi 抽屉里火山方舟 Coding Plan 的余量查询：V4 签名与 `GetCodingPlanUsage` / `GetAFPUsage` 调用移到 `providers/common`，与只读的顶层 provider 共用一套实现；账号级额度 AK/SK 在旧版迁移中保留（并可从残留回补）；`add-api pi --preset volcengine` / `login volcengine` 支持 `--ak-id` / `--ak-secret`。缺这对凭据时仍显示无窗口，不编造数字。
+
 ## v1.17.1
 
 ### English

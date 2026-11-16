@@ -3,7 +3,7 @@
 | 命令 | 说明 |
 |---|---|
 | `subswap` | 默认入口：扫本地自动 import → 立即显示账号骨架 → quota 渐进刷新 → 单 Provider 就绪即做 AutoSwap 决策 → 最终状态；同时 best-effort 拉起 `subswapd`（用户无感） |
-| `subswap add-api [claude\|codex\|pi]` | 交互式登记自定义 API；不带 provider 时先选择 Claude Code、Codex 或 Pi，带入参时跳过选择；非交互必须显式给 provider。保存后不自动激活 |
+| `subswap add-api [claude\|codex\|pi]` | 交互式登记自定义 API；不带 provider 时先选择 Claude Code、Codex 或 Pi，带入参时跳过选择；非交互必须显式给 provider。保存后不自动激活。`pi --preset volcengine` 可附 `--ak-id/--ak-secret`（成对）配额度查询凭据 |
 | `subswap login <claude\|codex>` | 调用官方 CLI 登录流程，完成后导入/覆盖当前登录账号并标记为 active |
 | `subswap login <kimi\|cursor\|commandcode\|antigravity>` | **不驱动登录**：用户先在对应客户端登录（Command Code 也可把 API key 写在 `--` 后面；Antigravity 别名 `agy`/`gemini`，当前支持 macOS 钥匙串），本命令只导入当前状态并标记为 active |
 | `subswap login opencode` | 导入已登录的官方 Console 账号；未登录时调官方命令（V2 `opencode auth login opencode` / V1 `opencode console login`）登录后导入。不会把 Go API key 当成官方账号 |
