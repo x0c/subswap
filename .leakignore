@@ -9,3 +9,7 @@ fp:f496ef19e2a6f4a8
 fp:ebf7fafecbd8ca23
 # Type-name false positive in credential_needs_renewal signature (later commit removes the type from the signature).
 fp:6fa6333e5ee0ec6b
+# Pi quota auth-failure test canary: a synthetic "must not leak" fixture, not a
+# credential. The following commit replaces the credential-shaped literal, but the
+# original blob stays in that commit's range.
+fp:3761b35f495555ac
