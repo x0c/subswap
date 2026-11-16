@@ -878,7 +878,7 @@ mod tests {
     #[tokio::test]
     async fn quota_auth_failure_never_echoes_secret() {
         let _guard = MOCK_ENV_LOCK.lock().unwrap();
-        let secret = "SK-SECRET-MUST-NOT-LEAK-987654321";
+        let secret = "synthetic-secret-value-must-not-leak";
         let access_id = "AKID-MUST-NOT-LEAK-12345";
         let payload = r#"{"ResponseMetadata":{"Error":{"Code":"InvalidAccessKeyId","Message":"ak is wrong"}},"Result":{}}"#.to_string();
         // CodingPlan 与 AFP 各打一次，共两个连接。
