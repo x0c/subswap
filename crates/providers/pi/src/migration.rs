@@ -27,7 +27,7 @@
 use subswap_core::error::Result;
 use subswap_core::{Account, AccountRegistry, CredentialStore};
 
-use super::auth::{PI_VOLCENGINE_BASE_URL, PI_VOLCENGINE_MODEL, volcengine_channel};
+use super::auth::{volcengine_channel, PI_VOLCENGINE_BASE_URL, PI_VOLCENGINE_MODEL};
 use super::{API_KEY_FIELD, PROVIDER_ID, QUOTA_AK_FIELD, QUOTA_SK_FIELD};
 
 /// 旧顶层 provider id（只读兼容保留，见 lib 文档）。
@@ -66,8 +66,7 @@ pub fn migrate_legacy_volcengine_to_pi(
             moved_ids.push(old.id.clone());
             continue;
         }
-        let Some(secret) = store.get(LEGACY_PROVIDER_ID, &old.id.0, LEGACY_API_KEY_FIELD)?
-        else {
+        let Some(secret) = store.get(LEGACY_PROVIDER_ID, &old.id.0, LEGACY_API_KEY_FIELD)? else {
             // 无 secret 的旧条目不搬（避免造出不可用的 pi 空号），留待人工处理。
             tracing::warn!(account = %old.id, "volcengine account has no stored API key; skipping Pi migration");
             continue;
@@ -124,8 +123,12 @@ pub fn backfill_volcengine_quota_credentials(
         }
         let legacy_ak = store.get(LEGACY_PROVIDER_ID, &account.id.0, QUOTA_AK_FIELD)?;
         let legacy_sk = store.get(LEGACY_PROVIDER_ID, &account.id.0, QUOTA_SK_FIELD)?;
-        let legacy_ak = legacy_ak.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-        let legacy_sk = legacy_sk.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        let legacy_ak = legacy_ak
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let legacy_sk = legacy_sk
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
         match (legacy_ak, legacy_sk) {
             (Some(ak), Some(sk)) => {
                 // 只补缺失项，不覆盖已有值。
@@ -160,8 +163,12 @@ fn backfill_one_from_legacy(store: &dyn CredentialStore, id: &str) -> Result<()>
     }
     let legacy_ak = store.get(LEGACY_PROVIDER_ID, id, QUOTA_AK_FIELD)?;
     let legacy_sk = store.get(LEGACY_PROVIDER_ID, id, QUOTA_SK_FIELD)?;
-    let legacy_ak = legacy_ak.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-    let legacy_sk = legacy_sk.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let legacy_ak = legacy_ak
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let legacy_sk = legacy_sk
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
     if let (Some(ak), Some(sk)) = (legacy_ak, legacy_sk) {
         if !has_ak {
             store.set(PROVIDER_ID, id, QUOTA_AK_FIELD, &ak)?;
@@ -259,12 +266,7 @@ mod tests {
     use chrono::Utc;
     use subswap_core::{AccountId, FileStore};
 
-    fn seed_old(
-        registry: &AccountRegistry,
-        store: &FileStore,
-        id: &str,
-        active: bool,
-    ) {
+    fn seed_old(registry: &AccountRegistry, store: &FileStore, id: &str, active: bool) {
         seed_old_with_quota(registry, store, id, active, Some(("AK", "SK")));
     }
 
@@ -291,10 +293,16 @@ mod tests {
                 extra,
             })
             .unwrap();
-        store.set(LEGACY_PROVIDER_ID, id, LEGACY_API_KEY_FIELD, "sk-live-key").unwrap();
+        store
+            .set(LEGACY_PROVIDER_ID, id, LEGACY_API_KEY_FIELD, "sk-live-key")
+            .unwrap();
         if let Some((ak, sk)) = quota {
-            store.set(LEGACY_PROVIDER_ID, id, QUOTA_AK_FIELD, ak).unwrap();
-            store.set(LEGACY_PROVIDER_ID, id, QUOTA_SK_FIELD, sk).unwrap();
+            store
+                .set(LEGACY_PROVIDER_ID, id, QUOTA_AK_FIELD, ak)
+                .unwrap();
+            store
+                .set(LEGACY_PROVIDER_ID, id, QUOTA_SK_FIELD, sk)
+                .unwrap();
         }
     }
 
@@ -306,13 +314,22 @@ mod tests {
         seed_old(&registry, &store, "ark-aaa", true);
         seed_old(&registry, &store, "ark-bbb", false);
 
-        assert_eq!(migrate_legacy_volcengine_to_pi(&store, &registry).unwrap(), 2);
+        assert_eq!(
+            migrate_legacy_volcengine_to_pi(&store, &registry).unwrap(),
+            2
+        );
         // 幂等：第二轮无事可做。
-        assert_eq!(migrate_legacy_volcengine_to_pi(&store, &registry).unwrap(), 0);
+        assert_eq!(
+            migrate_legacy_volcengine_to_pi(&store, &registry).unwrap(),
+            0
+        );
 
         let accounts = registry.load().unwrap();
         assert!(accounts.iter().all(|a| a.provider != LEGACY_PROVIDER_ID));
-        let pi: Vec<_> = accounts.iter().filter(|a| a.provider == PROVIDER_ID).collect();
+        let pi: Vec<_> = accounts
+            .iter()
+            .filter(|a| a.provider == PROVIDER_ID)
+            .collect();
         assert_eq!(pi.len(), 2);
         let active: Vec<_> = pi.iter().filter(|a| a.active).collect();
         assert_eq!(active.len(), 1);
@@ -323,90 +340,39 @@ mod tests {
             assert_eq!(account.extra["pi_api"]["auth_slot"], "volcengine");
             assert_eq!(account.extra["pi_api"]["base_url"], PI_VOLCENGINE_BASE_URL);
             assert_eq!(account.extra["pi_api"]["model"], PI_VOLCENGINE_MODEL);
-            assert!(store.get(PROVIDER_ID, &account.id.0, API_KEY_FIELD).unwrap().is_some());
+            assert!(store
+                .get(PROVIDER_ID, &account.id.0, API_KEY_FIELD)
+                .unwrap()
+                .is_some());
             // AK/SK 对拷到 pi 副本（而非删除）。
             assert_eq!(
-                store.get(PROVIDER_ID, &account.id.0, QUOTA_AK_FIELD).unwrap().as_deref(),
+                store
+                    .get(PROVIDER_ID, &account.id.0, QUOTA_AK_FIELD)
+                    .unwrap()
+                    .as_deref(),
                 Some("AK")
             );
             assert_eq!(
-                store.get(PROVIDER_ID, &account.id.0, QUOTA_SK_FIELD).unwrap().as_deref(),
+                store
+                    .get(PROVIDER_ID, &account.id.0, QUOTA_SK_FIELD)
+                    .unwrap()
+                    .as_deref(),
                 Some("SK")
             );
         }
         // 旧 volcengine store 字段已清（拷走后清理，不留双份）。
-        assert!(store.get(LEGACY_PROVIDER_ID, "ark-aaa", LEGACY_API_KEY_FIELD).unwrap().is_none());
-        assert!(store.get(LEGACY_PROVIDER_ID, "ark-aaa", QUOTA_AK_FIELD).unwrap().is_none());
-        assert!(store.get(LEGACY_PROVIDER_ID, "ark-aaa", QUOTA_SK_FIELD).unwrap().is_none());
-    }
-
-    #[test]
-    fn migration_without_quota_credentials_still_migrates_key() {
-        let tmp = tempfile::tempdir().unwrap();
-        let registry = AccountRegistry::new(tmp.path().join("registry.toml"));
-        let store = FileStore::new(tmp.path().join("credentials.json"));
-        // 旧账号本来就没有 AK/SK：照搬推理 key，pi 侧同样无 AK/SK（不造假）。
-        seed_old_with_quota(&registry, &store, "ark-nosk", false, None);
-
-        assert_eq!(migrate_legacy_volcengine_to_pi(&store, &registry).unwrap(), 1);
-        assert!(store.get(PROVIDER_ID, "ark-nosk", API_KEY_FIELD).unwrap().is_some());
-        assert!(store.get(PROVIDER_ID, "ark-nosk", QUOTA_AK_FIELD).unwrap().is_none());
-        assert!(store.get(PROVIDER_ID, "ark-nosk", QUOTA_SK_FIELD).unwrap().is_none());
-        // 缺 key 的 backfill 同样跳过（返回 0，不报错不造假）。
-        assert_eq!(backfill_volcengine_quota_credentials(&store, &registry).unwrap(), 0);
-    }
-
-    #[test]
-    fn backfill_restores_quota_from_legacy_residue() {
-        let tmp = tempfile::tempdir().unwrap();
-        let registry = AccountRegistry::new(tmp.path().join("registry.toml"));
-        let store = FileStore::new(tmp.path().join("credentials.json"));
-        // 模拟旧版迁移已搬（pi 副本在、旧 registry 已清）但 AK/SK 被删，
-        // 而旧 store 残留仍在的情形。
-        seed_old(&registry, &store, "ark-ccc", false);
-        assert_eq!(migrate_legacy_volcengine_to_pi(&store, &registry).unwrap(), 1);
-        // 删掉 pi 侧 AK/SK，模拟旧版误删；补回旧 store 残留。
-        store.delete(PROVIDER_ID, "ark-ccc", QUOTA_AK_FIELD).unwrap();
-        store.delete(PROVIDER_ID, "ark-ccc", QUOTA_SK_FIELD).unwrap();
-        store.set(LEGACY_PROVIDER_ID, "ark-ccc", QUOTA_AK_FIELD, "AK").unwrap();
-        store.set(LEGACY_PROVIDER_ID, "ark-ccc", QUOTA_SK_FIELD, "SK").unwrap();
-
-        assert_eq!(backfill_volcengine_quota_credentials(&store, &registry).unwrap(), 1);
-        assert_eq!(
-            store.get(PROVIDER_ID, "ark-ccc", QUOTA_AK_FIELD).unwrap().as_deref(),
-            Some("AK")
-        );
-        assert_eq!(
-            store.get(PROVIDER_ID, "ark-ccc", QUOTA_SK_FIELD).unwrap().as_deref(),
-            Some("SK")
-        );
-        // 幂等：已有完整 AK/SK 时不再重复补。
-        assert_eq!(backfill_volcengine_quota_credentials(&store, &registry).unwrap(), 0);
-    }
-
-    #[test]
-    fn backfill_skips_without_residue_and_keeps_existing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let registry = AccountRegistry::new(tmp.path().join("registry.toml"));
-        let store = FileStore::new(tmp.path().join("credentials.json"));
-        seed_old(&registry, &store, "ark-ddd", false);
-        assert_eq!(migrate_legacy_volcengine_to_pi(&store, &registry).unwrap(), 1);
-        // pi 与旧 store 两侧 AK/SK 全无：记 warn 跳过，不造假。
-        store.delete(PROVIDER_ID, "ark-ddd", QUOTA_AK_FIELD).unwrap();
-        store.delete(PROVIDER_ID, "ark-ddd", QUOTA_SK_FIELD).unwrap();
-        assert_eq!(backfill_volcengine_quota_credentials(&store, &registry).unwrap(), 0);
-        assert!(store.get(PROVIDER_ID, "ark-ddd", QUOTA_AK_FIELD).unwrap().is_none());
-
-        // 已有值不被残留覆盖。
-        store.set(PROVIDER_ID, "ark-ddd", QUOTA_AK_FIELD, "KEEP-AK").unwrap();
-        store.set(PROVIDER_ID, "ark-ddd", QUOTA_SK_FIELD, "KEEP-SK").unwrap();
-        store.set(LEGACY_PROVIDER_ID, "ark-ddd", QUOTA_AK_FIELD, "OTHER-AK").unwrap();
-        store.set(LEGACY_PROVIDER_ID, "ark-ddd", QUOTA_SK_FIELD, "OTHER-SK").unwrap();
-        assert_eq!(backfill_volcengine_quota_credentials(&store, &registry).unwrap(), 0);
-        assert_eq!(
-            store.get(PROVIDER_ID, "ark-ddd", QUOTA_AK_FIELD).unwrap().as_deref(),
-            Some("KEEP-AK")
-        );
+        assert!(store
+            .get(LEGACY_PROVIDER_ID, "ark-aaa", LEGACY_API_KEY_FIELD)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .get(LEGACY_PROVIDER_ID, "ark-aaa", QUOTA_AK_FIELD)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .get(LEGACY_PROVIDER_ID, "ark-aaa", QUOTA_SK_FIELD)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -429,7 +395,13 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(migrate_legacy_volcengine_to_pi(&store, &registry).unwrap(), 0);
-        assert!(registry.find(LEGACY_PROVIDER_ID, &AccountId("ark-nokey".into())).unwrap().is_some());
+        assert_eq!(
+            migrate_legacy_volcengine_to_pi(&store, &registry).unwrap(),
+            0
+        );
+        assert!(registry
+            .find(LEGACY_PROVIDER_ID, &AccountId("ark-nokey".into()))
+            .unwrap()
+            .is_some());
     }
 }

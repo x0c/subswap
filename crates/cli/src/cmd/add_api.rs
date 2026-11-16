@@ -220,7 +220,9 @@ async fn run_pi(
         || options.subagent_model.is_some()
         || options.effort.is_some()
     {
-        bail!("Pi uses --preset, --endpoint, --api-key and --model; Claude-only options do not apply");
+        bail!(
+            "Pi uses --preset, --endpoint, --api-key and --model; Claude-only options do not apply"
+        );
     }
     let preset_name = match options.preset {
         Some(value) => value.trim().to_ascii_lowercase(),

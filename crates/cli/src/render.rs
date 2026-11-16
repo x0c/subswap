@@ -256,7 +256,8 @@ fn render_row(
 
     let name_plain = truncate_to_width(&account_name(awq), layout.name_width);
     let name_padded = format!("{name_plain:<width$}", width = layout.name_width);
-    let cont_indent = " ".repeat(2 + 1 + 1 + layout.index_width + 1 + visible_width(&name_padded) + 2);
+    let cont_indent =
+        " ".repeat(2 + 1 + 1 + layout.index_width + 1 + visible_width(&name_padded) + 2);
     // 激活账号保持默认色（视觉上比 dim 的兄弟亮），非激活整体灰掉。
     let name = if active {
         name_padded
@@ -266,13 +267,9 @@ fn render_row(
 
     match &awq.fetch_state {
         QuotaFetchState::Ready => {
-            if let Some(lines) = render_grouped_quotas(
-                &awq.quotas,
-                layout.quota_width,
-                pool_width,
-                color,
-                None,
-            ) {
+            if let Some(lines) =
+                render_grouped_quotas(&awq.quotas, layout.quota_width, pool_width, color, None)
+            {
                 return join_account_lines(&star, &num, &name, &cont_indent, &lines);
             }
         }
@@ -1132,6 +1129,9 @@ mod tests {
             lines[2].find("5h ["),
             "pool sub-rows must align 5h column: {text}"
         );
-        assert!(!text.contains("-- ["), "must never emit mystery `--`: {text}");
+        assert!(
+            !text.contains("-- ["),
+            "must never emit mystery `--`: {text}"
+        );
     }
 }

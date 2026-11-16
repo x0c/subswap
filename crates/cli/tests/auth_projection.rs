@@ -532,12 +532,10 @@ fn opencode_go_pi_drawer_projects_without_touching_pi_auth_json() {
         "https://opencode.ai/inference/go"
     );
     assert_eq!(pi_accounts[0]["model"], "kimi-k3.1-pro");
-    assert!(
-        pi_accounts[0]["display_label"]
-            .as_str()
-            .unwrap()
-            .ends_with("1234")
-    );
+    assert!(pi_accounts[0]["display_label"]
+        .as_str()
+        .unwrap()
+        .ends_with("1234"));
 
     let auth_out = isolated_subswap(&tmp)
         .args(["auth", &format!("pi/{account_id}")])

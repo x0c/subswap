@@ -310,13 +310,15 @@ pub async fn run(
                     .activate(&account.id)
                     .await
                     .context("activate Pi volcengine slot")?;
-                ctx.audit.append(AuditEvent::ok(
-                    "login",
-                    "pi",
-                    Some(account.id.0.as_str()),
-                ));
-                println!("login → pi/{} (volcengine slot)", account_ref(&account.id.0));
-                println!("note: top-level `volcengine` is read-only; new keys live in the Pi drawer");
+                ctx.audit
+                    .append(AuditEvent::ok("login", "pi", Some(account.id.0.as_str())));
+                println!(
+                    "login → pi/{} (volcengine slot)",
+                    account_ref(&account.id.0)
+                );
+                println!(
+                    "note: top-level `volcengine` is read-only; new keys live in the Pi drawer"
+                );
                 if let Err(e) = subswap_core::record_manual_swap("pi") {
                     tracing::warn!(err = %e, provider = "pi", "record manual hold failed");
                 }
@@ -334,11 +336,8 @@ pub async fn run(
             ctx.pi
                 .set_quota_credentials(&target.id, &ak, &sk)
                 .context("save Volcengine quota AK/SK")?;
-            ctx.audit.append(AuditEvent::ok(
-                "login",
-                "pi",
-                Some(target.id.0.as_str()),
-            ));
+            ctx.audit
+                .append(AuditEvent::ok("login", "pi", Some(target.id.0.as_str())));
             println!(
                 "quota AK/SK saved → pi/{} (volcengine slot)",
                 account_ref(&target.id.0)
@@ -357,11 +356,8 @@ pub async fn run(
             // 同步 live 全部 slot 进账号池；active 对齐 `settings.json` 默认选择。
             let accounts = ctx.pi.sync_slots().context("import Pi live slots")?;
             if let Some(active) = accounts.iter().find(|a| a.active) {
-                ctx.audit.append(AuditEvent::ok(
-                    "login",
-                    "pi",
-                    Some(active.id.0.as_str()),
-                ));
+                ctx.audit
+                    .append(AuditEvent::ok("login", "pi", Some(active.id.0.as_str())));
                 println!("login → pi/{} (live slot sync)", account_ref(&active.id.0));
                 if let Err(e) = subswap_core::record_manual_swap("pi") {
                     tracing::warn!(err = %e, provider = "pi", "record manual hold failed");
@@ -369,7 +365,9 @@ pub async fn run(
             } else if accounts.is_empty() {
                 ctx.audit.append(AuditEvent::ok("login", "pi", None));
                 println!("login → pi/subswap-pi (extension ensured)");
-                println!("no Pi auth slots found; add one with `subswap add-api pi --preset deepseek`");
+                println!(
+                    "no Pi auth slots found; add one with `subswap add-api pi --preset deepseek`"
+                );
             } else {
                 ctx.audit.append(AuditEvent::ok("login", "pi", None));
                 println!("imported Pi live slots (none active)");
@@ -416,7 +414,9 @@ fn find_volcengine_quota_target(ctx: &AppContext) -> Result<subswap_core::Accoun
     if slots.len() == 1 {
         return Ok(slots.remove(0));
     }
-    anyhow::bail!("multiple Pi volcengine accounts; activate one first (`subswap swap pi/<id>`) then retry");
+    anyhow::bail!(
+        "multiple Pi volcengine accounts; activate one first (`subswap swap pi/<id>`) then retry"
+    );
 }
 
 /// 解析 volcengine 登录参数：至多一个位置参数（推理 Key）+ 可选 AK/SK flags。

@@ -345,8 +345,10 @@ mod tests {
     #[test]
     fn legacy_miss_cache_clears_on_set_and_tracks_delete() {
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            FileStore::with_legacy_keyring(dir.path().join("credentials.json"), KeyringStore::new());
+        let store = FileStore::with_legacy_keyring(
+            dir.path().join("credentials.json"),
+            KeyringStore::new(),
+        );
         let key = compose_key("test-no-legacy", "nobody-63c3c24d", "missing_field");
         store.legacy_misses.lock().unwrap().insert(key.clone());
         // 负缓存命中时直接返回 None，不触碰系统钥匙串。

@@ -20,8 +20,8 @@ use subswap_provider_claude::{
     read_oauth_account, read_settings, remove_api_state, restore_oauth_env_in_settings,
     settings_path, write_api_env_into_settings, write_api_state, ApiState, ClaudeApiConfig,
 };
-use subswap_provider_common::EnvIsolatedProvider;
 use subswap_provider_common::volcengine_quota;
+use subswap_provider_common::EnvIsolatedProvider;
 
 /// 独立 Provider 标识。
 pub const PROVIDER_ID: &str = "volcengine";
@@ -263,12 +263,8 @@ impl VolcengineProvider {
             })?;
         self.store
             .set(PROVIDER_ID, &id.0, QUOTA_AK_FIELD, access_key_id)?;
-        self.store.set(
-            PROVIDER_ID,
-            &id.0,
-            QUOTA_SK_FIELD,
-            secret_access_key,
-        )?;
+        self.store
+            .set(PROVIDER_ID, &id.0, QUOTA_SK_FIELD, secret_access_key)?;
         Ok(())
     }
 
@@ -276,8 +272,12 @@ impl VolcengineProvider {
     fn quota_credentials(&self, id: &AccountId) -> Result<(Option<String>, Option<String>)> {
         let ak = self.store.get(PROVIDER_ID, &id.0, QUOTA_AK_FIELD)?;
         let sk = self.store.get(PROVIDER_ID, &id.0, QUOTA_SK_FIELD)?;
-        let ak = ak.map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
-        let sk = sk.map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+        let ak = ak
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let sk = sk
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
         Ok((ak, sk))
     }
 
@@ -427,13 +427,14 @@ impl Provider for VolcengineProvider {
     async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>> {
         let provider = self.clone();
         let id_for_creds = id.clone();
-        let (access_key_id, secret_access_key) = tokio::task::spawn_blocking(move || {
-            provider.quota_credentials(&id_for_creds)
-        })
-        .await
-        .map_err(|e| Error::Provider(format!("read Volcengine quota credentials failed: {e}")))??
-        ;
-        volcengine_quota::fetch_quota(PROVIDER_ID, id.clone(), access_key_id, secret_access_key).await
+        let (access_key_id, secret_access_key) =
+            tokio::task::spawn_blocking(move || provider.quota_credentials(&id_for_creds))
+                .await
+                .map_err(|e| {
+                    Error::Provider(format!("read Volcengine quota credentials failed: {e}"))
+                })??;
+        volcengine_quota::fetch_quota(PROVIDER_ID, id.clone(), access_key_id, secret_access_key)
+            .await
     }
 
     fn credential_store_fields(&self) -> &'static [&'static str] {

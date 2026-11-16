@@ -84,9 +84,7 @@ pub fn read_slot(agent_dir: &std::path::Path, slot: &str) -> Result<Option<Strin
         }
     };
     let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&raw)
-        .map_err(|e| {
-            Error::Provider(format!("parse Pi auth {}: {e}", path.display()))
-        })?;
+        .map_err(|e| Error::Provider(format!("parse Pi auth {}: {e}", path.display())))?;
     Ok(map.get(slot).and_then(api_key_from_entry))
 }
 
@@ -104,9 +102,7 @@ pub fn list_slots(agent_dir: &std::path::Path) -> Result<Vec<(String, String)>> 
         }
     };
     let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&raw)
-        .map_err(|e| {
-            Error::Provider(format!("parse Pi auth {}: {e}", path.display()))
-        })?;
+        .map_err(|e| Error::Provider(format!("parse Pi auth {}: {e}", path.display())))?;
     Ok(map
         .into_iter()
         .filter_map(|(slot, entry)| api_key_from_entry(&entry).map(|key| (slot, key)))
@@ -126,17 +122,11 @@ fn api_key_from_entry(entry: &serde_json::Value) -> Option<String> {
 ///
 /// 其他 slot 原样保留；live 缺失则新建。回读校验失败说明写入被并发覆盖，
 /// 调用方应按失败处理（`swap_with_snapshot` 会回滚同一事务里的其他文件）。
-pub fn write_slot_merged(
-    agent_dir: &std::path::Path,
-    slot: &str,
-    api_key: &str,
-) -> Result<()> {
+pub fn write_slot_merged(agent_dir: &std::path::Path, slot: &str, api_key: &str) -> Result<()> {
     let path = super::paths::auth_json_path(agent_dir);
     let mut map: serde_json::Map<String, serde_json::Value> = match std::fs::read_to_string(&path) {
         Ok(raw) => serde_json::from_str(&raw)
-            .map_err(|e| {
-                Error::Provider(format!("parse Pi auth {}: {e}", path.display()))
-            })?,
+            .map_err(|e| Error::Provider(format!("parse Pi auth {}: {e}", path.display())))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
         Err(e) => {
             return Err(Error::Provider(format!(
@@ -169,15 +159,16 @@ fn write_auth_atomic(path: &std::path::Path, value: &serde_json::Value) -> Resul
         })?;
     }
     let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-    std::fs::write(&tmp, serde_json::to_string_pretty(value).map_err(Error::from)?).map_err(|e| {
-        Error::Provider(format!("write Pi auth {}: {e}", tmp.display()))
-    })?;
+    std::fs::write(
+        &tmp,
+        serde_json::to_string_pretty(value).map_err(Error::from)?,
+    )
+    .map_err(|e| Error::Provider(format!("write Pi auth {}: {e}", tmp.display())))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
-            Error::Provider(format!("chmod Pi auth {}: {e}", tmp.display()))
-        })?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| Error::Provider(format!("chmod Pi auth {}: {e}", tmp.display())))?;
     }
     std::fs::rename(&tmp, path)
         .map_err(|e| Error::Provider(format!("replace Pi auth {}: {e}", path.display())))?;
@@ -202,11 +193,12 @@ pub fn remove_slot_if_matching(
             )))
         }
     };
-    let is_target: bool = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&current)
-        .ok()
-        .and_then(|map| map.get(slot).cloned())
-        .and_then(|entry| api_key_from_entry(&entry))
-        .is_some_and(|live_key| live_key == api_key.trim());
+    let is_target: bool =
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&current)
+            .ok()
+            .and_then(|map| map.get(slot).cloned())
+            .and_then(|entry| api_key_from_entry(&entry))
+            .is_some_and(|live_key| live_key == api_key.trim());
     if !is_target {
         return Ok(false);
     }
@@ -217,13 +209,10 @@ pub fn remove_slot_if_matching(
         .truncate(false)
         .open(&lock_path)
         .map_err(|e| Error::Provider(format!("open Pi lock {}: {e}", lock_path.display())))?;
-    fs2_lock(&lock_file).map_err(|e| {
-        Error::Provider(format!("lock Pi credentials: {e}"))
-    })?;
+    fs2_lock(&lock_file).map_err(|e| Error::Provider(format!("lock Pi credentials: {e}")))?;
     let result = (|| -> Result<bool> {
-        let raw = std::fs::read_to_string(&path).map_err(|e| {
-            Error::Provider(format!("read Pi auth {}: {e}", path.display()))
-        })?;
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|e| Error::Provider(format!("read Pi auth {}: {e}", path.display())))?;
         let mut map: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str(&raw).unwrap_or_default();
         let still_target = map
@@ -283,8 +272,14 @@ mod tests {
         let (_tmp, agent) = tmp_agent();
         write_slot_merged(&agent, "deepseek", "sk-deep").unwrap();
         write_slot_merged(&agent, "volcengine", "sk-volc").unwrap();
-        assert_eq!(read_slot(&agent, "deepseek").unwrap().as_deref(), Some("sk-deep"));
-        assert_eq!(read_slot(&agent, "volcengine").unwrap().as_deref(), Some("sk-volc"));
+        assert_eq!(
+            read_slot(&agent, "deepseek").unwrap().as_deref(),
+            Some("sk-deep")
+        );
+        assert_eq!(
+            read_slot(&agent, "volcengine").unwrap().as_deref(),
+            Some("sk-volc")
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -303,18 +298,33 @@ mod tests {
         write_slot_merged(&agent, "deepseek", "sk-deep").unwrap();
         write_slot_merged(&agent, "volcengine", "sk-volc").unwrap();
         assert!(!remove_slot_if_matching(&agent, "volcengine", "sk-other").unwrap());
-        assert_eq!(read_slot(&agent, "volcengine").unwrap().as_deref(), Some("sk-volc"));
+        assert_eq!(
+            read_slot(&agent, "volcengine").unwrap().as_deref(),
+            Some("sk-volc")
+        );
         assert!(remove_slot_if_matching(&agent, "volcengine", "sk-volc").unwrap());
         assert!(read_slot(&agent, "volcengine").unwrap().is_none());
-        assert_eq!(read_slot(&agent, "deepseek").unwrap().as_deref(), Some("sk-deep"));
+        assert_eq!(
+            read_slot(&agent, "deepseek").unwrap().as_deref(),
+            Some("sk-deep")
+        );
         assert!(!remove_slot_if_matching(&agent, "volcengine", "sk-volc").unwrap());
     }
 
     #[test]
     fn fingerprint_is_stable_per_slot_and_key() {
-        assert_eq!(account_id_for("deepseek", "k"), account_id_for("deepseek", "k"));
-        assert_ne!(account_id_for("deepseek", "k"), account_id_for("deepseek", "k2"));
-        assert_ne!(account_id_for("deepseek", "k"), account_id_for("volcengine", "k"));
+        assert_eq!(
+            account_id_for("deepseek", "k"),
+            account_id_for("deepseek", "k")
+        );
+        assert_ne!(
+            account_id_for("deepseek", "k"),
+            account_id_for("deepseek", "k2")
+        );
+        assert_ne!(
+            account_id_for("deepseek", "k"),
+            account_id_for("volcengine", "k")
+        );
         assert!(account_id_for("deepseek", "k").starts_with("pi-"));
     }
 

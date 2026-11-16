@@ -99,16 +99,34 @@ impl FileBlobRuntime for CodexRuntime {
             ));
         }
         let home = codex_home();
-        let socket = home
-            .join("app-server-control")
-            .join("app-server-control.sock");
-        if tokio::fs::metadata(&socket).await.is_ok() {
-            crate::control_socket::refresh_active(&socket, &expected)
-                .await
-                .map_err(|e| {
-                    subswap_core::error::Error::Provider(format!("Codex renewal failed: {e}"))
-                })?;
-        } else {
+        // 控制套接字只在 unix 构建存在；非 unix 直接走官方 app-server 独立回退。
+        #[cfg(unix)]
+        {
+            let socket = home
+                .join("app-server-control")
+                .join("app-server-control.sock");
+            if tokio::fs::metadata(&socket).await.is_ok() {
+                crate::control_socket::refresh_active(&socket, &expected)
+                    .await
+                    .map_err(|e| {
+                        subswap_core::error::Error::Provider(format!("Codex renewal failed: {e}"))
+                    })?;
+            } else if !crate::app_server::no_codex_process_running_async().await {
+                return Err(subswap_core::error::Error::Provider(
+                    "Codex process running without a usable control socket; refusing live-home refresh"
+                        .into(),
+                ));
+            } else {
+                crate::app_server::refresh_active_standalone(&expected)
+                    .await
+                    .map_err(|e| {
+                        subswap_core::error::Error::Provider(format!("Codex renewal failed: {e}"))
+                    })?;
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
             if !crate::app_server::no_codex_process_running_async().await {
                 return Err(subswap_core::error::Error::Provider(
                     "Codex process running without a usable control socket; refusing live-home refresh"
