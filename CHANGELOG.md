@@ -10,10 +10,12 @@ the named acceptance is done.
 
 ### English
 
+- Expose the whole Ark Coding Plan catalog on the `subswap-volcengine` Pi provider instead of one model: the verified model table lives in `integrations/pi/src/volcengine-models.ts` (DeepSeek V4.1 Flash / V4.1 Flash Economy / V4 Pro / V4 Flash, Kimi K3.1 Pro / K3 / K2.8 Preview, GLM-5.3 / GLM-5.3 Flash, Doubao Seed Evolving / 2.1 Pro / 2.1 Lite / 2.0 Mini), the provider id stays `subswap-volcengine` so existing model scopes keep working, an account declaring an id outside the catalog (for example `ark-code-latest`) appends that id as one extra model, and a custom endpoint channel still exposes only its own model. Pooled failover now keeps the model the user selected in Pi: the per-attempt hook only refreshes the endpoint and never rewrites the model id from account metadata any more.
 - Restore Volcengine (火山方舟) Coding Plan quota for the Pi drawer: V4 signing and the `GetCodingPlanUsage` / `GetAFPUsage` calls now live in `providers/common` and are shared with the read-only top-level provider, the per-account quota AK/SK survives the legacy migration (with backfill), and `add-api pi --preset volcengine` / `login volcengine` accept `--ak-id` / `--ak-secret`. Accounts without the pair still show no windows instead of fabricated numbers.
 
 ### 简体中文
 
+- `subswap-volcengine` 从「一个账号模型」改为暴露方舟 Coding Plan 的完整模型目录：已验证的模型表放在 `integrations/pi/src/volcengine-models.ts`（DeepSeek V4.1 Flash / V4.1 Flash Economy / V4 Pro / V4 Flash、Kimi K3.1 Pro / K3 / K2.8 Preview、GLM-5.3 / GLM-5.3 Flash、Doubao Seed Evolving / 2.1 Pro / 2.1 Lite / 2.0 Mini），provider id 仍是 `subswap-volcengine`，既有模型 scope 不失效；账号声明目录外的 id（如 `ark-code-latest`）会自动追加一条，自定义中转端点渠道仍只暴露自己的模型。池内补位改为保持用户在 Pi 里选的模型：单次尝试的 hook 只修端点，不再按账号 `model` 改写模型 id。
 - 恢复 Pi 抽屉里火山方舟 Coding Plan 的余量查询：V4 签名与 `GetCodingPlanUsage` / `GetAFPUsage` 调用移到 `providers/common`，与只读的顶层 provider 共用一套实现；账号级额度 AK/SK 在旧版迁移中保留（并可从残留回补）；`add-api pi --preset volcengine` / `login volcengine` 支持 `--ak-id` / `--ak-secret`。缺这对凭据时仍显示无窗口，不编造数字。
 
 ## v1.17.1

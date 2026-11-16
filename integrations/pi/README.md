@@ -7,13 +7,35 @@ Supported in this version:
 | Subswap channel | Pi provider | Models |
 |---|---|---|
 | `codex` (Codex OAuth) | `subswap-codex` | Pi's native Codex catalog |
-| default Volcengine key (`volcengine:<base>#<model>`) | `subswap-volcengine` | `kimi-k3.1-pro` (or status model) |
+| default Volcengine key (`volcengine:<base>#<model>`) | `subswap-volcengine` | Ark Coding Plan model catalog (13 models, including `kimi-k3.1-pro`) plus any extra id an account declares |
 | OpenCode Go key (`opencode-go` / `opencode-go:<base>#<model>`) | `subswap-opencode-go` | Pi's native `opencode-go` catalog (`withOpenCodeSessionHeader`, `DeepSeek V4.1 Flash 1017` normalized); Subswap queries `/zen/go/v1/usage` for `5h`/`7d`/`mo` quota |
 | OpenCode Zen key (`opencode-zen` / `opencode-zen:<base>#<model>`) | `subswap-opencode-zen` | Pi's native `opencode` catalog (`withOpenCodeSessionHeader`) |
 | Codex custom API channel (`codex:<id>`) | `subswap-codex-<id>` slug | custom endpoint model via `openai-responses` |
 | Volcengine custom endpoint/model (`volcengine:<base>#<model>`) | `subswap-volcengine-…` slug | status model id via `openai-completions` |
 
 Channel identity comes from the Subswap status `channel` field when present, otherwise from local metadata (Codex custom per account, Volcengine by endpoint plus model). Top-level OpenCode Console OAuth accounts (`provider: "opencode"` without `opencode-go` / `opencode-zen` channel) and other providers (Claude, Cursor, Kimi, Command Code) have no Pi adapter in this version and are skipped.
+
+## Volcengine Coding Plan models
+
+The default Volcengine channel (`https://ark.cn-beijing.volces.com/api/coding/v3`) exposes the whole Ark Coding Plan catalog, so the model picker offers every coding-plan model instead of only the account's own id. The table below was verified against that endpoint on 2026-11-16; context and max-output values come from the catalog itself, and every model supports the `xhigh` / `max` thinking levels.
+
+| Model id | Display name | Context | Max output | Input |
+|---|---|---|---|---|
+| `deepseek-v4-1-flash` | DeepSeek V4.1 Flash | 1,000,000 | 384,000 | text, image |
+| `deepseek-v4-1-flash-economy` | DeepSeek V4.1 Flash Economy | 1,000,000 | 384,000 | text, image |
+| `deepseek-v4-pro` | DeepSeek V4 Pro | 1,000,000 | 384,000 | text |
+| `deepseek-v4-flash` | DeepSeek V4 Flash | 1,000,000 | 384,000 | text |
+| `kimi-k3.1-pro` | Kimi K3.1 Pro | 1,000,000 | 128,000 | text, image |
+| `kimi-k3` | Kimi K3 | 1,000,000 | 32,000 | text, image |
+| `kimi-k2-8-preview` | Kimi K2.8 Preview | 256,000 | 32,000 | text, image |
+| `glm-5.3` | GLM-5.3 | 1,000,000 | 128,000 | text |
+| `glm-5-3-flash` | GLM-5.3 Flash | 1,000,000 | 128,000 | text, image |
+| `doubao-seed-evolving` | Doubao Seed Evolving | 1,000,000 | 256,000 | text, image |
+| `doubao-seed-2-1-pro` | Doubao Seed 2.1 Pro | 1,000,000 | 256,000 | text, image |
+| `doubao-seed-2-1-lite` | Doubao Seed 2.1 Lite | 1,000,000 | 256,000 | text, image |
+| `doubao-seed-2-0-mini` | Doubao Seed 2.0 Mini | 256,000 | 128,000 | text, image |
+
+The model is chosen per request in Pi, and every account in the pool is asked for that same model; an account's own `model` only decides which channel it belongs to. Adding an account whose `--model` is outside the catalog (`subswap add-api pi --preset volcengine --model ark-code-latest`) appends that id to the picker as one extra entry, so the Ark auto router and vendor aliases stay selectable. A custom endpoint channel (any base URL other than the standard coding-plan endpoint) still exposes exactly one model, its own status model id, because a relay's catalog is unknown.
 
 ## Behavior
 
@@ -63,7 +85,8 @@ Set a pooled provider as the model source, for example:
   "defaultModel": "kimi-k3.1-pro",
   "enabledModels": [
     "subswap-codex/gpt-6.1-sol",
-    "subswap-volcengine/kimi-k3.1-pro"
+    "subswap-volcengine/kimi-k3.1-pro",
+    "subswap-volcengine/deepseek-v4-1-flash"
   ]
 }
 ```
@@ -105,8 +128,8 @@ If every account in the group is genuinely exhausted, Pi reports the upstream qu
 - Cross-channel fallback is not implemented. A Codex OAuth pool stays on `codex`; a Codex custom channel stays on its own `codex:<id>`; an OpenCode Go/Zen pool stays on its own `opencode-go` / `opencode-zen` channel; a Volcengine pool stays on its own endpoint/model channel. A mixed-channel pool is a wiring bug and refuses to stream before resolving any credential.
 - Cursor, OpenCode Console OAuth (`provider: "opencode"`), OpenCode V2 SQLite (`opencode-api-key`), Claude OAuth, Kimi, and Command Code are not exposed by this version. They either store no exportable secret, use a SQLite/GUI lifecycle, or need a separate adapter. OpenCode keys for Pi must live in Subswap's `pi` drawer (`subswap add-api pi --preset opencode-go` or `--preset opencode-zen`).
 - Codex custom channels from old status JSON without endpoint/model metadata stay discovered but unlisted: Pi cannot route HTTP without an endpoint, so no provider is registered until Subswap emits endpoint metadata. Volcengine old JSON falls back to `https://ark.cn-beijing.volces.com/api/coding/v3` and `kimi-k3.1-pro`.
-- Volcengine per-attempt endpoint may refresh from the live secret (normalized to the OpenAI-compatible `/v3` path); the Pi model id follows status metadata only, never the Anthropic-namespace `ANTHROPIC_MODEL`, so an old status JSON keeps serving the verified `kimi-k3.1-pro` id. Codex custom per-attempt endpoint/model follow account metadata, then the live secret.
+- Volcengine requests keep the model you selected in Pi: the id is never rewritten from account metadata or the Anthropic-namespace `ANTHROPIC_MODEL`, so every account in the pool serves the same model. Only the endpoint may refresh per attempt from account metadata, then the live secret, normalized to the OpenAI-compatible `/v3` path. Codex custom per-attempt endpoint/model follow account metadata, then the live secret.
 - Accounts added or removed while Pi is running are picked up after `/reload` or a new session. A removed account fails its next setup gracefully through the per-account cooldown path; it never crashes the request stream.
 - The Codex pool exposes Pi's native Codex catalog (8 models on Pi 1.5.0); the count follows Pi releases.
-- The default Volcengine channel uses the OpenAI-compatible path `https://ark.cn-beijing.volces.com/api/coding/v3`; the native Claude endpoint (`.../api/coding`, without `/v3`) is a different protocol path and is normalized to `/v3` for this pool. Custom Volcengine endpoint/model channels serve their status endpoint (same normalization) and status model id. Update `src/providers.ts` when the official endpoint or catalog changes.
+- The default Volcengine channel uses the OpenAI-compatible path `https://ark.cn-beijing.volces.com/api/coding/v3`; the native Claude endpoint (`.../api/coding`, without `/v3`) is a different protocol path and is normalized to `/v3` for this pool. Custom Volcengine endpoint/model channels serve their status endpoint (same normalization) and status model id. Update `src/providers.ts` for endpoint changes and `src/volcengine-models.ts` when the official catalog changes; the extension never fetches a model list at runtime.
 - Volcengine rotation relies on the OpenAI-compatible adapter's normalized error text because that adapter does not hand the pool a failed HTTP status. A response that omits status/quota/rate-limit/auth tokens may surface without rotation; real 429 bodies observed so far include the status token.

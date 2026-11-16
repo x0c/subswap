@@ -670,7 +670,7 @@ Go 订阅 = API key（`{"type":"api","key":"sk-..."}`），无 refresh，不刷�
 |---|---|
 | 家目录 | `~/.pi/agent/`（`SUBSWAP_PI_HOME` > `PI_CODING_AGENT_DIR` > `~/.pi/agent`；前者测试/便携优先） |
 | live 格式 | `auth.json` = `{slot: {"type": "api_key", "key": "..."}}`；`settings.json` 只读写 `defaultProvider` / `defaultModel` |
-| 预设 | `deepseek`（`https://api.deepseek.com/anthropic` / `deepseek-chat` / `DEEPSEEK_API_KEY`）、`volcengine`（`.../api/coding/v3` / `kimi-k3.1-pro`，无 env 映射）、`opencode-go`（`https://opencode.ai/inference/go` / `kimi-k3.1-pro` / `OPENCODE_API_KEY`，`channel = opencode-go`）、`opencode-zen`（别名 `opencode`；`https://opencode.ai/inference` / `kimi-k3.1-pro` / `OPENCODE_API_KEY`，`channel = opencode-zen`，避免与顶层 Console OAuth `opencode` 回退渠道重名）、`custom`（endpoint+key+model 显式传入） |
+| 预设 | `deepseek`（`https://api.deepseek.com/anthropic` / `deepseek-chat` / `DEEPSEEK_API_KEY`）、`volcengine`（`.../api/coding/v3` / 默认 `kimi-k3.1-pro`，Pi 侧暴露 Coding Plan 模型目录，无 env 映射）、`opencode-go`（`https://opencode.ai/inference/go` / `kimi-k3.1-pro` / `OPENCODE_API_KEY`，`channel = opencode-go`）、`opencode-zen`（别名 `opencode`；`https://opencode.ai/inference` / `kimi-k3.1-pro` / `OPENCODE_API_KEY`，`channel = opencode-zen`，避免与顶层 Console OAuth `opencode` 回退渠道重名）、`custom`（endpoint+key+model 显式传入） |
 | 账号 id / label | `pi-` + slot+Key SHA-256 前 12 hex / `<slot> …末4`，不展示完整 Key（含 `oc_sk_` 脱敏前缀保护） |
 | 计费与自动切换 | 全部 `manual_only`，不参与自动换号；`query_quota` 按 `channel` 分发：标准火山 channel 的账号走 AK/SK 直查，`opencode-go` channel 复用 `common::opencode_go_usage`（`GET /zen/go/v1/usage`）查 `5h`/`7d`/`mo` 余量，其余按量 channel（`deepseek` / `opencode-zen` 等）恒为空 |
 | 凭证投影 | `request_credential` 长效 key（`expires_at_ms=None`），永不刷新，不返回 refresh token；有 env 映射的 slot（`deepseek`→`DEEPSEEK_API_KEY`、`kimi-coding`/`kimi`→`KIMI_API_KEY`、`opencode-go`/`opencode-zen`/`opencode`→`OPENCODE_API_KEY`）支持 `run` / `shell` / `env` 进程隔离，其余 slot 只走文件切换 |
@@ -693,6 +693,9 @@ Go 订阅 = API key（`{"type":"api","key":"sk-..."}`），无 refresh，不刷�
 - Pi 侧火山值固定改写：`base_url` = `https://ark.cn-beijing.volces.com/api/coding/v3`（区别于 Claude 路径 `.../api/coding`），
   `model` = `kimi-k3.1-pro`，`channel` = `volcengine:<V3-base>#kimi-k3.1-pro`（与 Pi 扩展 `DEFAULT_VOLCENGINE_CHANNEL` 同形），
   `auth_slot` = `volcengine`。
+  `channel` 只决定账号进哪个池；Pi 选择器里能选的模型来自扩展内置目录
+  （`integrations/pi/src/volcengine-models.ts`，2026-11-16 实测 13 个，含 `deepseek-v4-1-flash`），
+  账号 `model` 只用于目录外 id 追加与自定义中转端点渠道。
 - 顶层 `volcengine` provider 保留注册、只读兼容：不再从 Claude `settings.json` 导入 live，不再参与默认入口 live 对齐；
   新 key 走 `subswap add-api pi --preset volcengine [--ak-id/--ak-secret]` 或
   `subswap login volcengine -- <key> [--ak-id <AK> --ak-secret <SK>]`（无 key 时只传 AK/SK 即为已存在 slot 账号补配）。

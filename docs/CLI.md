@@ -151,8 +151,11 @@ A successful `subswap --json swap <target>` writes exactly one JSON object to st
 `volcengine/<id>` 引用已失效。
 
 Pi 火山账号写 Pi 的 `auth.json` slot 与 `settings.json` 默认选择，端点是 OpenAI 兼容路径
-`.../api/coding/v3`、模型 `kimi-k3.1-pro`；历史 Claude 路径 `.../api/coding` + `ark-code-latest` 只属于
-旧顶层实现，两者不要互相改写。全部 `manual_only`、固定订阅 `flat`，也不支持 `run` / `shell` / `env`
+`.../api/coding/v3`；模型不再绑定账号那一个值——`subswap-volcengine` 暴露扩展内置的方舟 Coding Plan
+模型目录（13 个实测模型，含 `deepseek-v4-1-flash`、`kimi-k3.1-pro`，表在
+[integrations/pi/src/volcengine-models.ts](../integrations/pi/src/volcengine-models.ts)），账号自身的
+`model` 只在自定义端点渠道或追加目录外 id（如 `ark-code-latest`）时起作用。历史 Claude 路径
+`.../api/coding` + `ark-code-latest` 只属于旧顶层实现，两者不要互相改写。全部 `manual_only`、固定订阅 `flat`，也不支持 `run` / `shell` / `env`
 隔离（无 env 映射，只走文件切换）。额度与顶层旧实现共用 AK/SK V4 签名直查：先 `GetCodingPlanUsage`
 百分比、空时再试 `GetAFPUsage` 绝对值，未订阅时试 `arkcli`（15s 超时）兜底，缺 AK/SK 或未订阅时显示
 `custom`、不伪造余量。余量查不出见
@@ -274,7 +277,7 @@ subswap add-api pi --preset deepseek --api-key "$DEEPSEEK_API_KEY" --yes
 subswap add-api pi --preset volcengine --api-key "$ARK_KEY" --ak-id "$ARK_AK" --ak-secret "$ARK_SK" --yes
 ```
 
-- 支持预设：`deepseek`、`volcengine`（`.../api/coding/v3` / `kimi-k3.1-pro`；可附 `--ak-id`/`--ak-secret`（成对）配额度直查）、`opencode-go`（Go 订阅，`channel=opencode-go`，支持 `/zen/go/v1/usage` 查 `5h`/`7d`/`mo` 余量，Pi 侧暴露为 `subswap-opencode-go` 池）、`opencode-zen`（别名 `opencode`，Console 按量余额，`channel=opencode-zen`，无订阅余量显示 `custom`，Pi 侧暴露为 `subswap-opencode-zen` 池；与顶层 Console OAuth `opencode` 及 OpenCode CLI V2 的 `opencode-api-key` 互不冲突）、`custom`（须显式传 `--id`/`--endpoint`/`--model`）。
+- 支持预设：`deepseek`、`volcengine`（`.../api/coding/v3` / 默认 `kimi-k3.1-pro`；Pi 侧 `subswap-volcengine` 暴露方舟 Coding Plan 模型目录，账号 `--model` 取目录外 id 时会追加一条；可附 `--ak-id`/`--ak-secret`（成对）配额度直查）、`opencode-go`（Go 订阅，`channel=opencode-go`，支持 `/zen/go/v1/usage` 查 `5h`/`7d`/`mo` 余量，Pi 侧暴露为 `subswap-opencode-go` 池）、`opencode-zen`（别名 `opencode`，Console 按量余额，`channel=opencode-zen`，无订阅余量显示 `custom`，Pi 侧暴露为 `subswap-opencode-zen` 池；与顶层 Console OAuth `opencode` 及 OpenCode CLI V2 的 `opencode-api-key` 互不冲突）、`custom`（须显式传 `--id`/`--endpoint`/`--model`）。
 - 进程隔离映射：`deepseek` → `DEEPSEEK_API_KEY`、`kimi-coding`/`kimi` → `KIMI_API_KEY`、`opencode-go`/`opencode-zen`/`opencode` → `OPENCODE_API_KEY`，支持 `subswap run/shell/env pi/<id>`。
 - 需要切 Pi 原生单槽 `auth.json` 与 `settings.json` 默认项时仍用 `subswap swap pi/<id>`（加 `--no-default` 跳过写 `settings.json`）。若仅给 Pi 扩展号池复用，无需手动 `swap`。
 

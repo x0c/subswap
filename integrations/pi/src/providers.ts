@@ -7,6 +7,7 @@ import {
 import { openAICompletionsApi, openAIResponsesApi } from "@earendil-works/pi-ai/compat";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { poolProvider, type FailoverNotice, type PoolState } from "./pool.ts";
+import { VOLCENGINE_MODELS, volcengineModel, volcengineModelSpec, zeroCost } from "./volcengine-models.ts";
 import {
 	channelOf,
 	DEFAULT_CODEX_CHANNEL,
@@ -84,10 +85,6 @@ function slugifyChannel(channel: string): string {
 	return slug || "custom";
 }
 
-function zeroCost(): Model<Api>["cost"] {
-	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-}
-
 function volcengineEndpoint(raw: string | undefined): string {
 	const trimmed = (raw ?? "").trim().replace(/\/+$/, "");
 	if (!trimmed) return VOLCENGINE_BASE_URL;
@@ -97,6 +94,10 @@ function volcengineEndpoint(raw: string | undefined): string {
 	return trimmed;
 }
 
+/**
+ * 非目录模型：保持旧行为（展示名默认就是原始 id，除了已验证的 `kimi-k3.1-pro`）。
+ * 自定义中转端点的通道与账号声明的未知 id（如 `ark-code-latest`）仍走这条路径。
+ */
 function volcengineModelFor(providerId: string, endpoint: string, modelId: string): Model<"openai-completions"> {
 	return {
 		id: modelId,
@@ -132,16 +133,39 @@ function codexCustomModelFor(providerId: string, endpoint: string, modelId: stri
 }
 
 /**
- * Volcengine per-attempt model: endpoint may refresh from the live secret
- * (normalized to the OpenAI-compatible path); the Pi model id only follows
- * status metadata, never the Anthropic-namespace `ANTHROPIC_MODEL`, so an old
- * status JSON keeps serving the verified `kimi-k3.1-pro` id.
+ * Volcengine 单次尝试：账号只提供端点（账号元数据优先，其次投影端点，最后沿用模型 baseUrl，
+ * 统一归一化到 OpenAI 兼容的 `/v3` 路径）；模型 id 完全由用户请求决定，
+ * 不跟随账号的 `model` 字段，因此账号间故障转移始终请求同一个模型。
  */
 function resolveVolcengineModel(account: SubswapAccount, secret: RequestSecret, model: Model<Api>): Model<Api> {
 	const endpoint = volcengineEndpoint(account.endpoint ?? secret.endpoint ?? model.baseUrl);
-	const id = account.model?.trim() || model.id;
-	if (endpoint === model.baseUrl && id === model.id) return model;
-	return { ...model, baseUrl: endpoint, id };
+	if (endpoint === model.baseUrl) return model;
+	return { ...model, baseUrl: endpoint };
+}
+
+/**
+ * Volcengine 通道暴露的模型清单：标准 Ark Coding Plan 端点给出完整目录，
+ * 并把账号声明的非目录 id（如 `ark-code-latest`）按旧方式各追加一条；
+ * 自定义中转端点的模型目录未知，只保留首个账号声明的单个模型。
+ */
+function volcengineChannelModels(
+	providerId: string,
+	endpoint: string,
+	accounts: SubswapAccount[],
+): Array<Model<"openai-completions">> {
+	if (endpoint !== VOLCENGINE_BASE_URL) {
+		const modelId = accounts[0]?.model?.trim() || VOLCENGINE_MODEL;
+		return [volcengineModelFor(providerId, endpoint, modelId)];
+	}
+	const catalog = VOLCENGINE_MODELS.map((spec) => volcengineModel(providerId, endpoint, spec));
+	const declared: Array<Model<"openai-completions">> = [];
+	for (const account of accounts) {
+		const modelId = account.model?.trim();
+		// 目录 id 已由目录覆盖；别名/自动路由/账号自定义 id 才需要追加，且按 id 去重。
+		if (!modelId || volcengineModelSpec(modelId) || declared.some((model) => model.id === modelId)) continue;
+		declared.push(volcengineModelFor(providerId, endpoint, modelId));
+	}
+	return [...catalog, ...declared];
 }
 
 /** Codex custom per-attempt model: endpoint and model follow account, then live secret. */
@@ -247,7 +271,6 @@ export function buildPool(options: PoolBuildOptions): Provider<Api> {
 	}
 	if (channelKind(options.channel) === "volcengine") {
 		const endpoint = volcengineEndpoint(first.endpoint);
-		const modelId = first.model?.trim() || VOLCENGINE_MODEL;
 		const base = createProvider({
 			id: providerId,
 			name: "Volcengine Coding Plan (Subswap)",
@@ -258,7 +281,7 @@ export function buildPool(options: PoolBuildOptions): Provider<Api> {
 					async resolve() { return undefined; },
 				},
 			},
-			models: [volcengineModelFor(providerId, endpoint, modelId)],
+			models: volcengineChannelModels(providerId, endpoint, options.accounts),
 			api: openAICompletionsApi(),
 		});
 		return poolProvider(

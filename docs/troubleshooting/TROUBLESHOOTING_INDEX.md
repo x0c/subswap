@@ -2,6 +2,7 @@
 
 | 文档 | 何时该读 |
 |---|---|
+| [Pi 火山渠道只能选到一个模型](2026-11-16-pi-volcengine-single-model.md) | Pi 的 `subswap-volcengine` 只列出一行（通常 `kimi-k3.1-pro`）、方舟的 DeepSeek/GLM/Doubao 模型选不到；或想用 `add-api pi --preset volcengine --model` 加模型、结果选择器没变/多出重复账号前必读。含 `enabledModels` 过滤、channel#model 不参与选型、单模型 provider 的根因与目录化修复。 |
 | [Pi drawer Ark accounts show `custom` with no quota windows](2026-11-16-pi-ark-quota-shows-custom.md) | Pi 抽屉里的火山方舟（Ark Coding Plan）账号只显示 `custom`、没有 `5h/7d/mo`，`--refresh` 无变化且没有报错；排查 Pi `query_quota` channel 分发、额度 AK/SK 是否成对存在、或旧 daemon 把空结果写进 `quota_cache.json` 前必读。 |
 | [Antigravity missing Gemini `7d` or unlabeled `--` pools](2026-11-14-antigravity-missing-gemini-weekly-and-unlabeled-pools.md) | Antigravity prints unlabeled `100%` + `--` windows, omits `Gemini 7d` while showing `Claude/GPT`, or shows rolling `reset in 5h/7d` on untouched 100% buckets; read before changing `retrieveUserQuotaSummary` headers/UA, `Client-Metadata`, or multi-pool rendering. |
 | [Pi Codex usage-limit failover](../design/PI_EXTENSION_DESIGN.md#codex-stream-quota-refusals-2026-11-12) | Pi reports `Codex error: The usage limit has been reached` while a sibling account has quota; normalized stream error text, HTTP 200/WebSocket classification, native-adapter regression and real installed failover evidence. |
