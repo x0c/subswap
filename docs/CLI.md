@@ -140,7 +140,7 @@ A successful `subswap --json swap <target>` writes exactly one JSON object to st
 
 隐藏一次性命令：`subswap migrate-local` —— 从旧版本地账号目录搬到 subswap；`--help` 不可见。
 
-辅助二进制 `subswapd`：默认入口自动 detach 拉起，负责周期 quota 轮询 / 自动切换 / Claude token 后台保活。Unix-only；Windows 只提供前台 CLI；macOS 默认不自动拉起（避免 Keychain 额外授权弹窗）。启用 macOS 自动拉起：`SUBSWAP_AUTO_DAEMON=1`。单实例靠 `<state>/subswapd.pid` 文件锁。关掉：`pkill subswapd`；禁止自动拉起：`SUBSWAP_NO_DAEMON=1`。**在 macOS 未启用自动拉起时，Codex/其它 provider 的后台自动切号不会跑**——只有主动执行无参 `subswap` 才会采样并自动切；切完仍须重启已打开的 Codex 才生效（上一节）。
+辅助二进制 `subswapd`：默认入口自动 detach 拉起，负责周期 quota 轮询 / 自动切换 / Claude token 后台保活。Unix-only；Windows 只提供前台 CLI；macOS 默认不自动拉起（避免 Keychain 额外授权弹窗）。启用 macOS 自动拉起：`SUBSWAP_AUTO_DAEMON=1`。单实例靠 `<state>/subswapd.pid` 文件锁。关掉：`pkill subswapd`；禁止自动拉起：`SUBSWAP_NO_DAEMON=1`。**在 macOS 未启用自动拉起时，Codex/其它 provider 的后台自动切号不会跑**——只有主动执行无参 `subswap` 才会采样并自动切；切完仍须重启已打开的 Codex 才生效（上一节）。**换二进制后必须重启 `subswapd`**：运行中的旧进程仍按旧逻辑采样，还会把自己的额度结果（可能是空）写进共享的 `quota_cache.json`，新 CLI 在缓存下限（`quota.min_refresh_interval_ms`，默认 90 秒）内直接显示它写的结果；排查「装了新构建还是不对」时先确认 daemon 启动时间晚于安装时间。
 
 ## 火山方舟 Coding Plan
 

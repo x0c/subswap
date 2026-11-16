@@ -33,6 +33,10 @@
 
 **既定 UX（勿改回）**：默认只显示 `{N}% left`，不打印 ok/warn/full；严重程度靠数字 + 颜色。改展示时**不要翻转 `Quota.used` 语义**。
 
+**同一上游、多个 Provider 共用一份实现**：需要相同签名/协议的额度查询放在 `providers/common/`
+（`opencode_go_usage`、`volcengine_quota`），由调用方传入自己的 provider id 决定 `Quota.provider` 归属；
+不要各 Provider 复制签名与解析（顶层只读 `volcengine` 与 Pi 抽屉即共用同一份 V4 签名实现）。
+
 ---
 
 ## 本机请求凭证投影（`subswap auth`）
@@ -697,6 +701,12 @@ Go 订阅 = API key（`{"type":"api","key":"sk-..."}`），无 refresh，不刷�
 历史 Claude 路径值（仅追溯，日常以 Pi 侧为准）：`base_url` `https://ark.cn-beijing.volces.com/api/coding`、
 模型 `ark-code-latest`；额度走 AK/SK V4 签名直查 `open.volcengineapi.com` + `arkcli` 兜底，
 Pi 侧标准火山 channel 账号复用同一路径（缺 AK/SK 时显示无额度，不造假）。
+缺 AK/SK 与「装的二进制没带这条路径」同样表现为静默空：默认入口只打 `custom`，`status --json` 是空 `quotas`
+且没有 error。先看缓存目录下 `quota_collection/pi-<hash>.json`（macOS：`~/Library/Caches/dev.subswap.subswap/`）的 `state`——
+`success` + 空 `quotas` 是 provider 短路（channel 不匹配或缺凭据），`failure` 带 `error` 才是取数失败；
+再确认装的 `subswap` / `subswapd` 来自含本路径的构建（旧 daemon 会把它写的空成功结果回灌 `quota_cache.json`，
+使新 CLI 在缓存下限内继续显示空）。诊断与验收见
+[troubleshooting/2026-11-16](troubleshooting/2026-11-16-pi-ark-quota-shows-custom.md)。
 [官方 Claude Code 接入文档](https://www.volcengine.com/docs/ark/coding-plan-personal-ai-claude-code)。
 
 ## Antigravity / Gemini

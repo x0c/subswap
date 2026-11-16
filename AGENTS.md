@@ -160,7 +160,7 @@ pgrep -af 'subswap __daemon|subswapd' || true
 crates/core/              数据模型、Provider trait、CredentialStore、路径、策略
 crates/cli/               subswap 二进制与默认入口
 crates/daemon/            subswapd 后台轮询、自动切换、Claude token 保活
-crates/providers/common/  文件型 OAuth 账号切换共享引擎（FileBlobProvider/FileBlobRuntime/IsolatedProvider）
+crates/providers/common/  文件型 OAuth 账号切换共享引擎（FileBlobProvider/FileBlobRuntime/IsolatedProvider）与共用额度查询（opencode_go_usage / volcengine_quota）
 crates/providers/codex/   Codex / ChatGPT Provider（adapter，跑在 common 引擎上）
 crates/providers/claude/  Claude / Anthropic Provider（keychain 特化，独立于 common 引擎）
 crates/providers/kimi/    Kimi / Moonshot Provider（adapter，跑在 common 引擎上）
@@ -192,7 +192,7 @@ docs/                     中文项目文档
 | [CONTRIBUTING.md](~/Codes/Subswap/CONTRIBUTING.md) | 开始、评审或合并外部贡献前**必读**。不读会让凭证安全边界、测试隔离或公开文档同步在贡献中被遗漏 |
 | [SECURITY.md](~/Codes/Subswap/SECURITY.md) | 处理安全漏洞、凭证泄露、安装完整性或私密披露前**必读**。不读会把应私下处理的敏感问题暴露到公开 issue |
 | [docs/ROADMAP.md](~/Codes/Subswap/docs/ROADMAP.md) | 规划、评审或同步里程碑范围、已完成能力和后续功能优先级前**必读**。不读会把已完成能力当待办，或把未打磨半成品写进对外承诺 |
-| [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](~/Codes/Subswap/docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（含 **Antigravity 缺 Gemini `7d` 或出现 `--` 未标池窗口**、**Codex 切号后仍用旧号 / 误以为没自动切**、Codex 两个 `7d`/附加 gpt-reserve、**Codex 只有当前号有额度停用号全 401**、keychain ACL 中毒、Cursor 命令行钥匙串登录查不到额度、Cursor 多个账号额度完全一样、Cursor 自动切到 1st 0% 号、access/refresh token 覆写、429 vs invalid_grant、TOML null、Claude/Codex 用量 401 但客户端能正常用等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
+| [docs/troubleshooting/TROUBLESHOOTING_INDEX.md](~/Codes/Subswap/docs/troubleshooting/TROUBLESHOOTING_INDEX.md) | **排查任何故障 / 报错 / 异常行为前必读**：先在此查有无同类前例，避免重新 debug 已解决的问题（含 **Antigravity 缺 Gemini `7d` 或出现 `--` 未标池窗口**、**Pi 抽屉 Ark 号只显示 `custom` / 余量查不出**、**Codex 切号后仍用旧号 / 误以为没自动切**、Codex 两个 `7d`/附加 gpt-reserve、**Codex 只有当前号有额度停用号全 401**、keychain ACL 中毒、Cursor 命令行钥匙串登录查不到额度、Cursor 多个账号额度完全一样、Cursor 自动切到 1st 0% 号、access/refresh token 覆写、429 vs invalid_grant、TOML null、Claude/Codex 用量 401 但客户端能正常用等）；纯功能开发或改配置时可跳过；是本项目全部故障排查的权威来源 |
 | [docs/superpowers/specs/2026-07-17-kimi-provider-and-shared-engine-design.md](~/Codes/Subswap/docs/superpowers/specs/2026-07-17-kimi-provider-and-shared-engine-design.md) | 追溯 2026-07-17 Kimi Provider / 文件型共享引擎**历史设计决策**时可读；日常改代码以 PROVIDER_KB 与 ARCHITECTURE 为准。不读历史稿不会挡日常开发 |
 | [docs/superpowers/plans/2026-07-17-kimi-provider-and-shared-engine.md](~/Codes/Subswap/docs/superpowers/plans/2026-07-17-kimi-provider-and-shared-engine.md) | 仅追溯同日实现清单 / 验收步骤时可读；日常无需翻阅。权威行为与现状以 PROVIDER_KB、ARCHITECTURE、源码为准 |
 
