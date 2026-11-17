@@ -33,7 +33,9 @@ K2.8 Preview、GLM-5.3 / GLM-5.3 Flash、Doubao Seed Evolving / 2.1 Pro / 2.1 Li
 - 账号声明目录外 id（如 `ark-code-latest`）时自动追加一条；
 - `resolveVolcengineModel` 只修端点、不再改写模型 id，补位始终保持用户选的模型；
 - 自定义中转端点渠道仍只暴露自己的一个模型（未知目录，不编造）。
-- 机器侧把 `enabledModels` 的 `subswap-volcengine/kimi-k3.1-pro` 换成 `subswap-volcengine/*`。
+- 机器侧把 `enabledModels` 的 `subswap-volcengine/kimi-k3.1-pro` 换成显式两条
+  `subswap-volcengine/kimi-k3.1-pro` + `subswap-volcengine/deepseek-v4-1-flash`（不要用 `subswap-volcengine/*`：
+  那会把目录里 13 条全放进选择器）。provider 仍保留完整目录，只靠 scope 控制可见集。
 
 ## Verification
 
