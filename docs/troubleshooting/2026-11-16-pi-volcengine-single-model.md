@@ -46,8 +46,9 @@ K2.8 Preview、GLM-5.3 / GLM-5.3 Flash、Doubao Seed Evolving / 2.1 Pro / 2.1 Li
 - 上游实测：同一批 key 直连 `POST /api/coding/v3/chat/completions` 时每个目录 id 均返回 200，
   `deepseek-v4-1-flash` 还接受 `thinking:{type:"enabled"}` 与 `reasoning_effort` `max`/`xhigh`；
   `kimi-k2.6`、`kimi-k2.7-code` 归一化到 `kimi-k3.1-pro`，`ark-code-latest` 归一化到 `auto` 路由。
-- 限制：验收时两条 Ark key 的 5 小时窗口都已耗尽（`AccountQuotaExceeded`），所以逐模型的真实推理留待配额重置后复查；
-  模型清单本身来自 Pi 自己的 `--list-models`。
+- 真实推理（配额重置后）：`pi -p --provider subswap-volcengine --model deepseek-v4-1-flash` 与同名
+  `kimi-k3.1-pro` 都经已安装扩展返回 `OK`，说明池子确实把用户选的模型 id 透传给上游、两条 Ark key 都能服务。
+  其余 11 个目录模型只做过上游直连的一 token 验证，未在 Pi 里逐个跑过。
 
 ## 顺带确认
 
