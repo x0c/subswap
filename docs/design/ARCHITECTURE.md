@@ -110,7 +110,7 @@ Codex / Kimi / OpenCode API Key / Command Code 使用 `providers/common` 的文�
 
 `find_unique(id)`：全局 id 反查（唯一可省略 provider；歧义用 `<provider>/<id>`）。
 默认入口全局编号（跨 provider 连续，1-based）来自 `AppContext::list_ordered()`，与 `subswap swap N` / `subswap rm N` 同映射。
-tty：ANSI 分层（active `*` bold cyan、warn 黄、full 加粗红；其余 dim）；非交互退化为纯文本。
+tty：ANSI 分层（active `*` bold cyan、warn 黄、full 加粗红（同一窗口的 `reset in xx` 一并标红）；其余 dim）；非交互退化为纯文本。
 
 交互要求：
 - 账号列表必须先于全部网络请求出现。

@@ -569,13 +569,19 @@ pub fn format_quota_compact(q: &Quota, color: bool) -> String {
         .unwrap_or_else(|| "--".into());
 
     let usage_sgr = status_sgr(q.status);
+    // 耗尽窗口（0% 已是加粗红）把 `reset in xx` 一并标红，避免同一块只剩一半警示色。
+    let reset_sgr = if matches!(q.status, QuotaStatus::Exhausted) {
+        usage_sgr
+    } else {
+        "2"
+    };
 
     let w_styled = style(color, "2", &format!("{w_label:<2}"));
     let bracket_l = style(color, "2", "[");
     let bracket_r = style(color, "2", "]");
     let usage = style(color, usage_sgr, &usage_plain);
     let reset_padded = format!("reset {reset_plain:<6}");
-    let reset = style(color, "2", &reset_padded);
+    let reset = style(color, reset_sgr, &reset_padded);
 
     format!("{w_styled} {bracket_l}{usage} {reset}{bracket_r}")
 }
@@ -752,6 +758,20 @@ mod tests {
         assert!(
             full.contains("\x1b[1;31m"),
             "exhausted must use bold red: {full:?}"
+        );
+        assert!(
+            full.contains("\x1b[1;31mreset in 2h"),
+            "exhausted reset countdown must share the red paint: {full:?}"
+        );
+        assert!(
+            !warn.contains("\x1b[1;31mreset"),
+            "warn reset countdown stays dim: {warn:?}"
+        );
+        // ok 的 reset 仍是 dim，不要顺手把整张表都染色。
+        let ok = format_quota_compact(&quota(QuotaWindow::FiveHour, 6, 100, QuotaStatus::Ok), true);
+        assert!(
+            ok.contains("\x1b[2mreset in 2h"),
+            "ok reset countdown must stay dim: {ok:?}"
         );
     }
 
