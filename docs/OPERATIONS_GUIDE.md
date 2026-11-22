@@ -267,6 +267,8 @@ Shared optional acceptance procedures now live in the agent-friendly-cli skill (
 
 ## CI and Release failure badges
 
+Volcengine quota tests pass their loopback OpenAPI base per request, so the Pi and shared-provider suites can exercise signed success and auth-failure responses in parallel without a process-wide environment override or a blocking mutex across `.await`. Keep one resolved host for both request URL and signature. Cargo's workspace metadata uses `repository` for the project URL; do not add the same URL again as `homepage` or add unused workspace inheritance fields.
+
 Keep CI and Release checks enabled and fix their failing steps. A working local binary does not prove that the latest source passes formatting, lint, cross-platform tests, or installer verification. The README badges report workflow outcomes, not local application health.
 
 Release must validate the selected tag through the same CI workflow before building assets. All builds and the current Windows installer verification must succeed before publication. Do not use `always()` with a condition that checks only builds: that bypasses a failed installer dependency.

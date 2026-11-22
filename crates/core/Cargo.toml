@@ -6,7 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 description = "subswap core: data model, Provider trait, credential store, paths"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 

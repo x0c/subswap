@@ -453,7 +453,7 @@ impl Provider for PiProvider {
 
     /// 标准火山与 OpenCode Go channel 各自直查余量；其余按量 channel 恒为空。
     async fn query_quota(&self, id: &AccountId) -> Result<Vec<Quota>> {
-        self.query_quota_with_opencode_go_base(id, None).await
+        self.query_quota_with_bases(id, None, None).await
     }
 
     /// 投影长效 API key（`expires_at_ms=None`）；永不刷新，不返回 refresh token。
@@ -495,11 +495,12 @@ enum PiQuotaSource {
 }
 
 impl PiProvider {
-    /// 可注入 OpenCode Go base URL 的额度查询实现（测试注入 mock，生产传 `None`）。
-    async fn query_quota_with_opencode_go_base(
+    /// Query quota with optional per-request endpoints for local test gateways.
+    async fn query_quota_with_bases(
         &self,
         id: &AccountId,
         opencode_go_base: Option<&str>,
+        volcengine_base: Option<&str>,
     ) -> Result<Vec<Quota>> {
         let provider = self.clone();
         let id_for_lookup = id.clone();
@@ -529,7 +530,14 @@ impl PiProvider {
                 None => opencode_go_usage::fetch_quota(&api_key, PROVIDER_ID, id).await,
             },
             PiQuotaSource::Volcengine { ak, sk } => {
-                volcengine_quota::fetch_quota(PROVIDER_ID, id.clone(), Some(ak), Some(sk)).await
+                volcengine_quota::fetch_quota_at(
+                    PROVIDER_ID,
+                    id.clone(),
+                    Some(ak),
+                    Some(sk),
+                    volcengine_base,
+                )
+                .await
             }
         }
     }
@@ -738,9 +746,6 @@ mod tests {
         assert_eq!(sk.as_deref(), Some("SK"));
     }
 
-    /// mock 网关测试共用：同一进程内串行改 `SUBSWAP_VOLCENGINE_OPENAPI_BASE`，防并行测试串台。
-    static MOCK_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn volcengine_params() -> NewPiAccount {
         NewPiAccount {
             slot: "volcengine".into(),
@@ -825,42 +830,22 @@ mod tests {
             .map(|pos| pos + 4)
     }
 
-    fn with_mock_base(base: &str) -> Option<String> {
-        let prev = std::env::var("SUBSWAP_VOLCENGINE_OPENAPI_BASE").ok();
-        unsafe {
-            std::env::set_var("SUBSWAP_VOLCENGINE_OPENAPI_BASE", base);
-        }
-        prev
-    }
-
-    fn restore_mock_base(prev: Option<String>) {
-        if let Some(value) = prev {
-            unsafe {
-                std::env::set_var("SUBSWAP_VOLCENGINE_OPENAPI_BASE", value);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var("SUBSWAP_VOLCENGINE_OPENAPI_BASE");
-            }
-        }
-    }
-
     /// 火山 channel + AK/SK：mock 网关返回 5h/7d/mo 三档百分比（CodingPlan 优先，只打一次）。
     #[tokio::test]
     async fn volcengine_channel_with_aksk_reports_three_windows() {
-        let _guard = MOCK_ENV_LOCK.lock().unwrap();
         let payload = r#"{"ResponseMetadata":{},"Result":{"Status":"Running","QuotaUsage":[{"Level":"session","Percent":10.5,"ResetTimestamp":1784278625},{"Level":"weekly","Percent":43.5,"ResetTimestamp":1784217600},{"Level":"monthly","Percent":21.7,"ResetTimestamp":1786723199}]}}"#.to_string();
         let (base, server) = spawn_json_mock(vec![payload]);
-        let prev = with_mock_base(&base);
 
         let fixture = Fixture::new();
         let account = fixture
             .provider
             .import_key(volcengine_params(), "sk-volc-quota", None)
             .unwrap();
-        let quotas = fixture.provider.query_quota(&account.id).await.unwrap();
-
-        restore_mock_base(prev);
+        let quotas = fixture
+            .provider
+            .query_quota_with_bases(&account.id, None, Some(&base))
+            .await
+            .unwrap();
         let seen = server.join().unwrap();
 
         assert_eq!(quotas.len(), 3);
@@ -877,13 +862,11 @@ mod tests {
     /// 鉴权失败时错误与外发请求均不得携带 SK 原文（AK 只出现在签名 Credential 作用域，属协议行为）。
     #[tokio::test]
     async fn quota_auth_failure_never_echoes_secret() {
-        let _guard = MOCK_ENV_LOCK.lock().unwrap();
         let secret = "synthetic-secret-value-must-not-leak";
         let access_id = "AKID-MUST-NOT-LEAK-12345";
         let payload = r#"{"ResponseMetadata":{"Error":{"Code":"InvalidAccessKeyId","Message":"ak is wrong"}},"Result":{}}"#.to_string();
         // CodingPlan 与 AFP 各打一次，共两个连接。
         let (base, server) = spawn_json_mock(vec![payload.clone(), payload]);
-        let prev = with_mock_base(&base);
 
         let fixture = Fixture::new();
         let account = fixture
@@ -898,9 +881,11 @@ mod tests {
                 None,
             )
             .unwrap();
-        let err = fixture.provider.query_quota(&account.id).await.unwrap_err();
-
-        restore_mock_base(prev);
+        let err = fixture
+            .provider
+            .query_quota_with_bases(&account.id, None, Some(&base))
+            .await
+            .unwrap_err();
         let seen = server.join().unwrap();
 
         let message = err.to_string();
@@ -1178,7 +1163,7 @@ mod tests {
         // opencode-zen 按量无 Go 订阅额度，不发 HTTP 请求直接返回空。
         let zen_quotas = fixture
             .provider
-            .query_quota_with_opencode_go_base(&zen_account.id, Some(&base_url))
+            .query_quota_with_bases(&zen_account.id, Some(&base_url), None)
             .await
             .unwrap();
         assert!(zen_quotas.is_empty());
@@ -1186,7 +1171,7 @@ mod tests {
         // opencode-go 返回 rolling / weekly / monthly 三个窗口。
         let go_quotas = fixture
             .provider
-            .query_quota_with_opencode_go_base(&go_account.id, Some(&base_url))
+            .query_quota_with_bases(&go_account.id, Some(&base_url), None)
             .await
             .unwrap();
         assert_eq!(go_quotas.len(), 3);
@@ -1201,7 +1186,7 @@ mod tests {
         // 429 保持 typed RateLimited，不当成身份失效。
         let err = fixture
             .provider
-            .query_quota_with_opencode_go_base(&go_account.id, Some(&base_url))
+            .query_quota_with_bases(&go_account.id, Some(&base_url), None)
             .await
             .unwrap_err();
         assert!(matches!(err, Error::QuotaRateLimited { .. }), "got {err}");

@@ -17,13 +17,11 @@ members = [
 ]
 
 [workspace.package]
-version = "1.17.1"
+version = "1.17.2"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
-authors = ["subswap contributors"]
 repository = "https://github.com/x0c/subswap"
-homepage = "https://github.com/x0c/subswap"
 keywords = ["claude", "codex", "kimi", "cursor", "opencode", "commandcode", "quota"]
 categories = ["command-line-utilities", "authentication"]
 

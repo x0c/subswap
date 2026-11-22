@@ -246,18 +246,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "console"
-version = "0.16.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d64e8af5551369d19cf50138de61f1c42074ab970f74e99be916646777f8fc87"
-dependencies = [
- "encode_unicode",
- "libc",
- "unicode-width",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -314,7 +302,7 @@ version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "658bce805d770f407bc62102fca7c2c64ceef2fbcb2b8bd19d2765ce093980de"
 dependencies = [
- "console 0.15.11",
+ "console",
  "shell-words",
  "tempfile",
  "thiserror 1.0.69",
@@ -865,19 +853,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "indicatif"
-version = "0.18.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25470f23803092da7d239834776d653104d551bc4d7eacaf31e6837854b8e9eb"
-dependencies = [
- "console 0.16.3",
- "portable-atomic",
- "unicode-width",
- "unit-prefix",
- "web-time",
-]
-
-[[package]]
 name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1072,12 +1047,6 @@ name = "pkg-config"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
-
-[[package]]
-name = "portable-atomic"
-version = "1.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
 
 [[package]]
 name = "potential_utf"
@@ -1576,7 +1545,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "subswap-cli"
-version = "1.17.1"
+version = "1.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1587,7 +1556,6 @@ dependencies = [
  "directories",
  "fs2",
  "futures",
- "indicatif",
  "libc",
  "rusqlite",
  "serde",
@@ -1613,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-core"
-version = "1.17.1"
+version = "1.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1634,7 +1602,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-daemon"
-version = "1.17.1"
+version = "1.17.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1657,7 +1625,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-provider-antigravity"
-version = "1.17.1"
+version = "1.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1676,7 +1644,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-provider-claude"
-version = "1.17.1"
+version = "1.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1696,7 +1664,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-provider-codex"
-version = "1.17.1"
+version = "1.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1719,7 +1687,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-provider-commandcode"
-version = "1.17.1"
+version = "1.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1737,7 +1705,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-provider-common"
-version = "1.17.1"
+version = "1.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1756,7 +1724,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-provider-cursor"
-version = "1.17.1"
+version = "1.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1777,7 +1745,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-provider-kimi"
-version = "1.17.1"
+version = "1.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1798,7 +1766,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-provider-opencode"
-version = "1.17.1"
+version = "1.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1818,7 +1786,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-provider-pi"
-version = "1.17.1"
+version = "1.17.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1835,7 +1803,7 @@ dependencies = [
 
 [[package]]
 name = "subswap-provider-volcengine"
-version = "1.17.1"
+version = "1.17.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2226,12 +2194,6 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
-
-[[package]]
-name = "unit-prefix"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81e544489bf3d8ef66c953931f56617f423cd4b5494be343d9b9d3dda037b9a3"
 
 [[package]]
 name = "untrusted"

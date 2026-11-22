@@ -6,7 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 description = "subswap Pi coding agent Runtime provider (Pi drawer owner)"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 

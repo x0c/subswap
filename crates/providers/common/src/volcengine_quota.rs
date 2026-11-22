@@ -20,27 +20,22 @@ const SERVICE: &str = "ark";
 const CONTENT_TYPE: &str = "application/json";
 const SIGNED_HEADERS: &str = "content-type;host;x-content-sha256;x-date";
 
-/// 从环境变量覆盖 OpenAPI 网关，供测试 mock 用。
-/// 支持裸 host（`open.volcengineapi.com` / `host:port`）与完整 URL
-///（`http://127.0.0.1:PORT`）；返回 `(scheme, host)`，签名 `host:` 头与实际 URL 共用同一结果。
-fn openapi_endpoint() -> (String, String) {
-    let raw = std::env::var("SUBSWAP_VOLCENGINE_OPENAPI_BASE")
-        .ok()
+/// Resolve the OpenAPI endpoint once for both the URL and the request signature.
+/// Tests supply a loopback base without changing the process environment.
+fn openapi_endpoint(base: Option<&str>) -> (String, String) {
+    let environment = std::env::var("SUBSWAP_VOLCENGINE_OPENAPI_BASE").ok();
+    let raw = base
+        .or(environment.as_deref())
         .filter(|value| !value.trim().is_empty())
-        .map(|value| value.trim().trim_end_matches('/').to_string())
-        .unwrap_or_else(|| OPENAPI_HOST.into());
+        .map(|value| value.trim().trim_end_matches('/'))
+        .unwrap_or(OPENAPI_HOST);
     if let Some(rest) = raw.strip_prefix("http://") {
         ("http".into(), rest.to_string())
     } else if let Some(rest) = raw.strip_prefix("https://") {
         ("https".into(), rest.to_string())
     } else {
-        ("https".into(), raw)
+        ("https".into(), raw.to_string())
     }
-}
-
-/// 签名与 `Host` 头用的 host 部分（不含 scheme，含非默认端口）。
-fn openapi_host() -> String {
-    openapi_endpoint().1
 }
 
 /// HMAC-SHA256（标准构造，避免新增 `hmac` 依赖）。
@@ -85,6 +80,7 @@ fn sign(
     access_key_id: &str,
     secret_access_key: &str,
     region: &str,
+    host: &str,
     canonical: &str,
     body: &[u8],
     now: chrono::DateTime<Utc>,
@@ -94,8 +90,7 @@ fn sign(
     let body_hash = sha256_hex(body);
     // 官方规范：canonical headers 按小写 header 名 ASCII 排序，与 SignedHeaders 顺序一致。
     let canonical_headers = format!(
-        "content-type:{CONTENT_TYPE}\nhost:{}\nx-content-sha256:{body_hash}\nx-date:{x_date}\n",
-        openapi_host(),
+        "content-type:{CONTENT_TYPE}\nhost:{host}\nx-content-sha256:{body_hash}\nx-date:{x_date}\n",
     );
     let canonical_request =
         format!("POST\n/\n{canonical}\n{canonical_headers}\n{SIGNED_HEADERS}\n{body_hash}");
@@ -212,9 +207,10 @@ async fn openapi_call(
     access_key_id: &str,
     secret_access_key: &str,
     action: &str,
+    endpoint: &(String, String),
 ) -> CallOutcome {
     let canonical = canonical_query(action);
-    let (scheme, host) = openapi_endpoint();
+    let (scheme, host) = endpoint;
     let url = format!("{scheme}://{host}/?{canonical}");
     // 控制面 JSON API 空请求体按 `{}` 发送（`{}` 哈希参与签名），与 magpie/dsh/ark-cli 一致；
     // 空串哈希会导致签名与服务端期望不一致。
@@ -223,6 +219,7 @@ async fn openapi_call(
         access_key_id,
         secret_access_key,
         region,
+        host,
         &canonical,
         body,
         Utc::now(),
@@ -491,6 +488,7 @@ async fn query_via_aksk(
     id: &AccountId,
     access_key_id: &str,
     secret_access_key: &str,
+    endpoint: &(String, String),
 ) -> subswap_core::error::Result<Option<Vec<Quota>>> {
     use subswap_core::error::Error;
     // Coding Plan 固定 cn-beijing；与推理域名一致。
@@ -507,6 +505,7 @@ async fn query_via_aksk(
         access_key_id,
         secret_access_key,
         "GetCodingPlanUsage",
+        endpoint,
     )
     .await
     {
@@ -541,6 +540,7 @@ async fn query_via_aksk(
         access_key_id,
         secret_access_key,
         "GetAFPUsage",
+        endpoint,
     )
     .await
     {
@@ -679,13 +679,25 @@ pub async fn fetch_quota(
     access_key_id: Option<String>,
     secret_access_key: Option<String>,
 ) -> subswap_core::error::Result<Vec<Quota>> {
+    fetch_quota_at(provider_id, id, access_key_id, secret_access_key, None).await
+}
+
+/// Query quota with an optional request-local OpenAPI base.
+pub async fn fetch_quota_at(
+    provider_id: &str,
+    id: AccountId,
+    access_key_id: Option<String>,
+    secret_access_key: Option<String>,
+    openapi_base: Option<&str>,
+) -> subswap_core::error::Result<Vec<Quota>> {
     let ak = access_key_id.unwrap_or_default();
     let sk = secret_access_key.unwrap_or_default();
     if !ak.trim().is_empty() && !sk.trim().is_empty() {
         // 复用全局 Client（连接池），避免每次额度轮询重建 TLS/连接池。
         static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
         let client = CLIENT.get_or_init(reqwest::Client::new);
-        match query_via_aksk(client, provider_id, &id, ak.trim(), sk.trim()).await {
+        let endpoint = openapi_endpoint(openapi_base);
+        match query_via_aksk(client, provider_id, &id, ak.trim(), sk.trim(), &endpoint).await {
             Ok(Some(quotas)) => return Ok(quotas),
             Ok(None) => {
                 // 已鉴权但无订阅：仍试 arkcli（可能是另一身份的订阅）。
@@ -755,6 +767,7 @@ mod tests {
             "EXAMPLEKEYID",
             "EXAMPLESECRET",
             "cn-beijing",
+            OPENAPI_HOST,
             &canonical,
             b"{}",
             now,
@@ -889,8 +902,7 @@ mod tests {
     }
 
     /// Mock 网关端到端：CodingPlan 优先于 AFP，且请求体为 `{}`、签名头排序正确。
-    /// 用标准库 TcpListener 做最小 HTTP mock，避免新增 `wiremock` 依赖；
-    /// 通过 `SUBSWAP_VOLCENGINE_OPENAPI_BASE` 覆盖网关指向 127.0.0.1。
+    /// The request-local base points to a small loopback HTTP mock.
     #[tokio::test]
     async fn coding_plan_preferred_over_afp_via_mock_gateway() {
         use std::io::{Read, Write};
@@ -975,26 +987,11 @@ mod tests {
             }
         });
 
-        let prev = std::env::var("SUBSWAP_VOLCENGINE_OPENAPI_BASE").ok();
-        unsafe {
-            std::env::set_var(
-                "SUBSWAP_VOLCENGINE_OPENAPI_BASE",
-                format!("http://127.0.0.1:{port}"),
-            );
-        }
+        let endpoint = openapi_endpoint(Some(&format!("http://127.0.0.1:{port}")));
         let id = AccountId("ark-test".into());
         let client = reqwest::Client::new();
-        let result = query_via_aksk(&client, "volcengine", &id, "AK", "SK").await;
-        if let Some(value) = prev {
-            unsafe {
-                std::env::set_var("SUBSWAP_VOLCENGINE_OPENAPI_BASE", value);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var("SUBSWAP_VOLCENGINE_OPENAPI_BASE");
-            }
-        }
-        let _ = server.join();
+        let result = query_via_aksk(&client, "volcengine", &id, "AK", "SK", &endpoint).await;
+        server.join().unwrap();
 
         let quotas = result.unwrap().expect("coding plan should win");
         assert_eq!(quotas.len(), 1);
