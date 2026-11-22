@@ -277,6 +277,13 @@ Draft installer verification must explicitly select the release database ID and 
 
 References: [GitHub job dependencies](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-jobs), [release API](https://docs.github.com/en/rest/releases/releases), [asset downloads](https://docs.github.com/en/rest/releases/assets).
 
+## v1.17.2 release acceptance (2026-11-22)
+
+- Source tag: `be14a413`. With Rust 1.100.0, strict Clippy, rustfmt, all 576 Rust tests, and the locked CLI/daemon release build passed without Rust diagnostics; Pi typecheck and all 54 tests passed.
+- [Release workflow 45039710550](https://github.com/x0c/subswap/actions/runs/45039710550) passed all platform builds, both Linux GLIBC floor checks, installation of the exact Windows draft, publication, and the Homebrew formula update. All five public archives and their SHA-256 files were independently downloaded and verified. The formula's four URLs and checksums match its archives.
+- Both ARM64 macOS executables from the public archive were installed and byte-compared. The active CLI reports `subswap 1.17.2` and the read-only JSON entry returned schema 1 with no daemon required. Linux, Windows and Intel macOS execution evidence is from CI rather than this Mac.
+- The new-tag leak scan rechecked already-public history and found nine short, synthetic OAuth fixtures. Their exact fingerprints are documented in `.leakignore`; the normal scan and repository hook remained enabled. No real token was exempted.
+
 ## v1.17.1 release acceptance (2026-11-15)
 
 - The release followed three defect fixes on `main`: `dc1fd6b` gates Antigravity's live capture to macOS, `346ce8a` compiles the Codex control-socket refresh path only on unix and keeps the running-process guard for the standalone fallback, and `2f87869` is the mechanical rustfmt pass over 16 files. `main` CI [43686216600](https://github.com/x0c/subswap/actions/runs/43686216600) then passed all five jobs.
