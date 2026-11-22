@@ -39,14 +39,14 @@ The model is chosen per request in Pi, and every account in the pool is asked fo
 
 ## Behavior
 
-- The active or most recently healthy account is tried first.
+- The active or most recently healthy account is tried first. An account whose reported quota window is spent (`exhausted`, or `used >= limit`, with a reset still ahead) is skipped entirely while the pool holds an account that can serve, so a subscription limit never takes a request a healthy account could answer.
 - A real quota, rate-limit, or account-auth failure before any text, thinking, or tool-call output rotates to the next account in the same group and retries the same request.
 - Codex stream errors such as `The usage limit has been reached` trigger failover even after HTTP 200, or without an HTTP status on WebSocket.
 - Model, thinking level, original conversation, headers, and user task are preserved. Pi's provider-level retries stay at `0`; this extension is the only retry owner for a pooled request.
 - After output becomes visible, the error is surfaced unchanged. The extension never replays an already-visible turn.
 - The extension has no chat commands, prompts, notifications, widgets, or status rows. Unrecovered errors keep Pi's native presentation.
 - On session start, a model still pointing at a removed alias (`coding-plan`, `coding-plan-2`, `codex-1`, `codex-2`) is silently mapped to the same model in the corresponding pool. If that model is unavailable, the selection is left untouched. The automatic switch sets `PI_MODEL_MEMORY_SUPPRESS_UNTIL` so it is not persisted as a user default; a failed lookup keeps the prior selection without any extension error output.
-- Repeated attempts are bounded to once per account per request. Failed accounts cool down using `Retry-After` when present, otherwise a conservative default.
+- Repeated attempts are bounded to once per account per request. Failed accounts cool down using `Retry-After` when present, otherwise a conservative default; a spent quota window cools the account down until its reset (bounded to six hours). The status and headers of a rejected attempt are recorded at `fetch`, because the API clients throw before `onResponse` fires on a non-2xx response.
 - Manually selectable Subswap API-key accounts, including `manual_only` accounts such as Volcengine Coding Plan keys, participate in request-scoped failover. This does not change Subswap daemon AutoSwap rules.
 
 ## Requirements
@@ -121,7 +121,7 @@ Live load check (with the extension installed via the route above):
 pi --provider subswap-volcengine --model kimi-k3.1-pro -p "Reply with exactly: OK"
 ```
 
-If every account in the group is genuinely exhausted, Pi reports the upstream quota error. That is not a failover failure; the extension only rotates when another account can be tried. Pi's own agent-level retry/backoff may delay that final error; the extension intentionally adds no progress UI, so adjust Pi retry settings if a faster failure is preferred.
+If every account in the group is genuinely exhausted, Pi reports the upstream quota error. That is not a failover failure; the extension only rotates when another account can be tried. A spent account is skipped rather than rotated through, so a healthy sibling's transient throttle surfaces as that transient error instead of a subscription limit. Pi's own agent-level retry/backoff may delay that final error; the extension intentionally adds no progress UI, so adjust Pi retry settings if a faster failure is preferred.
 
 ## Limitations
 
@@ -132,4 +132,5 @@ If every account in the group is genuinely exhausted, Pi reports the upstream qu
 - Accounts added or removed while Pi is running are picked up after `/reload` or a new session. A removed account fails its next setup gracefully through the per-account cooldown path; it never crashes the request stream.
 - The Codex pool exposes Pi's native Codex catalog (8 models on Pi 1.5.0); the count follows Pi releases.
 - The default Volcengine channel uses the OpenAI-compatible path `https://ark.cn-beijing.volces.com/api/coding/v3`; the native Claude endpoint (`.../api/coding`, without `/v3`) is a different protocol path and is normalized to `/v3` for this pool. Custom Volcengine endpoint/model channels serve their status endpoint (same normalization) and status model id. Update `src/providers.ts` for endpoint changes and `src/volcengine-models.ts` when the official catalog changes; the extension never fetches a model list at runtime.
-- Volcengine rotation relies on the OpenAI-compatible adapter's normalized error text because that adapter does not hand the pool a failed HTTP status. A response that omits status/quota/rate-limit/auth tokens may surface without rotation; real 429 bodies observed so far include the status token.
+- Rotation never depends on error text alone: the pool records each attempt's transport status and headers at `fetch`, so a rejected request rotates on its real HTTP status even though the API clients throw before `onResponse` fires. Error text still classifies failures that arrive inside a `2xx` stream, and adapters that do not route through `fetch` fall back to it.
+- Quota windows come from `subswap status --json`; an older Subswap that omits `quotas` leaves the pool without exhaustion data, so ordering falls back to activity, cooldown, and the last healthy account.

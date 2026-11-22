@@ -1,5 +1,18 @@
 import { execFile } from "node:child_process";
 
+/** One quota window reported by `subswap status` (rolling, weekly or monthly). */
+export interface SubswapQuota {
+	window: string;
+	/** Percent of the window already consumed, when the provider reports it. */
+	used?: number;
+	/** Percent ceiling of the window, when the provider reports it. */
+	limit?: number;
+	/** Window reset instant in epoch milliseconds; absent when the window never resets. */
+	resetAtMs?: number;
+	/** Server status: `ok`, `warn`, `exhausted` (exhausted or rate-limited) or `unknown`. */
+	status?: string;
+}
+
 export interface SubswapAccount {
 	id: string;
 	provider: string;
@@ -14,6 +27,8 @@ export interface SubswapAccount {
 	model?: string;
 	/** Custom-channel wire protocol, e.g. Codex `responses` (new status JSON). */
 	wireApi?: string;
+	/** Quota windows of the account (new status JSON; absent on old JSON). */
+	quotas?: SubswapQuota[];
 }
 
 export interface RequestSecret {
@@ -50,6 +65,7 @@ interface StatusPayload {
 		model?: unknown;
 		wire_api?: unknown;
 		wireApi?: unknown;
+		quotas?: unknown;
 	}>;
 }
 
@@ -65,6 +81,33 @@ interface AuthPayload {
 
 function stringField(value: unknown, fallback = ""): string {
 	return typeof value === "string" ? value : fallback;
+}
+
+function numberField(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** Quota windows are advisory routing data: unreadable entries are dropped, never guessed. */
+function parseQuotas(value: unknown): SubswapQuota[] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((entry) => {
+		if (!entry || typeof entry !== "object") return [];
+		const record = entry as Record<string, unknown>;
+		const window = stringField(record.window);
+		if (!window) return [];
+		const used = numberField(record.used);
+		const limit = numberField(record.limit);
+		const resetAt = typeof record.reset_at === "string" ? Date.parse(record.reset_at) : Number.NaN;
+		const status = stringField(record.status) || undefined;
+		const quota: SubswapQuota = {
+			window,
+			...(used === undefined ? {} : { used }),
+			...(limit === undefined ? {} : { limit }),
+			...(Number.isFinite(resetAt) ? { resetAtMs: resetAt } : {}),
+			...(status ? { status } : {}),
+		};
+		return [quota];
+	});
 }
 
 /** Parse subprocess stdout as a JSON object; never echo the raw text. */
@@ -144,6 +187,7 @@ export function parseStatus(payload: StatusPayload): SubswapAccount[] {
 		const model = stringField(entry.model) || undefined;
 		const wireApi = stringField(entry.wireApi) || stringField(entry.wire_api) || undefined;
 		const serverChannel = stringField(entry.channel) || undefined;
+		const quotas = parseQuotas(entry.quotas);
 		const account: SubswapAccount = {
 			id,
 			provider,
@@ -153,6 +197,7 @@ export function parseStatus(payload: StatusPayload): SubswapAccount[] {
 			...(endpoint ? { endpoint } : {}),
 			...(model ? { model } : {}),
 			...(wireApi ? { wireApi } : {}),
+			...(quotas.length > 0 ? { quotas } : {}),
 		};
 		account.channel = serverChannel ?? fallbackChannel({ ...account, manualOnly });
 		return [account];

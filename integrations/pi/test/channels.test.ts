@@ -122,6 +122,40 @@ test("parseAuth exposes endpoint and model from credential and environment shape
 	);
 });
 
+test("parseStatus keeps the quota windows that decide which account can serve", () => {
+	const [exhausted, healthy, legacy] = parseStatus({
+		accounts: [
+			{
+				id: "goru",
+				provider: "pi",
+				active: false,
+				channel: DEFAULT_OPENCODE_GO_CHANNEL,
+				quotas: [
+					{ provider: "pi", window: "month", used: 100, limit: 100, reset_at: "2026-11-25T11:46:03Z", status: "exhausted" },
+					{ provider: "pi", window: "five_hour", used: 0, limit: 100, reset_at: "2026-11-22T18:30:31.210Z", status: "ok" },
+				],
+			},
+			{
+				id: "1hvn",
+				provider: "pi",
+				active: false,
+				channel: DEFAULT_OPENCODE_GO_CHANNEL,
+				quotas: [{ window: "month", used: 4, limit: 100, reset_at: "2026-12-22T06:47:23Z", status: "ok" }],
+			},
+			{ id: "ark", provider: "volcengine", active: true },
+		],
+	});
+	assert.ok(exhausted && healthy && legacy);
+	assert.deepEqual(exhausted.quotas?.map((quota) => quota.window), ["month", "five_hour"]);
+	assert.equal(exhausted.quotas?.[0]?.status, "exhausted");
+	assert.equal(exhausted.quotas?.[0]?.resetAtMs, Date.parse("2026-11-25T11:46:03Z"));
+	// Millisecond-precision reset instants survive, and unreadable entries are dropped, not guessed.
+	assert.equal(exhausted.quotas?.[1]?.resetAtMs, Date.parse("2026-11-22T18:30:31.210Z"));
+	assert.equal(healthy.quotas?.[0]?.used, 4);
+	assert.equal(legacy.quotas, undefined);
+	assert.deepEqual(parseStatus({ accounts: [{ id: "a", provider: "pi", quotas: [{ used: 3 }, "junk"] }] })[0]?.quotas, undefined);
+});
+
 test("orderedAccounts filters by channel and gives cross-channel zero participation", () => {
 	const accounts = [
 		account({ id: "a", channel: "codex" }),
@@ -334,6 +368,75 @@ test("opencode-go and opencode-zen build native catalog pools while console oaut
 	const zenProvider = byProviderId.get("subswap-opencode-zen");
 	assert.ok(zenProvider, "expected subswap-opencode-zen provider");
 	assert.ok(zenProvider.getModels().length > 0);
+});
+
+test("a rejected attempt records its transport status and Retry-After cooldown", async () => {
+	const server = createServer((req, res) => {
+		const chunks: Buffer[] = [];
+		req.on("data", (chunk: Buffer) => chunks.push(chunk));
+		req.on("end", () => {
+			if (req.headers.authorization === "Bearer oc_sk_spent") {
+				// The real OpenCode Go monthly refusal: 429 JSON plus a multi-day Retry-After.
+				res.writeHead(429, { "content-type": "application/json", "retry-after": "7200" });
+				res.end(JSON.stringify({
+					type: "error",
+					error: { type: "GoUsageLimitError", message: "OpenCode Go usage limit reached (monthly, resets in 2d 22h)." },
+				}));
+				return;
+			}
+			res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8" });
+			res.write('data: {"id":"c1","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{"role":"assistant","content":"spent-then-healthy"},"finish_reason":null}]}\n\n');
+			res.write('data: {"id":"c1","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}\n\n');
+			res.end("data: [DONE]\n\n");
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	if (!address || typeof address === "string") throw new Error("unexpected server address");
+	const mockRoot = `http://127.0.0.1:${address.port}`;
+
+	try {
+		const state = newPoolState();
+		const failovers: Array<{ reason: string }> = [];
+		const pool = buildPool({
+			channel: DEFAULT_OPENCODE_GO_CHANNEL,
+			accounts: [
+				account({
+					id: "go-spent",
+					provider: "pi",
+					channel: DEFAULT_OPENCODE_GO_CHANNEL,
+					endpoint: mockRoot,
+					model: "kimi-k3.1-pro",
+				}),
+				account({
+					id: "go-fresh",
+					provider: "pi",
+					channel: DEFAULT_OPENCODE_GO_CHANNEL,
+					endpoint: mockRoot,
+					model: "kimi-k3.1-pro",
+				}),
+			],
+			state,
+			resolveSecret: async (acct) => ({ apiKey: acct.id === "go-spent" ? "oc_sk_spent" : "oc_sk_fresh" }),
+			onFailover: (notice) => failovers.push({ reason: notice.reason }),
+		});
+		const kimiModel = pool.getModels().find((m) => m.id === "kimi-k3.1-pro");
+		assert.ok(kimiModel);
+		const context = normalizeContext({
+			messages: [{ role: "user", content: "Reply with spent-then-healthy", timestamp: Date.now() }],
+		});
+		const before = Date.now();
+		const result = await pool.streamSimple(kimiModel, context, { sessionId: "sess-retry-after" }).result();
+		assert.equal(result.stopReason, "stop", `unexpected error: ${result.errorMessage}`);
+		// The failed response never reaches onResponse, so the pool must still see HTTP 429.
+		assert.deepEqual(failovers.map((notice) => notice.reason), ["HTTP 429"]);
+		const until = state.cooldowns.get("go-spent") ?? 0;
+		const cooledMs = until - before;
+		assert.ok(cooledMs >= 7_000_000, `cooldown ignored Retry-After: ${cooledMs}ms`);
+		assert.ok(cooledMs <= 7_300_000, `cooldown overshot Retry-After: ${cooledMs}ms`);
+	} finally {
+		await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+	}
 });
 
 test("subswap-opencode-go fails over across accounts over HTTP with bearer auth and session header", async () => {

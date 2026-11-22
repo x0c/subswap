@@ -159,6 +159,34 @@ function fixture(handler: Handler, poolAccounts = accounts) {
 	};
 }
 
+/**
+ * The two real OpenCode Go accounts of 2026-11-22: the monthly window of the
+ * first is exhausted, the second still has room. `subswap status` reports both
+ * windows, so the pool can see which account cannot serve.
+ */
+const DAY_MS = 24 * 60 * 60_000;
+const goAccounts = (now = Date.now()): SubswapAccount[] => [
+	{
+		id: "goru",
+		provider: "pi",
+		displayLabel: "opencode-go …gorU",
+		active: false,
+		manualOnly: true,
+		channel: "opencode-go",
+		quotas: [{ window: "month", used: 100, limit: 100, resetAtMs: now + 2.5 * DAY_MS, status: "exhausted" }],
+	},
+	{
+		id: "1hvn",
+		provider: "pi",
+		displayLabel: "opencode-go …1hVN",
+		active: false,
+		manualOnly: true,
+		channel: "opencode-go",
+		quotas: [{ window: "month", used: 4, limit: 100, resetAtMs: now + 30 * DAY_MS, status: "ok" }],
+	},
+];
+const GO_MONTHLY_LIMIT = '429: {"type":"GoUsageLimitError","message":"OpenCode Go usage limit reached (monthly, resets in 2d 22h)."}';
+
 function startAndError(stream: AssistantMessageEventStream, errorMessage: string, status = 429, responseModel?: Model<"test-api">, options?: SimpleStreamOptions): void {
 	stream.push({ type: "start", partial: message("pending") });
 	if (responseModel && options) {
@@ -223,6 +251,44 @@ for (const status of [undefined, 200]) {
 		for (const attempt of run.attempts) assert.deepEqual(attempt.context, run.context);
 	});
 }
+
+test("a quota-exhausted account never serves while a healthy account can", async () => {
+	const run = fixture((_requestModel, _context, options) => {
+		const stream = createAssistantMessageEventStream();
+		queueMicrotask(() => {
+			if (options?.apiKey === "secret-goru") startAndError(stream, GO_MONTHLY_LIMIT, 429, model, options);
+			else success(stream, "healthy-reply");
+		});
+		return stream;
+	}, goAccounts());
+	const result = await run.complete();
+	assert.equal(result.stopReason, "stop");
+	assert.equal(result.errorMessage, undefined);
+	assert.deepEqual(result.content, [{ type: "text", text: "healthy-reply" }]);
+	// The healthy account wins outright: no 429 is paid and no cooldown is written.
+	assert.deepEqual(run.attempts.map((attempt) => attempt.key), ["secret-1hvn"]);
+	assert.equal(run.state.cooldowns.size, 0);
+});
+
+test("a transient throttle never surfaces the monthly limit of an exhausted account", async () => {
+	// Production order: the healthy account is promoted (lastHealthyId) and gets
+	// throttled, so the pool used to fall back to the monthly-exhausted account
+	// and hand the caller its subscription limit.
+	const run = fixture((_requestModel, _context, options) => {
+		const stream = createAssistantMessageEventStream();
+		queueMicrotask(() => {
+			if (options?.apiKey === "secret-goru") startAndError(stream, GO_MONTHLY_LIMIT, 429, model, options);
+			else startAndError(stream, "429: too many requests, slow down", 429, model, options);
+		});
+		return stream;
+	}, goAccounts().reverse());
+	const result = await run.complete();
+	assert.equal(result.stopReason, "error");
+	// The caller must see the transient throttle it can retry, never the subscription limit.
+	assert.match(result.errorMessage ?? "", /too many requests/);
+	assert.doesNotMatch(result.errorMessage ?? "", /usage limit reached/);
+	assert.deepEqual(run.attempts.map((attempt) => attempt.key), ["secret-1hvn"]);
+});
 
 test("a transient non-account failure stays on the current account", async () => {
 	const run = fixture((_requestModel, _context, options) => {

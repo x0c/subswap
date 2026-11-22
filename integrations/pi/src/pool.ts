@@ -58,6 +58,32 @@ export function newPoolState(): PoolState {
 	return { cooldowns: new Map() };
 }
 
+/**
+ * Whether a reported quota window has nothing left for the current clock.
+ * The server marks a window `exhausted` when it is spent or rate-limited and
+ * reports when it resets; a window whose reset already passed no longer blocks.
+ */
+export function isQuotaExhausted(account: SubswapAccount, now: number): boolean {
+	return (account.quotas ?? []).some((quota) => {
+		if (quota.resetAtMs !== undefined && quota.resetAtMs <= now) return false;
+		if (quota.status === "exhausted") return true;
+		return quota.used !== undefined && quota.limit !== undefined && quota.limit > 0 && quota.used >= quota.limit;
+	});
+}
+
+/** Latest reset instant of the spent quota windows, i.e. when the account can serve again. */
+function quotaResetAt(account: SubswapAccount, now: number): number | undefined {
+	let until: number | undefined;
+	for (const quota of account.quotas ?? []) {
+		if (quota.resetAtMs === undefined || quota.resetAtMs <= now) continue;
+		const spent = quota.status === "exhausted"
+			|| (quota.used !== undefined && quota.limit !== undefined && quota.limit > 0 && quota.used >= quota.limit);
+		if (!spent) continue;
+		until = Math.max(until ?? 0, quota.resetAtMs);
+	}
+	return until;
+}
+
 export function classifyAccountFailure(message: string, status?: number): boolean {
 	if (status === 401 || status === 402 || status === 429) return true;
 	if (status === 403) {
@@ -79,11 +105,35 @@ export function cooldownFor(message: string, status: number | undefined, headers
 	return Number.isFinite(retryAt) ? Math.max(now + base, Math.min(retryAt, now + MAX_COOLDOWN_MS)) : now + base;
 }
 
+/**
+ * Cooldown for one rejected attempt: the transport's `Retry-After` when the
+ * response carried one, otherwise the conservative default, extended to the
+ * reset instant of a spent quota window so an exhausted account is not retried
+ * every few minutes for a window that reopens next week.
+ */
+function rejectionCooldown(
+	account: SubswapAccount,
+	message: string,
+	response: Pick<ProviderResponse, "status" | "headers"> | undefined,
+	now: number,
+): number {
+	const base = cooldownFor(message, response?.status, response?.headers, now);
+	const reset = quotaResetAt(account, now);
+	return reset === undefined ? base : Math.max(base, Math.min(reset, now + MAX_COOLDOWN_MS));
+}
+
 export function orderedAccounts(accounts: SubswapAccount[], state: PoolState, attempted: ReadonlySet<string>, now: number, channel?: string): SubswapAccount[] {
 	const inChannel = channel === undefined
 		? accounts
 		: accounts.filter((account) => channelOf(account) === channel);
-	const remaining = inChannel.filter((account) => !attempted.has(account.id));
+	// A spent subscription window cannot serve a request: routing one to it turns
+	// a healthy account's transient throttle into a surfaced quota failure. Spent
+	// accounts stay eligible only while the whole pool has nothing else to offer.
+	const spent = new Set(inChannel.filter((account) => isQuotaExhausted(account, now)).map((account) => account.id));
+	const eligible = spent.size === inChannel.length
+		? inChannel
+		: inChannel.filter((account) => !spent.has(account.id));
+	const remaining = eligible.filter((account) => !attempted.has(account.id));
 	const available = remaining.filter((account) => (state.cooldowns.get(account.id) ?? 0) <= now);
 	const candidates = available.length > 0 ? available : remaining;
 	return candidates.sort((a, b) => {
@@ -118,6 +168,15 @@ function headerValue(headers: Record<string, string> | undefined, name: string):
 		if (key.toLowerCase() === name) return headers[key];
 	}
 	return undefined;
+}
+
+// 失败响应到达不了 onResponse（客户端在返回前就抛错），所以由 fetch 自身记录状态与响应头。
+function recordHeaders(headers: Headers | undefined): Record<string, string> {
+	const record: Record<string, string> = {};
+	headers?.forEach((value, key) => {
+		record[key.toLowerCase()] = value;
+	});
+	return record;
 }
 
 // 只保留 message：setup 错误来自外部 resolveSecret，避免把非 message 字段带入 Pi 错误面。
@@ -231,6 +290,15 @@ function pooledStream(
 					response = { status: nextResponse.status, headers: { ...nextResponse.headers } };
 					await onResponse?.(nextResponse, responseModel);
 				};
+				// `onResponse` only fires for an accepted response; a rejected request
+				// (the 429 that carries `Retry-After`) throws inside the API client first,
+				// so the transport status and headers are recorded at fetch instead.
+				const attemptFetch = requestOptions.fetch;
+				attemptOptions.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+					const fetched = await (attemptFetch ?? globalThis.fetch)(input, init);
+					response = { status: fetched.status, headers: recordHeaders(fetched.headers) };
+					return fetched;
+				};
 
 				let start: Terminal["start"];
 				let outputStarted = false;
@@ -246,7 +314,7 @@ function pooledStream(
 						terminalSeen = true;
 						const errorText = event.error.errorMessage ?? "Provider request failed";
 						if (!isAbort(event, signal) && !outputStarted && classifyAccountFailure(errorText, response?.status)) {
-							setCooldown(account.id, cooldownFor(errorText, response?.status, response?.headers, Date.now()));
+							setCooldown(account.id, rejectionCooldown(account, errorText, response, Date.now()));
 							hooks.onAccountFailure?.(account);
 							if (orderedAccounts(accounts, state, attempted, Date.now(), poolChannel).length > 0) {
 								lastFailure = { ...(start ? { start } : {}), event, kind: "http" };
