@@ -13,3 +13,14 @@ fp:6fa6333e5ee0ec6b
 # credential. The following commit replaces the credential-shaped literal, but the
 # original blob stays in that commit's range.
 fp:3761b35f495555ac
+# Historical Antigravity OAuth test fixtures. New tag scanning revisits public
+# ancestors; these exact short markers are used only by local mock tests.
+fp:d352698b327a7d4e
+fp:f47d89922e3bb6c0
+fp:a8adb348af5e833b
+fp:f97a93cea12bd2d5
+fp:809bce873a1eb424
+fp:c16e8e7075db503b
+fp:bb154f835d47e950
+fp:368736d841fa8307
+fp:9d0458a19aa5e2a4

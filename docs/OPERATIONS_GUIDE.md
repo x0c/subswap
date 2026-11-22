@@ -297,6 +297,8 @@ References: [GitHub job dependencies](https://docs.github.com/en/actions/how-tos
 
 ### Retained third-party workflow diagnostics
 
+For the v1.17.2 Pi validation, npm reports `node-domexception@1.0.0` deprecated. It comes through the pinned development-only Pi SDK, `@google/genai` and `node-fetch`, not application source or the standalone Rust archives. Typecheck and all 54 Pi tests passed and npm reported zero known vulnerabilities. Recheck when the supported Pi SDK updates its dependency tree; do not override a host SDK transitively just to silence npm.
+
 | Diagnostic and targets | Origin, assessment and follow-up |
 |---|---|
 | `Node.js 20 is deprecated` / `mlugg/setup-zig@v2` forced to Node.js 24 on both Linux release builds, and `actions/setup-node@v4` on the Pi extension validation job | The [setup-zig v2 metadata](https://github.com/mlugg/setup-zig/blob/v2/action.yml) and `actions/setup-node@v4` declare Node 20; [GitHub's runtime migration](https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/) forces Node 24. In the v1.17.1 release both setup steps, the Pi check/test job, the builds and the GLIBC guards succeeded under that runtime. No Node runtime is shipped in the archives. Retained as a future CI compatibility risk; follow-up: adopt upstream Node-24-declared actions and validate both Linux release targets and the Pi job. Do not disable diagnostics or the GLIBC guard. |
