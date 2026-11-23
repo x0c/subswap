@@ -151,11 +151,21 @@ CLI 已在 macOS、Linux 和 Windows CI 中测试。请安装需要使用的原�
 
 ## 凭证
 
+**100% 本地执行 · 零遥测 · 无云端凭证代理。** 仅在启动原生登录或刷新账号额度时发起网络请求。
+
 已保存凭证以明文文件存放在 subswap 的用户应用数据目录，与账号元数据分开。macOS 和 Linux 上的私有凭证与快照文件使用 `0600` 权限；Windows 依赖当前用户的应用数据权限。`subswap doctor` 可查看实际路径。原生客户端也保留自己的当前凭证。自定义 Claude API 模式会将 API Key 写入 Claude Code 设置；切回 OAuth 时，会恢复进入 API 模式前由 subswap 托管的配置。
 
 请只管理你拥有或被授权使用的账号。
 
 ## 常见问题
+
+### 如何在不退出的情况下切换多个 Claude Code、Codex 或 Cursor 账号？
+
+先运行 `subswap` 导入当前登录，再用 `subswap login claude` 或 `subswap login codex` 保存另一个账号（或在原生客户端登录后执行 `subswap login <client>`），之后执行 `subswap swap <编号>` 即可切换；需要并行使用不同账号时，可用 `subswap run`、`subswap shell` 或 `subswap env` 做进程隔离。
+
+### subswap 会上传我的 Token 或把请求转发到云端代理吗？
+
+不会。已保存的凭证始终留在本机文件中（macOS/Linux 上权限为 `0600`）。`subswap` 既不代理模型流量，也不向任何第三方服务上传 Token。
 
 ### 手动切换依赖额度接口吗？
 

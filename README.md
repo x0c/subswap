@@ -151,11 +151,21 @@ The optional [`integrations/pi`](integrations/pi/README.md) extension maps each 
 
 ## Credentials
 
+**100% local execution · zero telemetry · no hosted credential broker.** Network calls happen only when you run native sign-in or refresh account quota.
+
 Saved credentials are plaintext files in subswap's per-user application-data directory, separate from account metadata. On macOS and Linux, private credential and snapshot files use `0600` permissions; Windows relies on the current user's application-data permissions. `subswap doctor` shows the resolved paths. Native clients also keep their own active credentials. Custom Claude API mode writes its API key in Claude Code's settings; switching back to OAuth restores the managed settings from before API mode.
 
 Manage only accounts you own or are authorized to use.
 
 ## FAQ
+
+### How do I switch between multiple Claude Code, Codex, or Cursor accounts without logging out?
+
+Run `subswap` to import your active login, save another account with `subswap login claude` or `subswap login codex` (or sign in via the native client and run `subswap login <client>`), then run `subswap swap <number>` — or use `subswap run`, `subswap shell`, or `subswap env` for parallel isolated sessions.
+
+### Does subswap upload my tokens or route traffic through a cloud proxy?
+
+No. Saved credentials stay as local files on your machine (`0600` permissions on macOS/Linux). `subswap` never proxies model traffic or uploads tokens to a third-party service.
 
 ### Does a manual swap depend on quota APIs?
 

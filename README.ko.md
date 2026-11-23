@@ -11,7 +11,7 @@
 
 <p align="center"><strong>AI 코딩 도구의 남은 사용량을 확인하고 계정을 전환하세요.</strong></p>
 
-<p align="center">Claude Code, Codex, Kimi Code, Cursor, OpenCode, Command Code의 로그인을 저장하고 관리합니다. 사용량이 남은 계정을 확인하고 명령 하나로 전환하세요.</p>
+<p align="center">Claude Code, Codex, Kimi Code, Cursor, OpenCode, Command Code, Antigravity의 로그인을 저장하고 관리합니다. 사용량이 남은 계정을 확인하고 명령 하나로 전환하세요.</p>
 
 <p align="center">
   <a href="https://github.com/x0c/subswap/actions/workflows/ci.yml"><img src="https://github.com/x0c/subswap/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -149,11 +149,21 @@ CLI는 macOS, Linux, Windows CI에서 테스트됩니다. 사용할 네이티브
 
 ## 자격 증명
 
+**100% 로컬 실행 · 텔레메트리 없음 · 클라우드 자격 증명 브로커 없음.** 네트워크 요청은 네이티브 로그인이나 사용량 갱신 시에만 발생합니다.
+
 저장된 자격 증명은 계정 메타데이터와 별도로 subswap의 사용자별 앱 데이터 디렉터리에 평문 파일로 보관됩니다. macOS와 Linux의 비공개 자격 증명 및 스냅샷은 `0600` 권한을 사용합니다. Windows는 현재 사용자의 앱 데이터 권한을 사용합니다. 실제 경로는 `subswap doctor`에서 확인할 수 있습니다. 네이티브 클라이언트도 활성 자격 증명을 보관합니다. 커스텀 Claude API 모드는 Claude Code 설정에 API key를 기록하며, OAuth로 돌아가면 API 모드 이전의 관리 대상 설정을 복원합니다.
 
 본인이 소유하거나 사용 권한이 있는 계정만 관리하세요.
 
 ## FAQ
+
+### 로그아웃하지 않고 여러 Claude Code, Codex, Cursor 계정을 전환하려면 어떻게 하나요?
+
+`subswap`으로 현재 로그인을 가져온 뒤 `subswap login claude` 또는 `subswap login codex`(또는 네이티브 클라이언트 로그인 후 `subswap login <client>`)로 다른 계정을 저장하고 `subswap swap <번호>`를 실행하세요. 병렬 격리 세션이 필요하면 `subswap run`, `subswap shell`, `subswap env`를 사용할 수 있습니다.
+
+### subswap이 토큰을 업로드하거나 클라우드 프록시로 트래픽을 우회하나요?
+
+아니요. 저장된 자격 증명은 로컬 파일로만 유지됩니다(macOS/Linux `0600` 권한). 모델 트래픽을 프록시하거나 제3자 서비스로 토큰을 업로드하지 않습니다.
 
 ### 수동 전환은 사용량 API에 의존하나요?
 
@@ -172,6 +182,17 @@ Cursor는 데스크톱 또는 CLI 자격 증명으로 가져오기, 전환, 사�
 기여 방법과 로컬 검사는 [CONTRIBUTING.md](CONTRIBUTING.md)를 참고하세요. 공개 Issue에 자격 증명, refresh token, 로그인 파일, 실제 이메일 주소 또는 결제 화면을 올리지 마세요. 비공개 취약점 보고는 [SECURITY.md](SECURITY.md)를 참고하세요.
 
 도움이 되었다면 [star](https://github.com/x0c/subswap)를 남겨 두면 나중에 다시 찾기 쉽습니다.
+
+## 🧩 AI 코딩 도구 모음
+
+여러 AI 코딩 에이전트를 매일 함께 사용한다면 같은 로컬 우선 도구 모음의 다른 프로젝트도 살펴보세요:
+
+| 저장소 | 설명 |
+| :--- | :--- |
+| **[corral](https://github.com/corral-dev/corral)** | 터미널 세션 관리자에서 Claude Code, Codex, OpenCode, Cursor, Pi를 나란히 실행하고 iPhone이나 Mac에서 이어서 작업합니다. |
+| **[agentsync](https://github.com/x0c/agentsync)** | 하나의 로컬 소스에서 `AGENTS.md`, `CLAUDE.md`, skills, MCP 설정을 각 코딩 에이전트로 동기화합니다. |
+| **[agent-doc-skills](https://github.com/x0c/agent-doc-skills)** | 탐색 가능한 프로젝트 지식 베이스 skills(`doc-init`, `doc-update`, `doc-compact`)로 매 세션 저장소를 다시 파악하지 않게 해줍니다. |
+| **[sesskit](https://github.com/x0c/sesskit)** | 디스크에서 로컬 Claude Code, Codex CLI, Cursor 세션 기록 파일을 파싱·내보냅니다. |
 
 ## 라이선스
 
