@@ -44,6 +44,7 @@ use subswap_provider_commandcode::CommandcodeProvider;
 use subswap_provider_cursor::CursorProvider;
 use subswap_provider_kimi::KimiProvider;
 use subswap_provider_opencode::{OpencodeApiKeyProvider, OpencodeProvider};
+use subswap_provider_pi::PiProvider;
 use tokio::signal::unix::{signal, SignalKind};
 
 use state::DaemonState;
@@ -204,6 +205,7 @@ pub async fn run() -> Result<()> {
             &opencode_api_key,
             &commandcode,
             &antigravity,
+            &pi,
             &audit,
             &mut state,
             &mut adaptive,
@@ -276,6 +278,7 @@ async fn run_cycle(
     opencode_api_key: &Arc<OpencodeApiKeyProvider>,
     commandcode: &Arc<CommandcodeProvider>,
     antigravity: &Arc<AntigravityProvider>,
+    pi: &Arc<PiProvider>,
     audit: &AuditLog,
     state: &mut DaemonState,
     adaptive: &mut AdaptiveState,
@@ -283,17 +286,15 @@ async fn run_cycle(
     data_dir: &std::path::Path,
     cache_path: &Path,
 ) -> Result<CycleOutcome> {
-    // (0) 持续回灌:把 active 账号的 live 凭证抓回 store(只读 live、只写 store、不刷新)。
-    // 填补「在 Claude Code 内直接切走、未经 subswap swap」的捕获缺口,使该账号日后变 parked 时
-    // store 里仍是活 token,parked 自刷不依赖再开 Claude Code。best-effort,失败仅 debug。
-    if let Err(e) = claude.reconcile_active_from_live().await {
-        tracing::debug!(err = %e, "claude live-credential reconcile skipped");
-    }
+    // (0) 持续回灌与零配置本地发现：把外部新登录的 live 账号入池，并回灌 active 凭证到 store
+    // (只读 live、只写 Subswap 池、不刷新)。best-effort,失败仅 debug。
+    reconcile_claude_provider(claude).await;
     // Codex/Kimi 走共享文件型引擎,reconcile 是同步阻塞 IO,包进 spawn_blocking 调用
     // (不用 block_in_place:该引擎的 activate 同样避开它,原因是调用方可能跑在
     // current-thread runtime 上会直接 panic,此处沿用同一取舍)。
     reconcile_file_blob_provider(codex, "codex").await;
     reconcile_file_blob_provider(kimi, "kimi").await;
+    reconcile_pi_provider(pi).await;
     let api_key = opencode_api_key.clone();
     match tokio::task::spawn_blocking(move || api_key.sync_accounts(None)).await {
         Ok(Err(e)) => tracing::debug!(err = %e, "OpenCode API key sync skipped"),
@@ -571,7 +572,39 @@ async fn provider_has_accounts(path: &Path, provider: &str) -> bool {
     .unwrap_or(false)
 }
 
-/// 文件型共享引擎（Codex/Kimi）的 capture-on-arrival：同步阻塞 IO 包进 spawn_blocking,
+async fn reconcile_claude_provider(claude: &Arc<ClaudeProvider>) {
+    let provider = claude.clone();
+    let sync_res = tokio::task::spawn_blocking(move || {
+        if provider.live_account_id().is_ok() {
+            #[cfg(target_os = "macos")]
+            if std::env::var_os("SUBSWAP_SYNC_KEYCHAIN_ON_START").is_none() {
+                return provider.sync_active_metadata(None).map(|_| ());
+            }
+            return provider.import_active(None).map(|_| ());
+        }
+        Ok(())
+    })
+    .await;
+    match sync_res {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::debug!(err = %e, "claude live-account discovery skipped"),
+        Err(e) => tracing::debug!(err = %e, "claude live-account discovery join failed"),
+    }
+    if let Err(e) = claude.reconcile_active_from_live().await {
+        tracing::debug!(err = %e, "claude live-credential reconcile skipped");
+    }
+}
+
+async fn reconcile_pi_provider(pi: &Arc<PiProvider>) {
+    let provider = pi.clone();
+    match tokio::task::spawn_blocking(move || provider.sync_slots()).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => tracing::debug!(err = %e, "pi live-slot sync skipped"),
+        Err(e) => tracing::debug!(err = %e, "pi live-slot sync join failed"),
+    }
+}
+
+/// 文件型共享引擎（Codex/Kimi/CommandCode）的 capture-on-arrival 与零配置入池：同步阻塞 IO 包进 spawn_blocking,
 /// best-effort,失败仅 debug 日志,不影响本轮调度。
 async fn reconcile_file_blob_provider<A>(
     provider: &Arc<subswap_provider_common::FileBlobProvider<A>>,
@@ -580,7 +613,13 @@ async fn reconcile_file_blob_provider<A>(
     A: subswap_provider_common::FileBlobRuntime,
 {
     let provider = provider.clone();
-    match tokio::task::spawn_blocking(move || provider.reconcile_active_from_live()).await {
+    match tokio::task::spawn_blocking(move || {
+        if provider.live_account_id().is_ok() {
+            let _ = provider.sync_active_metadata(None);
+        }
+        provider.reconcile_active_from_live()
+    })
+    .await {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
             tracing::debug!(err = %e, provider = %label, "live-credential reconcile skipped")
@@ -2177,6 +2216,165 @@ mod tests {
             vec!["active", "active"],
             "following window must query exactly once more"
         );
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    struct MemoryCredentialStore(Mutex<HashMap<(String, String, String), String>>);
+
+    impl MemoryCredentialStore {
+        fn new() -> Self {
+            Self(Mutex::new(HashMap::new()))
+        }
+    }
+
+    impl subswap_core::CredentialStore for MemoryCredentialStore {
+        fn set(
+            &self,
+            provider: &str,
+            account: &str,
+            field: &str,
+            value: &str,
+        ) -> subswap_core::Result<()> {
+            self.0.lock().unwrap().insert(
+                (provider.into(), account.into(), field.into()),
+                value.into(),
+            );
+            Ok(())
+        }
+
+        fn get(
+            &self,
+            provider: &str,
+            account: &str,
+            field: &str,
+        ) -> subswap_core::Result<Option<String>> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .get(&(provider.into(), account.into(), field.into()))
+                .cloned())
+        }
+
+        fn delete(&self, provider: &str, account: &str, field: &str) -> subswap_core::Result<()> {
+            self.0.lock().unwrap().remove(&(
+                provider.into(),
+                account.into(),
+                field.into(),
+            ));
+            Ok(())
+        }
+    }
+
+    struct TestBlobRuntime(std::path::PathBuf);
+
+    impl subswap_provider_common::FileBlobRuntime for TestBlobRuntime {
+        fn id(&self) -> &'static str {
+            "testblob"
+        }
+        fn display_name(&self) -> &'static str {
+            "TestBlob"
+        }
+        fn home(&self) -> std::path::PathBuf {
+            self.0.clone()
+        }
+        fn live_cred_path(&self, home: &std::path::Path) -> std::path::PathBuf {
+            home.join("auth.json")
+        }
+        fn parse_metadata(&self, blob: &str) -> subswap_provider_common::BlobMetadata {
+            let id = blob.trim().strip_prefix("account:").map(str::to_string);
+            subswap_provider_common::BlobMetadata {
+                primary_id: id.clone(),
+                label: id,
+                dedup_key: None,
+                extra: Default::default(),
+            }
+        }
+        fn isolation(&self) -> subswap_provider_common::IsolationSpec {
+            subswap_provider_common::IsolationSpec {
+                env_var: "TEST_BLOB_HOME",
+                native_cli: "test-blob",
+            }
+        }
+        fn refresh<'life0, 'life1, 'async_trait>(
+            &'life0 self,
+            _blob: &'life1 str,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = subswap_core::Result<subswap_provider_common::RefreshOutcome>>
+                    + Send
+                    + 'async_trait,
+            >,
+        >
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async { Ok(subswap_provider_common::RefreshOutcome::Unsupported) })
+        }
+        fn fetch_quota<'life0, 'life1, 'life2, 'async_trait>(
+            &'life0 self,
+            _access_token: &'life1 str,
+            _account: &'life2 Account,
+        ) -> Pin<Box<dyn Future<Output = subswap_core::Result<Vec<Quota>>> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            'life2: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn daemon_reconcile_discovers_untracked_file_blob_and_pi_accounts() {
+        let tmp = std::env::temp_dir().join(format!(
+            "subswapd-discover-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let blob_home = tmp.join("blob_home");
+        let pi_home = tmp.join("pi_home");
+        std::fs::create_dir_all(&blob_home).unwrap();
+        std::fs::create_dir_all(&pi_home).unwrap();
+        std::fs::write(blob_home.join("auth.json"), "account:acc-live-1").unwrap();
+        std::fs::write(
+            pi_home.join("auth.json"),
+            r#"{"pi-live":{"type":"api_key","key":"sk-pi-live-1"}}"#,
+        )
+        .unwrap();
+
+        let store = Arc::new(MemoryCredentialStore::new());
+        let registry = Arc::new(AccountRegistry::new(tmp.join("registry.toml")));
+        let blob_provider = Arc::new(subswap_provider_common::FileBlobProvider::new(
+            TestBlobRuntime(blob_home),
+            store.clone(),
+            registry.clone(),
+        ));
+        let pi_provider = Arc::new(subswap_provider_pi::PiProvider::with_agent_dir(
+            store.clone(),
+            registry.clone(),
+            pi_home,
+        ));
+
+        super::reconcile_file_blob_provider(&blob_provider, "testblob").await;
+        super::reconcile_pi_provider(&pi_provider).await;
+
+        let blob_accounts = registry.list_by_provider("testblob").unwrap();
+        assert_eq!(blob_accounts.len(), 1);
+        assert_eq!(blob_accounts[0].id.0, "acc-live-1");
+        assert!(blob_accounts[0].active);
+
+        let pi_accounts = registry.list_by_provider("pi").unwrap();
+        assert_eq!(pi_accounts.len(), 1);
+        assert!(pi_accounts[0].id.0.starts_with("pi-"));
+        assert_eq!(
+            pi_accounts[0].extra.get("channel").and_then(|v| v.as_str()),
+            Some("pi-live")
+        );
+
         let _ = std::fs::remove_dir_all(tmp);
     }
 }

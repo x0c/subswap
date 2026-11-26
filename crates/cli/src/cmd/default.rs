@@ -106,9 +106,11 @@ pub async fn print_status_overview(ctx: &AppContext) -> Result<()> {
 
 /// 客户端打开 / 回前台时显式请求一次当前账号池的 quota 检查。
 ///
-/// 不同步本地 active、不 AutoSwap、不拉 daemon；真实请求仍由共享协调器执行缓存节流、
-/// 跨进程合并、Provider 下限与失败退避。调用方随后经普通 `status` 导出同一快照结构。
+/// 先做只读运行时、仅更新 Subswap 账号池的本地登录发现（不装 Pi 扩展、macOS 默认不弹钥匙串），
+/// 再由共享协调器执行缓存节流、跨进程合并、Provider 下限与失败退避；不 AutoSwap、不拉 daemon。
+/// 调用方随后经普通 `status` 导出同一快照结构。
 pub async fn refresh(ctx: &AppContext) -> Result<()> {
+    let _ = sync_local_active(ctx).await;
     let mut snapshots = build_loading_snapshots(&ctx.providers).await;
     collect_current_quotas(ctx, &mut snapshots, None).await
 }
@@ -308,6 +310,26 @@ async fn sync_local_active(ctx: &AppContext) -> Vec<AutoLine> {
             Err(e) => notices.push(signed_in_but_untracked("antigravity", &id, e)),
         }
     }
+    sync_pi_accounts(ctx, &mut notices);
+    notices
+}
+
+fn sync_pi_accounts(ctx: &AppContext, notices: &mut Vec<AutoLine>) {
+    let synced_active = match ctx.pi.sync_slots() {
+        Ok(accounts) => accounts.into_iter().find(|account| account.active),
+        Err(e) => {
+            if let Ok(id) = ctx.pi.live_account_id() {
+                notices.push(signed_in_but_untracked("pi", &id, e));
+            }
+            return;
+        }
+    };
+    if let Some(account) = synced_active {
+        if ctx.registry.set_active("pi", &account.id).is_ok() {
+            clear_settled_marker(ctx, "pi", &account.id);
+        }
+        return;
+    }
     if let Ok(id) = ctx.pi.live_account_id() {
         match ctx.pi.sync_active_metadata() {
             Ok(account) => {
@@ -318,7 +340,6 @@ async fn sync_local_active(ctx: &AppContext) -> Vec<AutoLine> {
             Err(e) => notices.push(signed_in_but_untracked("pi", &id, e)),
         }
     }
-    notices
 }
 
 /// 默认入口的 live 对齐只做「标记 active」，不产生切换语义：
@@ -465,16 +486,7 @@ async fn sync_local_active_metadata(ctx: &AppContext) -> Vec<AutoLine> {
             Err(e) => notices.push(signed_in_but_untracked("antigravity", &id, e)),
         }
     }
-    if let Ok(id) = ctx.pi.live_account_id() {
-        match ctx.pi.sync_active_metadata() {
-            Ok(account) => {
-                if ctx.registry.set_active("pi", &account.id).is_ok() {
-                    clear_settled_marker(ctx, "pi", &account.id);
-                }
-            }
-            Err(e) => notices.push(signed_in_but_untracked("pi", &id, e)),
-        }
-    }
+    sync_pi_accounts(ctx, &mut notices);
     notices
 }
 

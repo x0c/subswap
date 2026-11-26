@@ -2149,6 +2149,77 @@ fn default_entry_does_not_auto_swap_commandcode_to_401_key() {
     assert_eq!(live["apiKey"], COMMANDCODE_EXHAUSTED_KEY);
 }
 
+#[test]
+fn status_refresh_discovers_untracked_local_logins_without_auto_swap() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut bodies = HashMap::new();
+    bodies.insert(
+        COMMANDCODE_HEALTHY_KEY.to_string(),
+        (200_u16, commandcode_healthy_credits()),
+    );
+    let server = KeyedUsageServer::start(bodies);
+    write_local_mock_quota_config(&tmp);
+
+    // 直接放置未经 `subswap login` 导入的原生登录态。
+    let cc_auth_path = tmp.path().join("commandcode").join("auth.json");
+    let cc_raw = serde_json::json!({ "apiKey": COMMANDCODE_HEALTHY_KEY }).to_string();
+    write(&cc_auth_path, &cc_raw);
+
+    let pi_auth_path = tmp.path().join("pi").join("auth.json");
+    let pi_raw = serde_json::json!({
+        "demo-provider": { "type": "api_key", "key": "sk-pi-zero-setup-1234" }
+    })
+    .to_string();
+    write(&pi_auth_path, &pi_raw);
+
+    // 1. 普通 `status` 必须保持零副作用：不会写入账号池。
+    let plain_stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["status", "--json", "--no-metrics"])
+            .output()
+            .unwrap(),
+    );
+    let plain_json: serde_json::Value = serde_json::from_str(&plain_stdout).unwrap();
+    assert_eq!(
+        plain_json["accounts"].as_array().unwrap().len(),
+        0,
+        "plain status must remain side-effect free"
+    );
+
+    // 2. `status --refresh` 自动发现本机登录并采额度，同时不装 Pi 扩展、不写回原生凭据。
+    let refresh_stdout = assert_success(
+        isolated_subswap(&tmp)
+            .args(["status", "--refresh", "--json", "--no-metrics"])
+            .env("SUBSWAP_COMMANDCODE_BASE", server.base_url())
+            .output()
+            .unwrap(),
+    );
+    let refresh_json: serde_json::Value = serde_json::from_str(&refresh_stdout).unwrap();
+    let accounts = refresh_json["accounts"].as_array().unwrap();
+    let cc_account = accounts
+        .iter()
+        .find(|a| a["provider"] == "commandcode")
+        .unwrap_or_else(|| panic!("missing commandcode account in {refresh_stdout}"));
+    assert_eq!(cc_account["active"], true);
+    assert!(
+        !cc_account["quotas"].as_array().unwrap().is_empty(),
+        "discovered commandcode login should immediately fetch quotas: {refresh_stdout}"
+    );
+
+    let pi_account = accounts
+        .iter()
+        .find(|a| a["provider"] == "pi")
+        .unwrap_or_else(|| panic!("missing pi account in {refresh_stdout}"));
+    assert!(
+        pi_account["id"].as_str().unwrap_or("").starts_with("pi-"),
+        "expected discovered Pi slot id, got {pi_account}"
+    );
+    assert_eq!(pi_account["channel"], "demo-provider");
+    assert!(!tmp.path().join("pi").join("extensions").exists());
+    assert_eq!(fs::read_to_string(&cc_auth_path).unwrap(), cc_raw);
+    assert_eq!(fs::read_to_string(&pi_auth_path).unwrap(), pi_raw);
+}
+
 /// 按 Bearer API key 返回不同 `/usage` 响应；并发可重入，供默认入口同时查多个账号。
 struct KeyedUsageServer {
     addr: std::net::SocketAddr,
